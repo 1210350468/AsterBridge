@@ -43,9 +43,8 @@ async function listenLoopback(): Promise<{ server: Server; port: number }> {
 
 test("auto mode selects the most recently enabled Chrome or Edge debugging session", async () => {
   const root = join(tmpdir(), `codex-system-browser-${crypto.randomUUID()}`);
-  const localAppData = join(root, "Local");
-  const chrome = join(localAppData, "Google", "Chrome", "User Data");
-  const edge = join(localAppData, "Microsoft", "Edge", "User Data");
+  const chrome = join(root, ".config", "google-chrome");
+  const edge = join(root, ".config", "microsoft-edge");
   mkdirSync(chrome, { recursive: true });
   mkdirSync(edge, { recursive: true });
   const chromeListener = await listenLoopback();
@@ -56,8 +55,7 @@ test("auto mode selects the most recently enabled Chrome or Edge debugging sessi
     while (Date.now() < waitUntil) {}
     writeFileSync(join(edge, "DevToolsActivePort"), `${edgeListener.port}\n/devtools/browser/edge\n`);
     const result = await discoverSystemBrowserEndpoint("auto", {
-      platform: "win32",
-      environment: { LOCALAPPDATA: localAppData },
+      platform: "linux",
       homeDirectory: root,
     });
     expect(result.channel).toBe("msedge");

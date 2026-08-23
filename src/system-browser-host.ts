@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 
 export type SystemBrowserChannel = "auto" | "chrome" | "msedge";
@@ -22,14 +22,14 @@ export function systemBrowserUserDataDir(
 ): string | undefined {
   if (channel === "chrome") {
     if (platform === "win32") {
-      return join(environment.LOCALAPPDATA || join(homeDirectory, "AppData", "Local"), "Google", "Chrome", "User Data");
+      return win32.join(environment.LOCALAPPDATA || win32.join(homeDirectory, "AppData", "Local"), "Google", "Chrome", "User Data");
     }
     if (platform === "darwin") return join(homeDirectory, "Library", "Application Support", "Google", "Chrome");
     if (platform === "linux") return join(homeDirectory, ".config", "google-chrome");
     return undefined;
   }
   if (platform === "win32") {
-    return join(environment.LOCALAPPDATA || join(homeDirectory, "AppData", "Local"), "Microsoft", "Edge", "User Data");
+    return win32.join(environment.LOCALAPPDATA || win32.join(homeDirectory, "AppData", "Local"), "Microsoft", "Edge", "User Data");
   }
   if (platform === "darwin") return join(homeDirectory, "Library", "Application Support", "Microsoft Edge");
   if (platform === "linux") return join(homeDirectory, ".config", "microsoft-edge");
