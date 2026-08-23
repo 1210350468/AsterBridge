@@ -27,7 +27,7 @@ import {
 } from "./profile";
 import { DEV_CONFIG_PURPOSE, DEV_LAUNCHER_PROFILE } from "./constants";
 
-const DEV_HELP = `Codex Web GPT DEV chat
+const DEV_HELP = `AsterBridge DEV chat
 
 Usage:
   codex-chatgpt-web dev launcher
@@ -145,7 +145,7 @@ function printHeader(
   status: DevContextStatus,
   mode: "browser-only" | "full",
 ): void {
-  stdout.write(`${bold("Codex Web GPT DEV")} · ${created ? "created" : "continued"} chat ${cyan(state.name)}\n`);
+  stdout.write(`${bold("AsterBridge DEV")} · ${created ? "created" : "continued"} chat ${cyan(state.name)}\n`);
   stdout.write(`model ${state.model} · ${mode === "full" ? "tools explicitly simulated" : "browser-only, no outer tools"} · live launcher browser\n`);
   stdout.write(`context ${statusLine(status)}\n`);
   stdout.write(`${dim("Codex route is untouched. No Responses port is bound, replaced, stopped, or restarted.")}\n`);

@@ -1,4 +1,5 @@
 import { readJsonRequestBody } from "./http-body";
+import { nativeUpstreamFetch } from "./native-upstream-fetch";
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
 
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
@@ -79,7 +80,7 @@ function endToEndHeaders(source: Headers): Headers {
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
-  fetchUpstream: NativeFetch = fetch,
+  fetchUpstream: NativeFetch = nativeUpstreamFetch,
   decodedBody?: unknown,
 ): Promise<Response> {
   const authorization = request.headers.get("authorization") ?? "";

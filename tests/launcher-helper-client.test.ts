@@ -66,6 +66,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   const config: ResolvedBrowserConfig = {
     appName: "Codex Native",
     browserHost: "launcher",
+    systemBrowserChannel: "auto",
     browserHostDescriptorPath: descriptorPath,
     browserHelperScriptPath: helper,
     storageStatePath: join(root, "unused-state.json"),
@@ -121,6 +122,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native",
     browserHost: "launcher",
+    systemBrowserChannel: "auto",
     browserHostDescriptorPath: "/durable/launcher.json",
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",
@@ -167,6 +169,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native",
     browserHost: "launcher",
+    systemBrowserChannel: "auto",
     browserHostDescriptorPath: "/durable/launcher.json",
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",

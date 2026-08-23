@@ -210,7 +210,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       version: 3,
       purpose: "dev-harness",
       mode: "browser-only",
-      appName: "Codex Native2 DEV",
+      appName: "Codex Native3 DEV",
       browserHost: "launcher",
       browserHostDescriptorPath: descriptorPath,
       solAvailable: true,
@@ -258,7 +258,7 @@ test("terminal uninstall refuses to race a launcher-owned runtime", async () => 
       CODEX_CHATGPT_WEB_HOME: appHome,
     });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("must be removed from Codex Web GPT Settings");
+    expect(result.stderr).toContain("must be removed from AsterBridge Settings");
     expect(existsSync(configPath)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });

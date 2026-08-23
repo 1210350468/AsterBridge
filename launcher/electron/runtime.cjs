@@ -168,6 +168,7 @@ class RuntimeHost {
     this.activeChild = null;
     this.lifecycleOperation = null;
     this.cleanupEphemeralSecrets();
+    this.importRoxyBrowserApiKeyFromEnvironment();
   }
 
   currentOperation() {
@@ -271,6 +272,40 @@ class RuntimeHost {
       && path.isAbsolute(tunnel.runtimeKeyFile)
       && fs.existsSync(tunnel.runtimeKeyFile),
     );
+  }
+
+  roxyBrowserApiKeyPath() {
+    return path.join(this.app.getPath("userData"), "secrets", "roxy-browser-api.key");
+  }
+
+  roxyBrowserApiKeyConfigured() {
+    return fs.existsSync(this.roxyBrowserApiKeyPath());
+  }
+
+  importRoxyBrowserApiKeyFromEnvironment(environment = process.env) {
+    if (this.launcherProfile !== "production") return false;
+    const variable = "CODEX_WEB_GPT_ROXY_API_KEY";
+    const value = typeof environment?.[variable] === "string" ? environment[variable].trim() : "";
+    try {
+      if (!value) return false;
+      this.setRoxyBrowserApiKey(value);
+      return true;
+    } finally {
+      if (environment && Object.prototype.hasOwnProperty.call(environment, variable)) delete environment[variable];
+    }
+  }
+
+  setRoxyBrowserApiKey(value) {
+    this.assertProductionProfile("RoxyBrowser API configuration");
+    const keyPath = this.roxyBrowserApiKeyPath();
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) {
+      fs.rmSync(keyPath, { force: true });
+      return false;
+    }
+    if (trimmed.length < 8 || trimmed.length > 4096) throw new Error("RoxyBrowser API key is invalid");
+    writePrivateFileAtomic(keyPath, `${trimmed}\n`);
+    return true;
   }
 
   captureSetupCheckpoint(snapshot) {
@@ -739,6 +774,15 @@ class RuntimeHost {
     }
   }
 
+  verifySystemBrowserConnector() {
+    this.assertProductionProfile("System-browser connector verification");
+    return this.run("system-browser-connector-verify", ["browser", "verify-connector"], {
+      message: "Checking ChatGPT connector in the main browser",
+      successMessage: "Main-browser ChatGPT connector verified",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    });
+  }
+
   mcpConnectorName() {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured || current.mode !== "full") {
@@ -754,7 +798,7 @@ class RuntimeHost {
     if (this.launcherProfile === "development") {
       return connectorNameForDevSetup(current.config?.appName);
     }
-    if (!current.configured || current.mode !== "full") return CURRENT_CONNECTOR_NAME;
+    if (!current.configured) return CURRENT_CONNECTOR_NAME;
     return connectorNameForSetup(current.config?.appName);
   }
 
@@ -796,7 +840,7 @@ class RuntimeHost {
           embedded: true,
           env: this.launcherControlEnvironment(),
           message: "Restoring the previous Codex route",
-          successMessage: "Codex Web GPT integration removed",
+          successMessage: "AsterBridge integration removed",
           timeoutMs: UNINSTALL_TIMEOUT_MS,
         });
         const verified = await this.bridgeStatus(name);
@@ -820,14 +864,12 @@ class RuntimeHost {
     }
   }
 
-  async setupCore() {
+  async setupCore({ useSystemBrowser = false, roxyBrowser = null } = {}) {
     this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
-    const existing = this.runtimeConfigSnapshot();
-    const mode = existing.mode;
     const args = [
       "setup",
-      mode === "full" ? "--full" : "--browser-only",
+      "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--refresh-account-capabilities",
@@ -835,13 +877,34 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    if (mode === "full") args.push("--app-name", this.browserConnectorName());
+    if (roxyBrowser) {
+      if (useSystemBrowser) throw new Error("Choose either the system browser or RoxyBrowser, not both");
+      const profileId = typeof roxyBrowser.profileId === "string" ? roxyBrowser.profileId.trim() : "";
+      const dataDir = typeof roxyBrowser.dataDir === "string" ? path.resolve(roxyBrowser.dataDir.trim()) : "";
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(profileId)) throw new Error("RoxyBrowser profile/window ID is invalid");
+      if (!dataDir || !path.isAbsolute(dataDir)) throw new Error("RoxyBrowser data directory must be absolute");
+      args.push("--roxy-browser-profile", profileId, "--roxy-browser-data-dir", dataDir);
+      if (roxyBrowser.autoOpen === true) {
+        if (!this.roxyBrowserApiKeyConfigured()) throw new Error("RoxyBrowser automatic startup requires an API key in Launcher Settings");
+        const apiHost = typeof roxyBrowser.apiHost === "string" && roxyBrowser.apiHost.trim()
+          ? roxyBrowser.apiHost.trim()
+          : "http://127.0.0.1:50000";
+        args.push(
+          "--roxy-browser-auto-open",
+          "--roxy-browser-api-host", apiHost,
+          "--roxy-browser-api-key-file", this.roxyBrowserApiKeyPath(),
+        );
+      }
+    } else {
+      args.push(useSystemBrowser ? "--system-browser" : "--embedded-browser");
+      if (useSystemBrowser) args.push("--system-browser-channel", "auto");
+    }
     const result = await this.runSetup("core-setup", args, {
       message: "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });
-    return { ...result, mode };
+    return { ...result, mode: "browser-only" };
   }
 
   async setupDevCore() {
@@ -909,9 +972,17 @@ class RuntimeHost {
     };
   }
 
-  setupMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupMcp({ tunnelId = "", runtimeKey = "", replace = false, useSystemBrowser = false, roxyBrowser = null, connectorName = "" } = {}) {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    const requestedConnectorName = typeof connectorName === "string" && connectorName.trim()
+      ? validateConnectorName(connectorName)
+      : this.browserConnectorName();
+    if (isLegacyConnectorName(requestedConnectorName)) {
+      throw new Error(
+        `Connector name ${JSON.stringify(requestedConnectorName)} is a retired identity. Choose a new unique ChatGPT App name.`,
+      );
+    }
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
@@ -925,9 +996,31 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
-      this.browserConnectorName(),
+      requestedConnectorName,
       "--replace-codex-route",
     ];
+    if (roxyBrowser) {
+      if (useSystemBrowser) throw new Error("Choose either the system browser or RoxyBrowser, not both");
+      const profileId = typeof roxyBrowser.profileId === "string" ? roxyBrowser.profileId.trim() : "";
+      const dataDir = typeof roxyBrowser.dataDir === "string" ? path.resolve(roxyBrowser.dataDir.trim()) : "";
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(profileId)) throw new Error("RoxyBrowser profile/window ID is invalid");
+      if (!dataDir || !path.isAbsolute(dataDir)) throw new Error("RoxyBrowser data directory must be absolute");
+      args.push("--roxy-browser-profile", profileId, "--roxy-browser-data-dir", dataDir);
+      if (roxyBrowser.autoOpen === true) {
+        if (!this.roxyBrowserApiKeyConfigured()) throw new Error("RoxyBrowser automatic startup requires an API key in Launcher Settings");
+        const apiHost = typeof roxyBrowser.apiHost === "string" && roxyBrowser.apiHost.trim()
+          ? roxyBrowser.apiHost.trim()
+          : "http://127.0.0.1:50000";
+        args.push(
+          "--roxy-browser-auto-open",
+          "--roxy-browser-api-host", apiHost,
+          "--roxy-browser-api-key-file", this.roxyBrowserApiKeyPath(),
+        );
+      }
+    } else {
+      args.push(useSystemBrowser ? "--system-browser" : "--embedded-browser");
+      if (useSystemBrowser) args.push("--system-browser-channel", "auto");
+    }
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
       return this.runSetup("mcp-setup", args, {

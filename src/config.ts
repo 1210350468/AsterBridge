@@ -8,14 +8,16 @@ import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
+export type TurnBrowserHostMode = BrowserHostMode | "system-browser" | "roxybrowser";
+export type SystemBrowserChannel = "auto" | "chrome" | "msedge";
 
 /**
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
  * contract therefore has a new identity instead of mutating the retired connector in place.
  */
-export const CHATGPT_CONNECTOR_NAME = "Codex Native2";
+export const CHATGPT_CONNECTOR_NAME = "Codex Native3";
 export const DEV_CHATGPT_CONNECTOR_NAME = `${CHATGPT_CONNECTOR_NAME} DEV`;
-export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native"] as const;
+export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native", "Codex Native2"] as const;
 
 export function isLegacyChatGptConnectorName(value: string): boolean {
   return (LEGACY_CHATGPT_CONNECTOR_NAMES as readonly string[]).includes(value);
@@ -71,6 +73,13 @@ export interface AppConfig {
   appName: string;
   browserHost: BrowserHostMode;
   browserHostDescriptorPath?: string;
+  turnBrowserHost?: TurnBrowserHostMode;
+  systemBrowserChannel?: SystemBrowserChannel;
+  roxyBrowserProfileId?: string;
+  roxyBrowserDataDir?: string;
+  roxyBrowserAutoOpen?: boolean;
+  roxyBrowserApiHost?: string;
+  roxyBrowserApiKeyFile?: string;
   chromeExecutablePath: string;
   storageStatePath: string;
   brokerSocketPath: string;
@@ -332,6 +341,50 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.browserHost !== "managed-chrome" && parsed.browserHost !== "launcher") {
     throw new Error(`Invalid browserHost in ${path}`);
   }
+  if (parsed.turnBrowserHost !== undefined
+    && parsed.turnBrowserHost !== "managed-chrome"
+    && parsed.turnBrowserHost !== "launcher"
+    && parsed.turnBrowserHost !== "system-browser"
+    && parsed.turnBrowserHost !== "roxybrowser") {
+    throw new Error(`Invalid turnBrowserHost in ${path}`);
+  }
+  if (parsed.systemBrowserChannel !== undefined
+    && parsed.systemBrowserChannel !== "auto"
+    && parsed.systemBrowserChannel !== "chrome"
+    && parsed.systemBrowserChannel !== "msedge") {
+    throw new Error(`Invalid systemBrowserChannel in ${path}`);
+  }
+  if (parsed.roxyBrowserProfileId !== undefined
+    && (typeof parsed.roxyBrowserProfileId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(parsed.roxyBrowserProfileId.trim()))) {
+    throw new Error(`Invalid roxyBrowserProfileId in ${path}`);
+  }
+  if (parsed.roxyBrowserDataDir !== undefined
+    && (typeof parsed.roxyBrowserDataDir !== "string" || !isAbsolute(expandUserPath(parsed.roxyBrowserDataDir)))) {
+    throw new Error(`roxyBrowserDataDir must be absolute in ${path}`);
+  }
+  if (parsed.roxyBrowserAutoOpen !== undefined && typeof parsed.roxyBrowserAutoOpen !== "boolean") {
+    throw new Error(`Invalid roxyBrowserAutoOpen in ${path}`);
+  }
+  if (parsed.roxyBrowserApiHost !== undefined) {
+    if (typeof parsed.roxyBrowserApiHost !== "string") throw new Error(`Invalid roxyBrowserApiHost in ${path}`);
+    let apiHost: URL;
+    try { apiHost = new URL(parsed.roxyBrowserApiHost); } catch { throw new Error(`Invalid roxyBrowserApiHost in ${path}`); }
+    if (apiHost.protocol !== "http:" || apiHost.hostname !== "127.0.0.1" || apiHost.username || apiHost.password) {
+      throw new Error(`roxyBrowserApiHost must use loopback HTTP in ${path}`);
+    }
+  }
+  if (parsed.roxyBrowserApiKeyFile !== undefined
+    && (typeof parsed.roxyBrowserApiKeyFile !== "string" || !isAbsolute(expandUserPath(parsed.roxyBrowserApiKeyFile)))) {
+    throw new Error(`roxyBrowserApiKeyFile must be absolute in ${path}`);
+  }
+  if (parsed.turnBrowserHost === "roxybrowser"
+    && (!parsed.roxyBrowserProfileId?.trim() || !parsed.roxyBrowserDataDir?.trim())) {
+    throw new Error(`RoxyBrowser turn host requires roxyBrowserProfileId and roxyBrowserDataDir in ${path}`);
+  }
+  if (parsed.turnBrowserHost === "roxybrowser" && parsed.roxyBrowserAutoOpen === true
+    && (!parsed.roxyBrowserApiHost?.trim() || !parsed.roxyBrowserApiKeyFile?.trim())) {
+    throw new Error(`RoxyBrowser automatic startup requires roxyBrowserApiHost and roxyBrowserApiKeyFile in ${path}`);
+  }
   if (!Number.isInteger(parsed.port) || parsed.port! < 1 || parsed.port! > 65_535) throw new Error(`Invalid port in ${path}`);
   if (!Number.isSafeInteger(parsed.contextWindow) || parsed.contextWindow! <= 0) {
     throw new Error(`Invalid contextWindow in ${path}`);
@@ -429,8 +482,14 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     noReasoningModels: [],
     chatgptWeb: {
       appName: config.appName,
-      browserHost: config.browserHost,
+      browserHost: config.turnBrowserHost ?? config.browserHost,
       browserHostDescriptorPath: config.browserHostDescriptorPath,
+      systemBrowserChannel: config.systemBrowserChannel ?? "auto",
+      roxyBrowserProfileId: config.roxyBrowserProfileId,
+      roxyBrowserDataDir: config.roxyBrowserDataDir,
+      roxyBrowserAutoOpen: config.roxyBrowserAutoOpen === true,
+      roxyBrowserApiHost: config.roxyBrowserApiHost,
+      roxyBrowserApiKeyFile: config.roxyBrowserApiKeyFile,
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,

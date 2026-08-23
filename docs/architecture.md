@@ -47,9 +47,9 @@ DEV launchers can therefore run at the same time with different ChatGPT accounts
 
 The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full mode the DEV
 launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
-broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
+broker attached to that tunnel for the command's lifetime. The distinct `Codex Native3 DEV`
 connector reaches the same MCP server and turn-token contract without requiring any Responses
-daemon or colliding with the production `Codex Native2` connector.
+daemon or colliding with the production `Codex Native3` connector.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
@@ -65,32 +65,28 @@ probe. The DEV launcher supervisor owns only the isolated MCP tunnel. Browser di
 state, thread authority, checkpoints, and named chat state live
 under `~/.codex-chatgpt-web-dev` by default.
 
-The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
-`Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
+The ChatGPT connector name is also the public MCP ABI identity. The current direct turn-token contract uses
+`Codex Native3`; the retired `Codex Native` and `Codex Native2` identities are never selected or refreshed in place. Setup
 migrates known legacy local configuration to the new name, clears prior verification state, and
 requires the user to create the new connector. Browser verification accepts the exact new identity,
-reports a specific migration error when only the legacy identity is visible, and never falls back to
-the legacy connector. Future public schema changes require another explicit connector identity.
-Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
+reports a specific migration error when only a legacy identity is visible, and never falls back to
+an old connector. Future public schema changes require another explicit connector identity.
+Repository DEV mode uses `Codex Native3 DEV` so the same ChatGPT account can keep both production
 and development connectors installed without renaming, refreshing, or deleting either one.
 
 ## Browser lifecycle
 
-The desktop launcher owns one persistent Electron partition and up to five task-bound browser
-tabs. Each Codex task is leased an independent `WebContentsView` and surface ID; Playwright attaches
-to that exact surface through a launcher-owned loopback CDP endpoint. Model turns never launch a
-second browser or copy state between turn tabs. Each tab opens a fresh Temporary Chat, shares only
-the local login partition, and keeps its own document and lifecycle. Completed tabs remain
-inspectable until closed. Closing a running tab destroys its page and terminates that browser turn.
-A sixth concurrent turn fails explicitly; the cap avoids excessive parallel traffic that could
-trigger account abuse controls.
+The Responses adapter has three browser hosts behind one Browser Worker contract:
 
-Sign-in uses that same persistent Electron partition. ChatGPT login pages and allowed identity-
-provider popups are adopted into a temporary `WebContentsView` inside the launcher instead of being
-redirected to another browser. After the provider returns to ChatGPT, the launcher requires both a
-server-authenticated session and the Temporary Chat composer in the primary owned view, then closes
-the temporary auth view. There is no browser-profile handoff, cookie import, CDP login port, or
-temporary session-transfer directory.
+- **Embedded Launcher browser** owns a persistent Electron partition. Each active Codex turn is leased an independent `WebContentsView`/surface ID through a launcher-owned loopback control channel.
+- **RoxyBrowser** connects only to the configured Profile's own Chromium `DevToolsActivePort`. A closed Profile can be opened through the loopback Roxy Local API when auto-start is configured; cookies/profile data are never copied into Electron.
+- **System Chrome/Edge** is an experimental external host discovered from an already enabled main-browser remote-debugging endpoint.
+
+Every model turn opens a fresh Temporary Chat page. At most five browser turns may run concurrently; a sixth fails explicitly to avoid excessive parallel account traffic. Terminal turn pages are released immediately rather than retained as history—the durable result already belongs to Codex—so completed/failed turns cannot leak slots until the five-turn cap is exhausted.
+
+Embedded turns expose their native `WebContentsView` directly in Launcher. Roxy turns remain owned by the Browser Worker and publish a bounded low-rate JPEG/status preview over the authenticated loopback launcher control channel. **Take control** is queued to the exact turn owner; that Worker restores/activates the matching Roxy task window instead of Launcher establishing a second CDP controller. This preserves one automation owner per page even with concurrent turns.
+
+Embedded sign-in uses the persistent Electron partition. ChatGPT login pages and allowed identity-provider popups are adopted into a temporary `WebContentsView` inside Launcher. Roxy/system-browser sign-in remains owned by the selected external browser profile. The project does not perform browser-profile handoff, cookie import/export, or temporary session-transfer directories between hosts.
 
 The current compiled Codex task context is inserted as one inline JSON envelope. Image bytes stay
 out of the JSON and are attached natively with stable references. The runtime does not create a

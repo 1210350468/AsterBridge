@@ -44,6 +44,8 @@ test("installed launcher discovery has explicit platform candidates", () => {
     homeDirectory: "/Users/tester",
     environment: {},
   })).toEqual([
+    "/Applications/AsterBridge.app/Contents/MacOS/AsterBridge",
+    "/Users/tester/Applications/AsterBridge.app/Contents/MacOS/AsterBridge",
     "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
     "/Users/tester/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
   ]);
@@ -61,6 +63,7 @@ test("installed launcher discovery has explicit platform candidates", () => {
     homeDirectory: "C:\\Users\\tester",
     environment: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
   })).toEqual([
+    "C:\\Users\\tester\\AppData\\Local\\Programs\\AsterBridge\\AsterBridge.exe",
     "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT\\Codex Web GPT.exe",
   ]);
   expect(installedLauncherCandidates({
@@ -69,6 +72,7 @@ test("installed launcher discovery has explicit platform candidates", () => {
     environment: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
     windowsInstallLocation: "D:\\Apps\\Codex Web GPT",
   })).toEqual([
+    "D:\\Apps\\Codex Web GPT\\AsterBridge.exe",
     "D:\\Apps\\Codex Web GPT\\Codex Web GPT.exe",
   ]);
 });

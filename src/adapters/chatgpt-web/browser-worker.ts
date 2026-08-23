@@ -46,12 +46,16 @@ import {
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
+import { discoverSystemBrowserEndpoint, openSystemBrowserTaskWindow, type SystemBrowserChannel } from "../../system-browser-host";
+import { ensureRoxyBrowserEndpoint } from "../../roxy-browser-host";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
+  notifyLauncherRoxyPreview,
   notifyLauncherTurn,
+  type LauncherExternalBrowserHost,
 } from "../../launcher-browser-host";
 import {
   resolveChatGptWebContextLimits,
@@ -352,7 +356,13 @@ interface ChatGptSubmissionBaseline {
 
 export interface ResolvedBrowserConfig {
   appName: string;
-  browserHost: "managed-chrome" | "launcher";
+  browserHost: "managed-chrome" | "launcher" | "system-browser" | "roxybrowser";
+  systemBrowserChannel: SystemBrowserChannel;
+  roxyBrowserProfileId?: string;
+  roxyBrowserDataDir?: string;
+  roxyBrowserAutoOpen?: boolean;
+  roxyBrowserApiHost?: string;
+  roxyBrowserApiKeyFile?: string;
   browserHostDescriptorPath?: string;
   browserHelperScriptPath?: string;
   browserDiagnosticsPath?: string;
@@ -724,6 +734,12 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
   const configured = provider.chatgptWeb ?? {};
   const appName = configured.appName?.trim() || CHATGPT_CONNECTOR_NAME;
   const browserHost = configured.browserHost ?? "managed-chrome";
+  const systemBrowserChannel = configured.systemBrowserChannel ?? "auto";
+  const roxyBrowserProfileId = configured.roxyBrowserProfileId?.trim();
+  const roxyBrowserDataDir = configured.roxyBrowserDataDir?.trim();
+  const roxyBrowserAutoOpen = configured.roxyBrowserAutoOpen === true;
+  const roxyBrowserApiHost = configured.roxyBrowserApiHost?.trim();
+  const roxyBrowserApiKeyFile = configured.roxyBrowserApiKeyFile?.trim();
   const browserHostDescriptorPath = configured.browserHostDescriptorPath?.trim();
   const browserHelperScriptPath = configured.browserHelperScriptPath?.trim();
   const browserDiagnosticsPath = resolve(expandUserPath(
@@ -732,6 +748,12 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
   const turnTimeoutMs = configured.turnTimeoutMs;
   if (browserHost === "launcher" && !browserHostDescriptorPath) {
     throw new Error("Launcher browser host requires chatgptWeb.browserHostDescriptorPath");
+  }
+  if (systemBrowserChannel !== "auto" && systemBrowserChannel !== "chrome" && systemBrowserChannel !== "msedge") {
+    throw new Error("ChatGPT Web systemBrowserChannel must be auto, chrome, or msedge");
+  }
+  if (browserHost === "roxybrowser" && (!roxyBrowserProfileId || !roxyBrowserDataDir)) {
+    throw new Error("RoxyBrowser host requires chatgptWeb.roxyBrowserProfileId and chatgptWeb.roxyBrowserDataDir");
   }
   if (browserHelperScriptPath && browserHost !== "launcher") {
     throw new Error("Explicit browser helper script requires a launcher host");
@@ -752,6 +774,12 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
   return {
     appName,
     browserHost,
+    systemBrowserChannel,
+    ...(roxyBrowserProfileId ? { roxyBrowserProfileId } : {}),
+    ...(roxyBrowserDataDir ? { roxyBrowserDataDir: resolve(expandUserPath(roxyBrowserDataDir)) } : {}),
+    roxyBrowserAutoOpen,
+    ...(roxyBrowserApiHost ? { roxyBrowserApiHost } : {}),
+    ...(roxyBrowserApiKeyFile ? { roxyBrowserApiKeyFile: resolve(expandUserPath(roxyBrowserApiKeyFile)) } : {}),
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     ...(resolvedBrowserHelperScriptPath ? { browserHelperScriptPath: resolvedBrowserHelperScriptPath } : {}),
     browserDiagnosticsPath,
@@ -817,6 +845,9 @@ export class ChatGptBrowserWorker {
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
+  private readonly externalTurnPages = new Map<string, Page>();
+  private readonly turnStages = new Map<string, string>();
+  private roxyOpenedByAutomation = false;
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
 
@@ -931,10 +962,14 @@ export class ChatGptBrowserWorker {
     await Promise.allSettled([...this.activeRuns.values()]);
     await this.maintenanceTail;
     const browser = this.browser;
+    const page = this.page;
     this.browser = undefined;
     this.context = undefined;
     this.page = undefined;
     this.managedBrowserReady = undefined;
+    if ((this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") && page && !page.isClosed()) {
+      await page.close().catch(() => {});
+    }
     // For connectOverCDP, Playwright implements Browser.close as a transport disconnect; it does
     // not close the launcher-owned Electron process. Always release that connection and its
     // artifact directory instead of leaking one per timeout/helper lifecycle.
@@ -948,6 +983,7 @@ export class ChatGptBrowserWorker {
     action: (abortSignal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     const startedAt = performance.now();
+    this.turnStages?.set(traceId, stage);
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -962,11 +998,128 @@ export class ChatGptBrowserWorker {
       console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} completed durationMs=${Math.round(performance.now() - startedAt)}`);
       return value;
     } catch (error) {
+      this.turnStages?.set(traceId, `${stage}:failed`);
       console.error(`[chatgpt-web] browser turn ${traceId} stage=${stage} failed durationMs=${Math.round(performance.now() - startedAt)}: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  private async minimizeExternalBrowserWindows(browser: Browser): Promise<void> {
+    const session = await browser.newBrowserCDPSession();
+    try {
+      const targets = await session.send("Target.getTargets");
+      const windowIds = new Set<number>();
+      for (const target of targets.targetInfos ?? []) {
+        if (target.type !== "page" || !target.targetId) continue;
+        const window = await session.send("Browser.getWindowForTarget", { targetId: target.targetId }).catch(() => null);
+        if (window && Number.isInteger(window.windowId)) windowIds.add(window.windowId);
+      }
+      for (const windowId of windowIds) {
+        await session.send("Browser.setWindowBounds", {
+          windowId,
+          bounds: { windowState: "minimized" },
+        }).catch(() => {});
+      }
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  }
+
+  private async minimizeExternalBrowserPage(page: Page): Promise<void> {
+    if (page.isClosed()) return;
+    const session = await page.context().newCDPSession(page);
+    try {
+      const targetInfo = await session.send("Target.getTargetInfo");
+      const targetId = targetInfo.targetInfo?.targetId;
+      if (typeof targetId !== "string" || !targetId) return;
+      const window = await session.send("Browser.getWindowForTarget", { targetId }).catch(() => null);
+      if (!window || !Number.isInteger(window.windowId)) return;
+      await session.send("Browser.setWindowBounds", {
+        windowId: window.windowId,
+        bounds: { windowState: "minimized" },
+      }).catch(() => {});
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  }
+
+  private async revealExternalBrowserPage(page: Page): Promise<void> {
+    if (page.isClosed()) throw new Error("The external browser task page is already closed");
+    const session = await page.context().newCDPSession(page);
+    try {
+      const targetInfo = await session.send("Target.getTargetInfo");
+      const targetId = targetInfo.targetInfo?.targetId;
+      if (typeof targetId === "string" && targetId) {
+        const window = await session.send("Browser.getWindowForTarget", { targetId }).catch(() => null);
+        if (window && Number.isInteger(window.windowId)) {
+          await session.send("Browser.setWindowBounds", {
+            windowId: window.windowId,
+            bounds: { windowState: "normal" },
+          }).catch(() => {});
+        }
+        await session.send("Target.activateTarget", { targetId }).catch(() => {});
+      }
+      await page.bringToFront();
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  }
+
+  private startRoxyPreviewLoop(page: Page, traceId: string): () => void {
+    if (!this.config.browserHostDescriptorPath) return () => {};
+    let stopped = false;
+    let inFlight = false;
+    let lastChannelWarningAt = 0;
+    const publish = async () => {
+      if (stopped || inFlight || page.isClosed()) return;
+      inFlight = true;
+      try {
+        let dataUrl: string | null = null;
+        try {
+          const image = await page.screenshot({
+            type: "jpeg",
+            quality: 38,
+            animations: "disabled",
+            caret: "hide",
+            scale: "css",
+          });
+          if (image.length <= 500_000) dataUrl = `data:image/jpeg;base64,${image.toString("base64")}`;
+        } catch {
+          // A transient navigation can invalidate one frame. Status still remains useful.
+        }
+        const preview = await notifyLauncherRoxyPreview(this.config.browserHostDescriptorPath!, {
+          traceId,
+          helperPid: process.pid,
+          stage: this.turnStages.get(traceId) || "running",
+          url: page.url().slice(0, 4096),
+          status: "running",
+          dataUrl,
+        });
+        if (preview.action === "take-control") {
+          await this.revealExternalBrowserPage(page);
+          console.info(`[chatgpt-web] RoxyBrowser manual control opened for ${traceId}`);
+        }
+      } catch (error) {
+        const now = Date.now();
+        if (now - lastChannelWarningAt >= 30_000) {
+          lastChannelWarningAt = now;
+          console.warn(
+            `[chatgpt-web] RoxyBrowser live preview update failed for ${traceId}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void publish();
+    const timer = setInterval(() => void publish(), 1_000);
+    timer.unref?.();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   private async ensurePage(): Promise<Page> {
@@ -976,6 +1129,13 @@ export class ChatGptBrowserWorker {
       this.browser = connection.browser;
       this.context = connection.context;
       this.page = connection.page;
+      return this.page;
+    }
+    if (this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") {
+      const { browser, context } = await this.ensureManagedBrowser();
+      this.page = this.config.browserHost === "roxybrowser" && this.roxyOpenedByAutomation
+        ? await context.newPage()
+        : await openSystemBrowserTaskWindow(browser, context);
       return this.page;
     }
     if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
@@ -994,8 +1154,65 @@ export class ChatGptBrowserWorker {
   }
 
   private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+    if ((this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") && this.browser && !this.browser.isConnected()) {
+      this.browser = undefined;
+      this.context = undefined;
+      this.page = undefined;
+      this.managedBrowserReady = undefined;
+      this.roxyOpenedByAutomation = false;
+    }
     if (this.managedBrowserReady) return this.managedBrowserReady;
     const opening = (async () => {
+      if (this.config.browserHost === "system-browser") {
+        const discovered = await discoverSystemBrowserEndpoint(this.config.systemBrowserChannel);
+        const browser = await chromium.connectOverCDP(discovered.channel, { timeout: 30_000 });
+        const context = browser.contexts()[0];
+        if (!context) {
+          await browser.close().catch(() => {});
+          throw new Error(`Connected to ${discovered.channel} but no browser context is available`);
+        }
+        console.info(`[chatgpt-web] attached to system browser channel=${discovered.channel} endpoint=${discovered.endpoint}`);
+        this.browser = browser;
+        this.context = context;
+        return { browser, context };
+      }
+      if (this.config.browserHost === "roxybrowser") {
+        try {
+          const discovered = await ensureRoxyBrowserEndpoint(
+            this.config.roxyBrowserProfileId!,
+            this.config.roxyBrowserDataDir!,
+            {
+              autoOpen: this.config.roxyBrowserAutoOpen,
+              apiHost: this.config.roxyBrowserApiHost,
+              apiKeyFile: this.config.roxyBrowserApiKeyFile,
+            },
+          );
+          const browser = await chromium.connectOverCDP(discovered.endpoint, { timeout: 30_000 });
+          const context = browser.contexts()[0];
+          if (!context) {
+            await browser.close().catch(() => {});
+            throw new Error(`Connected to RoxyBrowser profile ${discovered.profileId} but no browser context is available`);
+          }
+          this.roxyOpenedByAutomation = discovered.openedByAutomation;
+          if (discovered.openedByAutomation) {
+            await this.minimizeExternalBrowserWindows(browser).catch(error => {
+              console.warn(
+                `[chatgpt-web] RoxyBrowser profile ${discovered.profileId} opened automatically but its window could not be minimized: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          }
+          console.info(`[chatgpt-web] attached to RoxyBrowser profile=${discovered.profileId}`);
+          this.browser = browser;
+          this.context = context;
+          return { browser, context };
+        } catch (error) {
+          if (error instanceof ChatGptWebAdapterError) throw error;
+          throw new ChatGptWebAdapterError(
+            error instanceof Error ? error.message : String(error),
+            { status: 503, errorType: "server_error", code: "browser_unavailable", retryable: false },
+          );
+        }
+      }
       if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
         throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
       }
@@ -1029,7 +1246,13 @@ export class ChatGptBrowserWorker {
     if (this.config.browserHost === "launcher") {
       throw new Error("Launcher turns require an explicitly leased browser surface");
     }
-    const { context } = await this.ensureManagedBrowser();
+    const { browser, context } = await this.ensureManagedBrowser();
+    if (this.config.browserHost === "roxybrowser" && this.roxyOpenedByAutomation) {
+      return await context.newPage();
+    }
+    if (this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") {
+      return await openSystemBrowserTaskWindow(browser, context);
+    }
     return await context.newPage();
   }
 
@@ -2012,18 +2235,27 @@ export class ChatGptBrowserWorker {
 
   private async runExclusive(turn: BrowserTurn): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    if (this.config.browserHost !== "launcher") return this.runBrowserTurn(turn);
+    const externalHost: LauncherExternalBrowserHost | undefined = this.config.browserHost === "roxybrowser"
+      || this.config.browserHost === "system-browser"
+      ? this.config.browserHost
+      : undefined;
+    const launcherControlAvailable = Boolean(
+      this.config.browserHostDescriptorPath
+      && (this.config.browserHost === "launcher" || externalHost),
+    );
+    if (!launcherControlAvailable) return this.runBrowserTurn(turn);
 
     const lease = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
       phase: "start",
       traceId: turn.traceId,
       helperPid: process.pid,
+      ...(externalHost ? { externalHost } : {}),
     }).catch(error => {
       if (error instanceof LauncherBrowserTurnCancelledError) throw chatGptBrowserTabClosedError();
       throw error;
     });
     const surfaceId = lease.surfaceId;
-    if (!surfaceId) throw new Error("Launcher did not lease a browser tab for the ChatGPT turn");
+    if (!externalHost && !surfaceId) throw new Error("Launcher did not lease a browser tab for the ChatGPT turn");
     let terminal: "completed" | "failed" | "aborted" = "completed";
     let terminalMessage: string | undefined;
     let originalError: unknown;
@@ -2037,7 +2269,14 @@ export class ChatGptBrowserWorker {
         phase: "heartbeat",
         traceId: turn.traceId,
         helperPid: process.pid,
-      }, LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS).catch(error => {
+        ...(externalHost ? { externalHost } : {}),
+      }, LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS).then(async heartbeat => {
+        if (heartbeat.action !== "take-control") return;
+        const page = this.externalTurnPages.get(turn.traceId);
+        if (!page) throw new Error("RoxyBrowser task page is not ready for manual control");
+        await this.revealExternalBrowserPage(page);
+        console.info(`[chatgpt-web] RoxyBrowser manual control opened for ${turn.traceId}`);
+      }).catch(error => {
         const now = Date.now();
         if (now - lastHeartbeatFailureAt < 30_000) return;
         lastHeartbeatFailureAt = now;
@@ -2051,7 +2290,10 @@ export class ChatGptBrowserWorker {
     try {
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
-      return await this.runBrowserTurn(turn, surfaceId);
+      return await this.runBrowserTurn(turn, surfaceId, undefined, {
+        externalHost,
+        previewEnabled: externalHost === "roxybrowser" && lease.previewEnabled === true,
+      });
     } catch (error) {
       originalError = error;
       terminal = (error instanceof DOMException && error.name === "AbortError")
@@ -2069,6 +2311,7 @@ export class ChatGptBrowserWorker {
           helperPid: process.pid,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
+          ...(externalHost ? { externalHost } : {}),
         });
         if (release.cancelledByUser) throw chatGptBrowserTabClosedError();
       } catch (controlError) {
@@ -2087,6 +2330,7 @@ export class ChatGptBrowserWorker {
     turn: BrowserTurn,
     launcherSurfaceId?: string,
     maintenancePage?: Page,
+    launcherExternal?: { externalHost?: LauncherExternalBrowserHost; previewEnabled?: boolean },
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.captureLunaCheckpoint === true) !== (turn.onLunaCheckpoint !== undefined)) {
@@ -2104,6 +2348,7 @@ export class ChatGptBrowserWorker {
     let turnConnection: Browser | undefined;
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
+    let stopRoxyPreview: (() => void) | undefined;
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
@@ -2144,6 +2389,17 @@ export class ChatGptBrowserWorker {
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
       diagnosticPage = page;
+      if (launcherExternal?.externalHost === "roxybrowser") {
+        this.externalTurnPages.set(turn.traceId, page);
+        if (this.roxyOpenedByAutomation) {
+          await this.minimizeExternalBrowserPage(page).catch(error => {
+            console.warn(
+              `[chatgpt-web] RoxyBrowser task page could not be minimized for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
+        if (launcherExternal.previewEnabled) stopRoxyPreview = this.startRoxyPreviewLoop(page, turn.traceId);
+      }
       await diagnostics.capture(page, "browser-page-acquired");
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
@@ -2380,6 +2636,9 @@ export class ChatGptBrowserWorker {
       }
       throw error;
     } finally {
+      stopRoxyPreview?.();
+      this.externalTurnPages.delete(turn.traceId);
+      this.turnStages.delete(turn.traceId);
       prepared.release();
       if (turnConnection) {
         await turnConnection.close().catch(error => {

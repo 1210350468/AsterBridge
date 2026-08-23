@@ -238,8 +238,20 @@ export interface CodexProviderConfig {
   chatgptWeb?: {
     /** ChatGPT custom connector attached to tool-capable temporary chats. */
     appName?: string;
-    /** Explicit browser owner. Launcher mode attaches to the embedded Electron ChatGPT surface. */
-    browserHost?: "managed-chrome" | "launcher";
+    /** Browser used for ChatGPT turns. Launcher attaches to Electron; system-browser to Chrome/Edge; roxybrowser to one running RoxyBrowser profile. */
+    browserHost?: "managed-chrome" | "launcher" | "system-browser" | "roxybrowser";
+    /** Main browser channel used by system-browser. Auto selects the most recently enabled Chrome/Edge debugging session. */
+    systemBrowserChannel?: "auto" | "chrome" | "msedge";
+    /** Opaque RoxyBrowser profile/window directory id used by the roxybrowser turn host. */
+    roxyBrowserProfileId?: string;
+    /** Absolute directory containing RoxyBrowser profile directories. */
+    roxyBrowserDataDir?: string;
+    /** Automatically open the configured RoxyBrowser profile through its loopback Local API when needed. */
+    roxyBrowserAutoOpen?: boolean;
+    /** Loopback RoxyBrowser Local API origin, normally http://127.0.0.1:50000. */
+    roxyBrowserApiHost?: string;
+    /** Owner-only file containing the RoxyBrowser Local API token. */
+    roxyBrowserApiKeyFile?: string;
     /** Owner-only descriptor containing the launcher's loopback CDP and control endpoints. */
     browserHostDescriptorPath?: string;
     /** Explicit browser-helper bundle. DEV builds current source; the launcher still supplies Electron-as-Node. */

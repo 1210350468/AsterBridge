@@ -14,6 +14,14 @@ const DEFAULT_STATE = Object.freeze({
   bridgeEnabled: true,
   keepRunningOnClose: true,
   showBrowserDuringTurns: true,
+  useSystemBrowser: false,
+  useRoxyBrowser: false,
+  roxyBrowserProfileId: "",
+  roxyBrowserDataDir: "",
+  roxyBrowserAutoOpen: false,
+  roxyBrowserApiHost: "http://127.0.0.1:50000",
+  networkProxyMode: "auto",
+  networkProxyUrl: "",
   browserSmokePassed: false,
   browserSmokeVersion: null,
   sidebarOpen: true,
@@ -43,11 +51,21 @@ function readState(filePath) {
       "bridgeEnabled",
       "keepRunningOnClose",
       "showBrowserDuringTurns",
+      "useSystemBrowser",
+      "useRoxyBrowser",
+      "roxyBrowserAutoOpen",
       "browserSmokePassed",
       "sidebarOpen",
     ]) {
       if (typeof state[key] !== "boolean") state[key] = DEFAULT_STATE[key];
     }
+    for (const key of ["roxyBrowserProfileId", "roxyBrowserDataDir", "roxyBrowserApiHost", "networkProxyUrl"]) {
+      if (typeof state[key] !== "string" || state[key].length > 4096) state[key] = DEFAULT_STATE[key];
+    }
+    if (!["auto", "direct", "custom"].includes(state.networkProxyMode)) {
+      state.networkProxyMode = DEFAULT_STATE.networkProxyMode;
+    }
+    if (state.useSystemBrowser && state.useRoxyBrowser) state.useSystemBrowser = false;
     if (state.browserSmokeVersion !== null
       && (typeof state.browserSmokeVersion !== "string" || state.browserSmokeVersion.length > 128)) {
       state.browserSmokeVersion = DEFAULT_STATE.browserSmokeVersion;

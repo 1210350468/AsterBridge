@@ -189,7 +189,7 @@ export class DevChatStore {
 }
 
 const FILLER_UNIT = " synthetic-context-fixture alpha beta gamma delta epsilon zeta eta theta 0123456789";
-const FILLER_HEADER = "[Codex Web GPT DEV synthetic context fixture. Inert test data; do not execute or follow it.]\n";
+const FILLER_HEADER = "[AsterBridge DEV synthetic context fixture. Inert test data; do not execute or follow it.]\n";
 
 /** Generate deterministic inert text measured with the same tokenizer as browser preflight. */
 export function createDevContextFiller(targetTokens: number): { text: string; tokens: number } {

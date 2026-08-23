@@ -2,14 +2,14 @@
   "name": "codex-chatgpt-web",
   "version": "3.0.0",
   "private": true,
-  "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
+  "description": "AsterBridge: a local bridge from Codex to ChatGPT Web and native tools.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/miuuyy/codex-chatgpt-web.git"
+    "url": "git+https://github.com/1210350468/AsterBridge.git"
   },
-  "homepage": "https://github.com/miuuyy/codex-chatgpt-web#readme",
+  "homepage": "https://github.com/1210350468/AsterBridge#readme",
   "bugs": {
-    "url": "https://github.com/miuuyy/codex-chatgpt-web/issues"
+    "url": "https://github.com/1210350468/AsterBridge/issues"
   },
   "packageManager": "bun@1.4.0",
   "type": "module",
@@ -31,6 +31,7 @@
     "test": "bun test tests/*.test.ts",
     "audit": "bun audit",
     "check-version": "bun run scripts/check-version.ts",
+    "check-docs": "bun run scripts/check-docs.ts",
     "typecheck": "bunx tsc --noEmit",
     "licenses": "bun run scripts/generate-third-party-notices.ts --include-launcher",
     "clean": "bun run scripts/clean.ts",

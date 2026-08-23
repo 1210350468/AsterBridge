@@ -12,6 +12,14 @@ export interface LauncherState {
   bridgeEnabled: boolean;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
+  useSystemBrowser: boolean;
+  useRoxyBrowser: boolean;
+  roxyBrowserProfileId: string;
+  roxyBrowserDataDir: string;
+  roxyBrowserAutoOpen: boolean;
+  roxyBrowserApiHost: string;
+  networkProxyMode: "auto" | "direct" | "custom";
+  networkProxyUrl: string;
   sidebarOpen: boolean;
   sidebarWidth: number;
   browserSmokePassed?: boolean;
@@ -40,6 +48,16 @@ export interface BrowserState {
   activeTabId: string;
   maxTabs: number;
   tabs: BrowserTabState[];
+}
+
+export interface RoxyPreviewState {
+  active: boolean;
+  traceId: string | null;
+  status: "idle" | "starting" | "running" | "completed" | "failed" | "aborted";
+  stage: string;
+  url: string;
+  dataUrl: string | null;
+  updatedAt: string | null;
 }
 
 export interface BrowserTabState {
@@ -92,8 +110,11 @@ export interface LauncherSnapshot {
   };
   state: LauncherState;
   browser: BrowserState | null;
+  roxyPreview: RoxyPreviewState | null;
   connectorName: string;
   mcpCredentialsConfigured: boolean;
+  roxyApiKeyConfigured: boolean;
+  networkProxy: { source: string; display: string };
   logs: LogRecord[];
   urls: {
     github: string;
@@ -101,6 +122,7 @@ export interface LauncherSnapshot {
     connectors: string;
     tunnels: string;
     keys: string;
+    troubleshooting: string;
   };
   platform: string;
   packaged: boolean;
@@ -112,6 +134,7 @@ export interface LauncherSnapshot {
 
 export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
+  takeControlOfRoxy(): Promise<RoxyPreviewState>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
   completeOnboarding(language: Language): Promise<LauncherState>;
@@ -138,10 +161,24 @@ export interface LauncherApi {
     tunnelId?: string;
     runtimeKey?: string;
     replace?: boolean;
+    connectorName?: string;
   }): Promise<{ ok: boolean; stdout: string }>;
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
-  setPreference(key: "keepRunningOnClose" | "showBrowserDuringTurns", value: boolean): Promise<LauncherState>;
+  setPreference(key: "keepRunningOnClose" | "showBrowserDuringTurns" | "useSystemBrowser", value: boolean): Promise<LauncherState>;
+  setRoxyBrowserConfig(input: {
+    enabled: boolean;
+    profileId: string;
+    dataDir: string;
+    autoOpen: boolean;
+    apiHost: string;
+    apiKey?: string;
+    clearApiKey?: boolean;
+  }): Promise<{ state: LauncherState; apiKeyConfigured: boolean }>;
+  setNetworkProxy(input: {
+    mode: "auto" | "direct" | "custom";
+    url?: string;
+  }): Promise<{ state: LauncherState; source: string; display: string; runtimeRestarted: boolean; restartRequired: boolean }>;
   setSidebarState(state: { open: boolean; width: number }): Promise<LauncherState>;
   logs(limit?: number): Promise<LogRecord[]>;
   openLogs(): Promise<string>;
@@ -151,6 +188,7 @@ export interface LauncherApi {
   onWindowStateChanged(listener: (state: { fullScreen: boolean; maximized: boolean }) => void): () => void;
   onStateChanged(listener: (state: LauncherState) => void): () => void;
   onBrowserState(listener: (state: BrowserState) => void): () => void;
+  onRoxyPreview(listener: (state: RoxyPreviewState) => void): () => void;
   onOperation(listener: (state: OperationState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;

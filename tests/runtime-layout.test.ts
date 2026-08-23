@@ -90,11 +90,12 @@ test("user-home expansion accepts native Unix and Windows separators", () => {
 
 test("the direct-turn connector identity migrates known legacy setup without overwriting custom names", () => {
   expect(defaultConfig("full").appName).toBe(CHATGPT_CONNECTOR_NAME);
-  expect(resolveSetupConnectorName("Codex Native")).toBe("Codex Native2");
+  expect(resolveSetupConnectorName("Codex Native")).toBe("Codex Native3");
+  expect(resolveSetupConnectorName("Codex Native2")).toBe("Codex Native3");
   expect(resolveSetupConnectorName("Team Codex Harness")).toBe("Team Codex Harness");
   expect(resolveSetupConnectorName(undefined, "Team Codex Harness")).toBe("Team Codex Harness");
   expect(() => resolveSetupConnectorName(undefined, "Codex Native"))
-    .toThrow(/requires a newly created connector named "Codex Native2"/);
+    .toThrow(/requires a newly created connector named "Codex Native3"/);
 });
 
 test("the DEV profile uses a distinct connector identity without overwriting custom names", () => {

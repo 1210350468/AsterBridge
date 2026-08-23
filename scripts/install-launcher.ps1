@@ -22,7 +22,7 @@ function Invoke-WithRetry {
   }
 }
 
-$Repository = if ($env:CODEX_WEB_GPT_REPOSITORY) { $env:CODEX_WEB_GPT_REPOSITORY } else { "miuuyy/codex-chatgpt-web" }
+$Repository = if ($env:CODEX_WEB_GPT_REPOSITORY) { $env:CODEX_WEB_GPT_REPOSITORY } else { "1210350468/AsterBridge" }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
   throw "Invalid GitHub repository: $Repository"
 }
@@ -34,7 +34,7 @@ if (-not $Version) {
   $Version = [string]$Release.tag_name
 }
 if ($Version -and $Version.StartsWith("v")) { $Version = $Version.Substring(1) }
-if (-not $Version) { throw "Could not resolve the latest Codex Web GPT release" }
+if (-not $Version) { throw "Could not resolve the latest AsterBridge release" }
 if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw "Invalid release version: $Version" }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
@@ -42,13 +42,13 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 $Arch = "x64"
 
-$Asset = "codex-web-gpt-$Version-win-$Arch.exe"
+$Asset = "asterbridge-$Version-win-$Arch.exe"
 $BaseUrl = "https://github.com/$Repository/releases/download/v$Version"
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) "codex-web-gpt-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $Temp | Out-Null
 try {
-  if (Get-Process -Name "Codex Web GPT" -ErrorAction SilentlyContinue) {
-    throw "Quit Codex Web GPT before updating it"
+  if ((Get-Process -Name "AsterBridge" -ErrorAction SilentlyContinue) -or (Get-Process -Name "Codex Web GPT" -ErrorAction SilentlyContinue)) {
+    throw "Quit AsterBridge before updating it"
   }
   $Installer = Join-Path $Temp $Asset
   $Checksums = Join-Path $Temp "checksums.txt"
@@ -72,8 +72,12 @@ try {
   if (-not [System.IO.Path]::IsPathFullyQualified($InstallLocation)) {
     throw "Installer recorded an invalid InstallLocation: $InstallLocation"
   }
-  $Executable = Join-Path $InstallLocation "Codex Web GPT.exe"
-  if (-not (Test-Path $Executable)) { throw "Installed launcher was not found at $Executable" }
+  $Executable = Join-Path $InstallLocation "AsterBridge.exe"
+  if (-not (Test-Path $Executable)) {
+    $LegacyExecutable = Join-Path $InstallLocation "Codex Web GPT.exe"
+    if (Test-Path $LegacyExecutable) { $Executable = $LegacyExecutable }
+  }
+  if (-not (Test-Path $Executable)) { throw "Installed AsterBridge launcher was not found at $InstallLocation" }
   Start-Process $Executable
   Write-Host "Installed $Executable"
 } finally {

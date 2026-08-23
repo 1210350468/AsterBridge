@@ -1,7 +1,16 @@
 const { createServer } = require("node:http");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
 
-const MAX_BODY_BYTES = 16 * 1024;
+const MAX_BODY_BYTES = 768 * 1024;
+const EMPTY_ROXY_PREVIEW = Object.freeze({
+  active: false,
+  traceId: null,
+  status: "idle",
+  stage: "idle",
+  url: "",
+  dataUrl: null,
+  updatedAt: null,
+});
 
 function secureTokenMatches(expected, authorization) {
   const prefix = "Bearer ";
@@ -35,10 +44,14 @@ function writeJson(response, status, body) {
 }
 
 class BrowserControlServer {
-  constructor({ logger, getBrowserHost, getPreferences }) {
+  constructor({ logger, getBrowserHost, getPreferences, publishRoxyPreview = null }) {
     this.logger = logger;
     this.getBrowserHost = getBrowserHost;
     this.getPreferences = getPreferences;
+    this.publishRoxyPreview = publishRoxyPreview;
+    this.externalTurns = new Map();
+    this.pendingActions = new Map();
+    this.roxyPreviews = new Map();
     this.token = randomBytes(32).toString("base64url");
     this.port = 0;
     this.server = createServer((request, response) => {
@@ -85,6 +98,31 @@ class BrowserControlServer {
     return { endpoint: `http://127.0.0.1:${this.port}`, token: this.token };
   }
 
+  roxyPreviewSnapshot() {
+    const previews = [...this.roxyPreviews.values()];
+    if (previews.length === 0) return { ...EMPTY_ROXY_PREVIEW };
+    previews.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    return structuredClone(previews[0]);
+  }
+
+  publishPreview(preview) {
+    if (preview.active) this.roxyPreviews.set(preview.traceId, preview);
+    else this.roxyPreviews.delete(preview.traceId);
+    const snapshot = preview.active ? preview : this.roxyPreviewSnapshot();
+    this.publishRoxyPreview?.(structuredClone(snapshot));
+  }
+
+  requestRoxyAction(action) {
+    if (action !== "take-control") throw new Error(`Unknown RoxyBrowser action: ${action}`);
+    const preview = this.roxyPreviewSnapshot();
+    if (!preview.active || !preview.traceId) throw new Error("No active RoxyBrowser turn is available for manual control");
+    const owner = this.externalTurns.get(preview.traceId);
+    if (!owner || owner.host !== "roxybrowser") throw new Error("The active preview is not owned by RoxyBrowser");
+    this.pendingActions.set(preview.traceId, action);
+    this.logger.info("browser.roxy_action_requested", { traceId: preview.traceId, action });
+    return preview;
+  }
+
   async handle(request, response) {
     if (!secureTokenMatches(this.token, request.headers.authorization)) {
       writeJson(response, 401, { error: "unauthorized" });
@@ -93,8 +131,9 @@ class BrowserControlServer {
     const isTurn = request.url === "/v1/turn/start"
       || request.url === "/v1/turn/heartbeat"
       || request.url === "/v1/turn/end";
+    const isPreview = request.url === "/v1/turn/preview";
     const isSessionInspect = request.url === "/v1/session/inspect";
-    if (request.method !== "POST" || (!isTurn && !isSessionInspect)) {
+    if (request.method !== "POST" || (!isTurn && !isPreview && !isSessionInspect)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -114,18 +153,111 @@ class BrowserControlServer {
         throw new Error("browser helper pid is invalid");
       }
       const preferences = this.getPreferences();
+      const externalHost = body.externalHost === "roxybrowser" || body.externalHost === "system-browser"
+        ? body.externalHost
+        : null;
+      if (isPreview) {
+        const owner = this.externalTurns.get(body.traceId);
+        if (!owner || owner.helperPid !== body.helperPid || owner.host !== "roxybrowser") {
+          throw new Error("RoxyBrowser preview ownership mismatch");
+        }
+        if (typeof body.stage !== "string" || body.stage.length > 120) throw new Error("RoxyBrowser preview stage is invalid");
+        if (typeof body.url !== "string" || body.url.length > 4096) throw new Error("RoxyBrowser preview URL is invalid");
+        if (body.dataUrl !== null && body.dataUrl !== undefined) {
+          if (typeof body.dataUrl !== "string"
+            || body.dataUrl.length > 700_000
+            || !body.dataUrl.startsWith("data:image/jpeg;base64,")) {
+            throw new Error("RoxyBrowser preview frame is invalid");
+          }
+        }
+        const previousPreview = this.roxyPreviews.get(body.traceId);
+        const preview = {
+          active: true,
+          traceId: body.traceId,
+          status: body.status === "starting" ? "starting" : "running",
+          stage: body.stage,
+          url: body.url,
+          dataUrl: body.dataUrl || previousPreview?.dataUrl || null,
+          updatedAt: new Date().toISOString(),
+        };
+        this.publishPreview(preview);
+        if (!previousPreview?.dataUrl && preview.dataUrl) {
+          this.logger.info("browser.roxy_preview_started", { traceId: body.traceId, stage: body.stage });
+        }
+        const action = this.pendingActions.get(body.traceId) || null;
+        if (action) {
+          this.pendingActions.delete(body.traceId);
+          this.logger.info("browser.roxy_action_delivered", { traceId: body.traceId, action });
+        }
+        writeJson(response, 200, { ok: true, action });
+        return;
+      }
       if (request.url === "/v1/turn/start") {
+        if (externalHost) {
+          this.externalTurns.set(body.traceId, { helperPid: body.helperPid, host: externalHost });
+          if (externalHost === "roxybrowser") {
+            this.publishPreview({
+              active: true,
+              traceId: body.traceId,
+              status: "starting",
+              stage: "starting",
+              url: "",
+              dataUrl: null,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          this.logger.info("browser.external_turn_started", { traceId: body.traceId, host: externalHost });
+          writeJson(response, 200, {
+            ok: true,
+            external: true,
+            previewEnabled: externalHost === "roxybrowser" && preferences.roxyLivePreview !== false,
+          });
+          return;
+        }
         const lease = host.beginTurn(body.traceId, preferences.showBrowserDuringTurns === true, body.helperPid);
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
+        const owner = this.externalTurns.get(body.traceId);
+        if (owner) {
+          if (owner.helperPid !== body.helperPid) throw new Error("External browser turn ownership mismatch");
+          const action = this.pendingActions.get(body.traceId) || null;
+          if (action) {
+            this.pendingActions.delete(body.traceId);
+            this.logger.info("browser.roxy_action_delivered", { traceId: body.traceId, action });
+          }
+          this.logger.debug?.("browser.external_turn_heartbeat", { traceId: body.traceId, host: owner.host });
+          writeJson(response, 200, { ok: true, action });
+          return;
+        }
         host.heartbeatTurn(body.traceId, body.helperPid);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });
         writeJson(response, 200, { ok: true });
         return;
       } else {
         if (!['completed', 'failed', 'aborted'].includes(body.status)) throw new Error("turn status is invalid");
+        const owner = this.externalTurns.get(body.traceId);
+        if (owner) {
+          if (owner.helperPid !== body.helperPid) throw new Error("External browser turn ownership mismatch");
+          this.externalTurns.delete(body.traceId);
+          this.pendingActions.delete(body.traceId);
+          if (owner.host === "roxybrowser") {
+            const previous = this.roxyPreviews.get(body.traceId);
+            this.publishPreview({
+              active: false,
+              traceId: body.traceId,
+              status: body.status,
+              stage: body.status,
+              url: previous?.url || "",
+              dataUrl: previous?.dataUrl || null,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          this.logger.info("browser.external_turn_ended", { traceId: body.traceId, host: owner.host, status: body.status });
+          writeJson(response, 200, { ok: true, cancelledByUser: false });
+          return;
+        }
         const release = await host.endTurn(
           body.traceId,
           body.helperPid,

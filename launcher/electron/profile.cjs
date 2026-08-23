@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -26,12 +27,16 @@ function resolveLauncherProfile({
     const coreHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
       ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
       : path.join(homeDir, ".codex-chatgpt-web");
+    const legacyUserData = path.join(appData, "Codex Web GPT");
+    const brandedUserData = path.join(appData, "AsterBridge");
     const userData = env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim()
       ? resolveUserPath(env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR.trim(), homeDir)
-      : path.join(appData, "Codex Web GPT");
+      : fs.existsSync(legacyUserData) && !fs.existsSync(brandedUserData)
+        ? legacyUserData
+        : brandedUserData;
     return {
       kind: PRODUCTION_PROFILE,
-      displayName: "Codex Web GPT",
+      displayName: "AsterBridge",
       coreHome,
       codexHome: env.CODEX_HOME?.trim()
         ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)
@@ -52,7 +57,7 @@ function resolveLauncherProfile({
   }
   return {
     kind: DEVELOPMENT_PROFILE,
-    displayName: "Codex Web GPT DEV",
+    displayName: "AsterBridge DEV",
     coreHome,
     codexHome: path.join(coreHome, "codex-home"),
     userData: path.join(coreHome, "launcher"),

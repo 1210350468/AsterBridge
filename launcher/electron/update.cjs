@@ -6,9 +6,9 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
-const REPOSITORY = "miuuyy/codex-chatgpt-web";
+const REPOSITORY = "1210350468/AsterBridge";
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
-const USER_AGENT = "codex-web-gpt-launcher-updater";
+const USER_AGENT = "asterbridge-launcher-updater";
 const MAX_REDIRECTS = 5;
 
 function parseVersion(value) {
@@ -43,13 +43,13 @@ function releaseVersion(tagName) {
 
 function releaseAssetName(version, platform = process.platform, arch = process.arch) {
   if (platform === "darwin" && ["arm64", "x64"].includes(arch)) {
-    return `codex-web-gpt-${version}-mac-${arch}.zip`;
+    return `asterbridge-${version}-mac-${arch}.zip`;
   }
   if (platform === "win32" && arch === "x64") {
-    return `codex-web-gpt-${version}-win-x64.exe`;
+    return `asterbridge-${version}-win-x64.exe`;
   }
   if (platform === "linux" && arch === "x64") {
-    return `codex-web-gpt-${version}-linux-x64.AppImage`;
+    return `asterbridge-${version}-linux-x64.AppImage`;
   }
   return null;
 }
@@ -83,6 +83,7 @@ function request(url, redirects = 0) {
       return;
     }
     const req = https.get(parsed, {
+      agent: new https.Agent({ proxyEnv: process.env }),
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": USER_AGENT,
@@ -150,8 +151,9 @@ function findMacApplication(root) {
   const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
   if (!appEntry) throw new Error("The macOS update archive does not contain an application bundle");
   const application = path.join(root, appEntry.name);
-  const executable = path.join(application, "Contents", "MacOS", "Codex Web GPT");
-  if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
+  const executables = ["AsterBridge", "Codex Web GPT"]
+    .map(name => path.join(application, "Contents", "MacOS", name));
+  if (!executables.some(executable => fs.existsSync(executable) && fs.statSync(executable).isFile())) {
     throw new Error("The macOS update archive is incomplete");
   }
   return application;

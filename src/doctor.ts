@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import type { AppConfig } from "./config";
 import { getConfigDir, getConfigPath, loadConfig } from "./config";
 import { join } from "node:path";
@@ -9,6 +10,8 @@ import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import { processRunning } from "./process";
+import { discoverRoxyBrowserEndpoint, probeRoxyBrowserLocalApi } from "./roxy-browser-host";
+import { nativeUpstreamFetch } from "./native-upstream-fetch";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -55,6 +58,71 @@ function launcherOwnershipError(config: AppConfig, health: Record<string, unknow
     return `Responses proxy pid ${String(health.pid)} does not match launcher-owned pid ${String(state.daemonPid)}`;
   }
   return undefined;
+}
+
+async function probeTunnelRuntimeHealth(config: AppConfig): Promise<DoctorCheck> {
+  const alias = config.tunnel!.alias;
+  const stateRoot = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state");
+  const healthUrlFile = join(stateRoot, "tunnel-client", "health", `${alias}.url`);
+  if (existsSync(healthUrlFile)) {
+    try {
+      const base = new URL(readFileSync(healthUrlFile, "utf8").trim());
+      const loopback = base.protocol === "http:"
+        && (base.hostname === "127.0.0.1" || base.hostname === "localhost" || base.hostname === "[::1]");
+      if (loopback) {
+        const probe = async (pathname: string) => {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 2_000);
+          try {
+            return await fetch(new URL(pathname, base), { signal: controller.signal });
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+        const [healthz, readyz] = await Promise.all([probe("/healthz"), probe("/readyz")]);
+        if (healthz.ok && readyz.ok) {
+          return { id: "tunnel-runtime", status: "ok", message: "Tunnel runtime reports healthy and ready" };
+        }
+        return {
+          id: "tunnel-runtime",
+          status: "error",
+          message: "Tunnel runtime is not ready",
+          detail: `/healthz=${healthz.status}; /readyz=${readyz.status}`,
+        };
+      }
+    } catch {
+      // Fall back to the tunnel-client status command when the local health endpoint is stale or malformed.
+    }
+  }
+  const runtime = tunnelStatus(config);
+  return runtime.ok
+    ? { id: "tunnel-runtime", status: "ok", message: "Tunnel runtime reports healthy and ready" }
+    : { id: "tunnel-runtime", status: "error", message: "Tunnel runtime is not ready", detail: runtime.detail };
+}
+
+async function upstreamNetworkCheck(id: string, url: string, label: string): Promise<DoctorCheck> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6_000);
+  try {
+    const response = await nativeUpstreamFetch(new Request(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "user-agent": "AsterBridge doctor" },
+    }));
+    if (response.status >= 500) {
+      return { id, status: "warning", message: `${label} is reachable but returned HTTP ${response.status}` };
+    }
+    return { id, status: "ok", message: `${label} is reachable (HTTP ${response.status})` };
+  } catch (error) {
+    return {
+      id,
+      status: "error",
+      message: `${label} is not reachable through the current proxy/network settings`,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
@@ -138,6 +206,52 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
+  const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
+  if (turnBrowserHost === "roxybrowser") {
+    try {
+      const endpoint = await discoverRoxyBrowserEndpoint(config.roxyBrowserProfileId!, config.roxyBrowserDataDir!);
+      checks.push({
+        id: "roxy-browser",
+        status: "ok",
+        message: `RoxyBrowser profile is open and reachable (${endpoint.profileId})`,
+      });
+    } catch (profileError) {
+      if (config.roxyBrowserAutoOpen === true) {
+        if (!config.roxyBrowserApiHost || !config.roxyBrowserApiKeyFile || !existsSync(config.roxyBrowserApiKeyFile)) {
+          checks.push({
+            id: "roxy-browser",
+            status: "error",
+            message: "RoxyBrowser profile is closed and automatic startup is not fully configured",
+            detail: "Save a loopback Local API host and API key in Launcher Settings, or open the configured RoxyBrowser profile manually.",
+          });
+        } else {
+          try {
+            await probeRoxyBrowserLocalApi(config.roxyBrowserApiHost, config.roxyBrowserApiKeyFile);
+            checks.push({
+              id: "roxy-browser",
+              status: "warning",
+              message: "RoxyBrowser profile is currently closed; Local API is healthy and will auto-open it on the next turn",
+            });
+          } catch (apiError) {
+            checks.push({
+              id: "roxy-browser",
+              status: "error",
+              message: "RoxyBrowser profile is closed and Local API auto-start is unavailable",
+              detail: apiError instanceof Error ? apiError.message : String(apiError),
+            });
+          }
+        }
+      } else {
+        checks.push({
+          id: "roxy-browser",
+          status: "error",
+          message: "RoxyBrowser profile is closed",
+          detail: "Open the configured RoxyBrowser profile, or enable automatic profile startup in Launcher Settings.",
+        });
+      }
+    }
+  }
+
   const codex = inspectCodexIntegration();
   if (!codex.installed) {
     checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
@@ -165,8 +279,18 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({ id: "service", status: "ok", message: "macOS background service is loaded" });
   }
   checks.push(await proxyCheck(config));
+  checks.push(await upstreamNetworkCheck(
+    "network-chatgpt",
+    "https://chatgpt.com/backend-api/codex/models",
+    "ChatGPT/Codex upstream",
+  ));
 
   if (config.mode === "full") {
+    checks.push(await upstreamNetworkCheck(
+      "network-openai",
+      "https://api.openai.com/v1/models",
+      "OpenAI API/tunnel control plane",
+    ));
     const settings = config.tunnel!;
     if (!existsSync(settings.binaryPath)) {
       checks.push({ id: "tunnel-binary", status: "error", message: `tunnel-client is missing: ${settings.binaryPath}` });
@@ -195,10 +319,7 @@ export async function runDoctor(): Promise<DoctorReport> {
         ? { id: "tunnel-service", status: "ok", message: "macOS tunnel service is installed, loaded, and running" }
         : { id: "tunnel-service", status: "error", message: "macOS tunnel service is not fully running", detail: JSON.stringify(tunnelService) });
     }
-    const runtime = tunnelStatus(config);
-    checks.push(runtime.ok
-      ? { id: "tunnel-runtime", status: "ok", message: "Tunnel runtime reports healthy and ready" }
-      : { id: "tunnel-runtime", status: "error", message: "Tunnel runtime is not ready", detail: runtime.detail });
+    checks.push(await probeTunnelRuntimeHealth(config));
     checks.push({
       id: "connector",
       status: "warning",

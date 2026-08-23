@@ -18,6 +18,13 @@ function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
+function openAiSessionKey(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined;
+  const session = (meta as Record<string, unknown>)["openai/session"];
+  if (typeof session !== "string" || !session.trim()) return undefined;
+  return createHash("sha256").update("openai/session\0").update(session).digest("hex");
+}
+
 function requestScopeSummary(extra: {
   sessionId?: string;
   requestId: string | number;
@@ -151,7 +158,12 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     extra: Parameters<typeof requestScopeSummary>[0],
   ): Promise<ClaimedTurn> => {
     console.error(`[chatgpt-web-mcp] ${toolName} scope=${requestScopeSummary(extra)}`);
-    return await callTurnBroker<ClaimedTurn>(options.brokerSocketPath, { method: "claim", token: turnToken });
+    const sessionKey = openAiSessionKey(extra._meta);
+    return await callTurnBroker<ClaimedTurn>(options.brokerSocketPath, {
+      method: "claim",
+      token: turnToken,
+      ...(sessionKey ? { sessionKey } : {}),
+    });
   };
 
   const invoke = async (

@@ -5,7 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { stdin, stdout } from "node:process";
 import { checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { CHATGPT_CONNECTOR_NAME, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import { CHATGPT_CONNECTOR_NAME, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup, providerConfig } from "./config";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import {
   activateCodexIntegration,
@@ -15,6 +15,7 @@ import {
 } from "./codex-integration";
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
+import { ChatGptBrowserWorker, closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { runCommand } from "./process";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, restartService, startService, stopService, uninstallService } from "./service";
@@ -34,7 +35,7 @@ Usage:
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
-  codex-chatgpt-web browser check
+  codex-chatgpt-web browser <check|verify-connector>
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
   codex-chatgpt-web dev setup <--browser-only|--full> [options]
@@ -54,6 +55,17 @@ Setup options:
   --chrome PATH                Google Chrome/Chromium executable used for account login
   --browser-host-descriptor PATH
                                Use the embedded launcher browser described by this owner-only file
+  --system-browser             Run ChatGPT turns in the user's currently running Chrome/Edge session
+  --embedded-browser           Run ChatGPT turns in the launcher's embedded browser
+  --system-browser-channel NAME
+                               Main browser channel: auto, chrome, or msedge (default: auto)
+  --roxy-browser-profile ID   Run ChatGPT turns in a RoxyBrowser profile/window
+  --roxy-browser-data-dir PATH
+                               Directory containing RoxyBrowser profile data directories
+  --roxy-browser-auto-open    Open the RoxyBrowser profile through its Local API when needed
+  --roxy-browser-api-host URL Loopback Local API origin (default: http://127.0.0.1:50000)
+  --roxy-browser-api-key-file PATH
+                               Owner-only file containing the RoxyBrowser Local API key
   --refresh-account-capabilities
                                Re-read the authenticated account's available Web models
   --app-name NAME              ChatGPT connector name (default: ${CHATGPT_CONNECTOR_NAME})
@@ -139,8 +151,12 @@ function authorizeLauncherControl(operation: string): void {
 async function loginCommand(args: string[]): Promise<void> {
   assertNoArgs(args);
   const config = loadConfig();
+  const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
+  if (turnBrowserHost === "system-browser" || turnBrowserHost === "roxybrowser") {
+    throw new Error("ChatGPT login is owned by the selected external browser session; sign in there and retry");
+  }
   if (config.browserHost === "launcher") {
-    throw new Error("ChatGPT login is owned by the launcher; open Codex Web GPT and use its Sign in step");
+    throw new Error("ChatGPT login is owned by the launcher; open AsterBridge and use its Sign in step");
   }
   const result = await loginToChatGpt(config);
   stdout.write(`ChatGPT login stored at ${result.storageStatePath}\n`);
@@ -161,8 +177,43 @@ async function setupCommand(args: string[]): Promise<void> {
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
   const chrome = takeOption(args, "--chrome");
   const browserHostDescriptorPath = takeOption(args, "--browser-host-descriptor");
+  const systemBrowser = takeFlag(args, "--system-browser");
+  const embeddedBrowser = takeFlag(args, "--embedded-browser");
+  const systemBrowserChannel = takeOption(args, "--system-browser-channel");
+  const roxyBrowserProfileId = takeOption(args, "--roxy-browser-profile");
+  const roxyBrowserDataDir = takeOption(args, "--roxy-browser-data-dir");
+  const roxyBrowserAutoOpen = takeFlag(args, "--roxy-browser-auto-open");
+  const roxyBrowserApiHost = takeOption(args, "--roxy-browser-api-host");
+  const roxyBrowserApiKeyFile = takeOption(args, "--roxy-browser-api-key-file");
+  if ([systemBrowser, embeddedBrowser, Boolean(roxyBrowserProfileId)].filter(Boolean).length > 1) {
+    throw new Error("Choose only one of --system-browser, --embedded-browser, or --roxy-browser-profile");
+  }
   if (chrome) options.chromeExecutablePath = chrome;
   if (browserHostDescriptorPath) options.browserHostDescriptorPath = browserHostDescriptorPath;
+  if (systemBrowser) options.turnBrowserHost = "system-browser";
+  if (embeddedBrowser) options.turnBrowserHost = browserHostDescriptorPath ? "launcher" : "managed-chrome";
+  if (roxyBrowserProfileId) {
+    options.turnBrowserHost = "roxybrowser";
+    options.roxyBrowserProfileId = roxyBrowserProfileId;
+    if (!roxyBrowserDataDir) throw new Error("--roxy-browser-profile requires --roxy-browser-data-dir");
+    options.roxyBrowserDataDir = roxyBrowserDataDir;
+    options.roxyBrowserAutoOpen = roxyBrowserAutoOpen;
+    if (roxyBrowserAutoOpen) {
+      if (!roxyBrowserApiKeyFile) throw new Error("--roxy-browser-auto-open requires --roxy-browser-api-key-file");
+      options.roxyBrowserApiHost = roxyBrowserApiHost || "http://127.0.0.1:50000";
+      options.roxyBrowserApiKeyFile = roxyBrowserApiKeyFile;
+    } else if (roxyBrowserApiHost || roxyBrowserApiKeyFile) {
+      throw new Error("RoxyBrowser API host/key options require --roxy-browser-auto-open");
+    }
+  } else if (roxyBrowserDataDir || roxyBrowserAutoOpen || roxyBrowserApiHost || roxyBrowserApiKeyFile) {
+    throw new Error("RoxyBrowser data/API options require --roxy-browser-profile");
+  }
+  if (systemBrowserChannel) {
+    if (systemBrowserChannel !== "auto" && systemBrowserChannel !== "chrome" && systemBrowserChannel !== "msedge") {
+      throw new Error("--system-browser-channel must be auto, chrome, or msedge");
+    }
+    options.systemBrowserChannel = systemBrowserChannel;
+  }
   options.refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
   if (appName) options.appName = appName;
   if (tunnelId) options.tunnelId = tunnelId;
@@ -318,7 +369,7 @@ async function uninstallCommand(args: string[]): Promise<void> {
   const config = existsSync(getConfigPath()) ? loadConfig() : undefined;
   if (config?.browserHost === "launcher" && !launcherControl) {
     throw new Error(
-      "Launcher-owned integration must be removed from Codex Web GPT Settings so the active runtime can be drained safely.",
+      "Launcher-owned integration must be removed from AsterBridge Settings so the active runtime can be drained safely.",
     );
   }
   if (!config && process.platform === "darwin" && getServiceStatus().installed) {
@@ -360,9 +411,31 @@ async function main(): Promise<void> {
   else if (command === "browser") {
     const action = args.shift();
     assertNoArgs(args);
-    if (action !== "check") throw new Error("Browser command must be: browser check");
+    if (action !== "check" && action !== "verify-connector") {
+      throw new Error("Browser command must be: browser check or browser verify-connector");
+    }
     const config = loadConfig();
-    if (config.browserHost === "launcher") {
+    const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
+    if (action === "verify-connector") {
+      if (turnBrowserHost !== "system-browser" && turnBrowserHost !== "roxybrowser") {
+        throw new Error("browser verify-connector is reserved for external browser turn hosts");
+      }
+      try {
+        const connector = await ChatGptBrowserWorker.forProvider(providerConfig(config)).verifyConnector();
+        stdout.write(`ChatGPT connector ${JSON.stringify(connector)} is available in the configured external browser.\n`);
+      } finally {
+        await closeChatGptBrowserWorkers();
+      }
+    } else if (turnBrowserHost === "system-browser" || turnBrowserHost === "roxybrowser") {
+      try {
+        const inspected = await ChatGptBrowserWorker.forProvider(providerConfig(config)).inspectSession(true);
+        stdout.write(
+          `Playwright can reach the authenticated external browser session (sol=${inspected.solAvailable === true}, pro=${inspected.proAvailable === true}).\n`,
+        );
+      } finally {
+        await closeChatGptBrowserWorkers();
+      }
+    } else if (config.browserHost === "launcher") {
       await inspectLauncherBrowserHost(config.browserHostDescriptorPath!);
       stdout.write("Playwright can reach the authenticated ChatGPT surface embedded in the launcher.\n");
     } else {

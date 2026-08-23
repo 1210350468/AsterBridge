@@ -1,16 +1,16 @@
-<h1 align="center">ChatGPT Web for Codex</h1>
+<h1 align="center">AsterBridge · 星桥</h1>
 
 <p align="center">
-  <strong>将 ChatGPT Web（包括 Pro）作为 Codex 原生模型使用。</strong><br>
-  切换模型档位，保留原有工作流。
+  <strong>连接 Codex、ChatGPT Web 与原生工具的本地星桥。</strong><br>
+  RoxyBrowser 运行时 · 实时预览 · Native3 MCP · 本地优先桌面控制。
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="docs/quick-start.zh-CN.md">10 分钟快速开始</a> · <a href="docs/troubleshooting.zh-CN.md">故障排查</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/1210350468/AsterBridge/actions/workflows/ci.yml"><img src="https://github.com/1210350468/AsterBridge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
@@ -23,31 +23,31 @@ Free 和 Go 账户会在 Codex 原生模型选择器中看到 **ChatGPT Web — 
 桥接程序会把当前编译后的 Codex 任务上下文发送到一个全新的 ChatGPT 临时聊天，附加图片，
 并将可见的推理过程、工具活动和 Markdown 流式传回同一个 Codex 任务。
 
+> **关于新名字。** AsterBridge · 星桥是在
+> [codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) 基础上持续二次开发的独立社区版本，
+> 保留原 MIT 许可与署名。部分内部目录、CLI 名、模型 slug 和 release 资产名会继续保留
+> `codex-chatgpt-web` 兼容名称，避免升级时丢失现有登录会话或运行状态。
+
 <p align="center">
   <img src="assets/demo.gif" alt="ChatGPT Web 实时轮次正在使用原生 Codex harness" width="960">
 </p>
 
 ```text
-Codex task ──Responses + SSE──▶ codex-chatgpt-web ──embedded browser──▶ ChatGPT
-     ▲                                │                                      │
-     └──────── native UI, context, images, tracing, and tool lifecycle ──────┘
+Codex task ──Responses + SSE──▶ codex-chatgpt-web ──browser runtime──▶ ChatGPT
+     ▲                                │                                     │
+     └──────── native UI, context, images, tracing, and tool lifecycle ─────┘
 ```
 
 Codex 会保留原生任务、上下文生命周期、界面和工具 harness。本地 Responses 桥接程序只会将
 所选模型的轮次转发到全新的 ChatGPT 临时聊天；在完整模式下，MCP 会把 ChatGPT 连接回同一个
 Codex 任务的工具。
 
-> [!TIP]
-> 我还开发了 **[ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice)**：一款
-> 能够近实时改变 ChatGPT/Codex 声音的本地应用。它不会接触你的账户、浏览器会话或 ChatGPT
-> 请求，因此不会带来账户封禁风险。如果你喜欢我的作品，欢迎试用。
-
 ## 亮点
 
 - **精致的跨平台启动器。** 一条命令即可安装原生 macOS、Windows 或 Linux 应用。登录流程、设置、
-  冒烟测试、MCP 指南、运行状态和本地日志都集中在同一处；内置浏览器还能让你实时看到每个
-  ChatGPT 轮次的执行过程。最多可同时运行五个与 Codex 任务绑定的浏览器标签页；此上限用于避免
-  对 ChatGPT 账户产生过多并行流量。
+  冒烟测试、MCP 指南、运行状态和本地日志都集中在同一处。内置浏览器是最省事的默认方案；
+  RoxyBrowser 可作为稳定外部运行时，支持自动启动 Profile、Launcher Live Preview 和一键人工接管。
+  最多可并行运行五个与 Codex 任务绑定的浏览器回合；此上限用于避免对 ChatGPT 账户产生过多并行流量。
 - **ChatGPT 就是所选模型。** 它作为 Codex 原生模型运行，而不是由另一个宿主模型调用的工具。
   原有的模型选择器、任务生命周期、流式输出、追踪和工具界面保持不变。
 - **本地优先的任务会话。** Codex 仍然是电脑上任务历史的真实来源。每个浏览器轮次都会从一个
@@ -77,34 +77,32 @@ Codex 任务的工具。
 **macOS 或 Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/1210350468/AsterBridge/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-launcher.ps1 | iex
 ```
 
-然后在应用中完成三项检查：
+然后按 [10 分钟快速开始](docs/quick-start.zh-CN.md) 操作。简化流程是：
 
-1. 直接在启动器内置的 ChatGPT 浏览器中登录。登录页和身份提供商窗口都保留在同一个由启动器
-   管理的私有浏览器配置中；会话不会在不同浏览器之间复制。
-2. 运行浏览器冒烟测试。
-3. 点击 **安装模型**，重启一次 Codex，然后选择一个 **ChatGPT Web — …** 模型。
+1. 先看 **设置 → 网络代理**。自动模式会继承环境代理，并在 Windows 上读取系统代理；Clash/V2Ray 使用独立 HTTP/Mixed 端口时可直接选“自定义”。
+2. 选择浏览器后端。内置浏览器最省事；如果希望固定外部 Profile、自动启动和 Live Preview，推荐 RoxyBrowser。
+3. 安装模型前先运行一次 **设置 → 运行诊断**。
+4. 点击 **安装模型**，重启一次 Codex，先用简单 `WEB_OK` 回合证明 Browser-only 链路。
+5. 只有 Browser-only 已经成功后，再进入可选的 **MCP** 页面配置完整 Harness。
 
 启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户只会显示 Luna；只有已登录账户
-支持 Pro 时，Pro 才会显示。独立的 **MCP** 页面是可选项，它会在不需要终端命令的情况下引导你
-完成完整 harness 设置。
-
-打包后的启动器在其内置浏览器中完成登录并运行 ChatGPT 模型轮次，不需要模型 API 密钥、已安装的
-Chrome/Chromium、系统级 Node/Bun，也不会由本项目另行下载浏览器。
+支持 Pro 时，Pro 才会显示。打包后的启动器不需要模型 API 密钥、系统级 Node/Bun，也不会由本项目
+另行下载浏览器。RoxyBrowser 是可选后端，直接复用它自己的登录 Profile，不复制浏览器 Cookie。
 
 **从源码运行**
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
+git clone https://github.com/1210350468/AsterBridge.git && \
+cd AsterBridge && \
 bun run app
 ```
 
@@ -129,22 +127,23 @@ bun run app
 也不需要配置路由器端口转发。
 
 > [!WARNING]
-> 请创建名为 **Codex Native2** 的**新**连接器，并将权限设置为 **允许所有操作**。不要重命名、
-> 刷新或复用旧的 **Codex Native** 连接器：ChatGPT 会按连接器身份缓存公开 MCP 合约，而
-> **允许低风险操作** 会在命令和补丁到达 Codex harness 前将其拦截。
+> 默认连接器/App 名称现在是 **Codex Native3**。旧的 **Codex Native** 和 **Codex Native2**
+> 身份不会继续复用，因为 ChatGPT 会按 App 身份缓存 MCP schema。请保留旧 App 不动，并新建
+> `Codex Native3`，不要通过重命名旧 App 来绕过缓存。**允许低风险操作** 会在命令和补丁
+> 到达 Codex harness 前将其拦截。
 
 1. 完成启动器中的必需设置。
 2. 在启动器中打开 **MCP**。请在将使用 ChatGPT 连接器的同一个 OpenAI 账户中创建 Tunnel
    和普通 API 密钥；创建密钥本身免费，也不会消耗模型 API 额度。
-3. 粘贴 Tunnel ID 和 API 密钥，然后点击 **连接 Harness**。
-4. 在 ChatGPT 设置中启用 **开发者模式**。新建连接器时选择 **Tunnel**，选择刚创建的
-   Tunnel，将 **身份验证** 设为 **无**，并将名称准确设置为 **Codex Native2**。
-5. 如果已有旧的 **Codex Native** 连接器，请保持其不变。不要重命名或刷新它：ChatGPT 会按
-   连接器身份缓存公开 MCP 合约，而此版本使用新的直接 turn-token 合约。在 **Codex Native2**
-   的 **权限** 中选择 **允许所有操作**；**允许低风险操作** 会在命令和补丁到达本地运行时前将其
-   拦截。外层 Codex harness 仍会执行沙箱和审批规则。
-6. 运行 **验证运行时**。它只会准确选择 **Codex Native2**。如果只找到 **Codex Native**，
-   验证会返回明确的迁移错误，而不会接受旧连接器。
+3. 填写你要使用的精确 **连接器 / App 名称**，需要时再填写 Tunnel ID 和 API 密钥，然后点击
+   **连接 Harness**。如果只修改 App 名称，可以直接复用此前已经安全保存的 Tunnel 凭据。
+4. 在 ChatGPT 设置中启用 **开发者模式**。新建 App/连接器时选择 **Tunnel**，选择刚创建的
+   Tunnel，将 **身份验证** 设为 **无**，并把名称准确设置成启动器里配置的同一个名称。
+5. 旧的连接器身份保持不动。ChatGPT 会按 App 身份缓存公开 MCP 合约，因此 MCP 工具/schema
+   发生不兼容变更后，使用新名称是强制触发全新工具扫描的最稳妥方式。在新 App 的 **权限** 中
+   选择 **允许所有操作**；**允许低风险操作** 会在命令和补丁到达本地运行时前将其拦截。外层
+   Codex harness 仍会执行沙箱和审批规则。
+6. 运行 **验证运行时**。它只会精确选择当前配置的 App 名称；旧名称或其他名称不会被当作替代。
 
 写入/修改操作还需要 ChatGPT 工作区及其管理员政策允许。请参阅
 [开发者模式和 MCP 应用](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)。
@@ -153,9 +152,14 @@ bun run app
 
 ## 日常操作
 
-在 **活动** 页面查看结构化本地日志，在 **设置 → 运行诊断** 中执行端到端健康检查。如果已停止的
-任务仍让 ChatGPT 继续工作，请使用 **设置 → 取消残留的浏览器任务**。删除启动器前，请使用
-**设置 → 移除 Codex 集成**，以恢复此前的 Codex 路由。
+在 **活动** 页面查看结构化本地日志，在 **设置 → 运行诊断** 中执行端到端健康检查。Doctor 会同时
+检查当前选中的 Roxy Profile/Local API、Bridge、Codex 路由和 Tunnel 状态。运行后可使用
+**复制脱敏诊断摘要**，生成不含密钥和 Doctor detail 的支持信息。任务卡住时使用 **取消活动的 Codex 任务**；
+删除启动器前使用 **移除 Codex 集成**，以恢复此前的 Codex 路由。
+
+如果安装停在任何一步，先查看[故障排查指南](docs/troubleshooting.zh-CN.md)，不要先删除配置或反复重装。
+GitHub Bug 模板会要求 Doctor 结果和最早相关 warning/error，并明确禁止上传 API Key、Cookie、Bearer Token、
+完整 turn token 或浏览器 Profile。
 
 ## 限制和安全性
 
@@ -183,19 +187,43 @@ bun run verify
 bun run app:package
 ```
 
+### 使用主 Chrome / Edge 运行 Web 模型回合
+
+源码桌面端可让 Launcher 继续监管本地 Bridge/MCP，但把真正的 ChatGPT Web 回合切换到你日常使用、已登录的 Chrome 或 Edge：
+
+1. 在主浏览器打开 `chrome://inspect/#remote-debugging` 或 `edge://inspect/#remote-debugging`，启用当前浏览器实例的远程调试并接受浏览器授权提示。
+2. 启动 `bun run app`，进入 **Settings**，开启 **使用我的主浏览器运行 ChatGPT 对话**。
+3. 返回 **Setup**，点击 **安装模型/重新安装模型**。Launcher 会自动发现可连接的 Chrome/Edge，会话能力检测、Temporary Chat、模型/推理强度选择、附件、连接器、工具确认、发送和回复解析都复用同一套 Browser Worker 逻辑。
+4. 重启一次 Codex 后使用 `chatgpt-web/*` 模型。每个回合会在主浏览器中新开任务标签页，回合结束后只关闭该任务标签页；不会复制浏览器 Cookie，也不会关闭其它已有标签页。
+
+CLI 也支持 `setup ... --system-browser --system-browser-channel auto`；`auto` 会在已开启调试且端口实际存活的 Chrome/Edge 中选择最近的会话。
+
+### 使用 RoxyBrowser 指纹 Profile 运行 Web 模型回合
+
+当普通 Chrome/Edge 远程调试环境不稳定时，推荐使用 RoxyBrowser 外部浏览器模式。进入 **设置 → 使用 RoxyBrowser 运行 ChatGPT 对话**，填写 RoxyBrowser 的 Profile/窗口 ID 和 Profile 数据根目录绝对路径（例如 `E:\\roxybrowserdata`），保存后回到 **Setup** 重新安装模型。运行时只读取该 Profile 自己的 Chromium `DevToolsActivePort` 并精确连接这个 Profile，不复制 Cookie，也不导出登录会话。
+
+如果选定的 Profile 没有打开，运行时现在会返回结构化的 `browser_unavailable` 错误和明确操作提示，不再让 Responses 流因为未分类 CDP 异常直接断开。也可以开启 **需要时自动打开 RoxyBrowser Profile**：运行时会通过 RoxyBrowser 的本机 Local API（通常是 `http://127.0.0.1:50000`）先打开 Profile，再开始 ChatGPT 回合。Local API Key 只保存在 Launcher 的 owner-only 私密 secrets 文件中；普通运行时配置只保存 key 文件路径，不保存 Key 原文。
+
+CLI 等价配置：
+
+```bash
+codex-chatgpt-web setup --browser-only \
+  --browser-host-descriptor <launcher-browser.json> \
+  --roxy-browser-profile <dirId> \
+  --roxy-browser-data-dir <Profile 数据根目录绝对路径>
+```
+
+只有在 RoxyBrowser 已开启 Local API 时，再增加 `--roxy-browser-auto-open --roxy-browser-api-host http://127.0.0.1:50000 --roxy-browser-api-key-file <私密 key 文件>`。
+
 - [架构说明](docs/architecture.md)
 - [安全模型](docs/security-model.md)
 - [贡献指南](CONTRIBUTING.md)
 
-## Star History
+## 项目主页
 
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
+- 仓库：https://github.com/1210350468/AsterBridge
+- Issues：https://github.com/1210350468/AsterBridge/issues
+- Releases：https://github.com/1210350468/AsterBridge/releases
 
 ## 免责声明
 

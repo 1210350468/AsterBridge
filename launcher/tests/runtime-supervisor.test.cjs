@@ -154,7 +154,7 @@ test("DEV runtime supervision starts only the isolated MCP tunnel", async () => 
   const config = launcherConfig(descriptorPath, {
     purpose: "dev-harness",
     mode: "full",
-    appName: "Codex Native2 DEV",
+    appName: "Codex Native3 DEV",
     tunnel: {
       binaryPath: path.join(root, "bin", "tunnel-client"),
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
@@ -588,7 +588,7 @@ test("tunnel readiness accepts the official tmux status without inventing a PID"
     });
     assert.equal(health.ready, true);
     assert.equal(health.pid, null);
-    await supervisor.waitForTunnel({ tunnel: { alias: "codex-chatgpt-web" } }, 1);
+    await supervisor.waitForTunnel({ tunnel: { alias: "codex-chatgpt-web" } }, 50);
     assert.equal(supervisor.tunnel?.managed, true);
     assert.equal(supervisor.tunnel?.pid, null);
   } finally {

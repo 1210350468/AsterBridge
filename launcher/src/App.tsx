@@ -18,6 +18,7 @@ import type {
   LauncherState,
   LogRecord,
   OperationState,
+  RoxyPreviewState,
   Surface,
 } from "./types";
 
@@ -33,6 +34,7 @@ const MCP_GUIDE_MEDIA = [
 export function App() {
   const [snapshot, setSnapshot] = useState<LauncherSnapshot | null>(null);
   const [browser, setBrowser] = useState<BrowserState | null>(null);
+  const [roxyPreview, setRoxyPreview] = useState<RoxyPreviewState | null>(null);
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [logs, setLogs] = useState<LogRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +46,7 @@ export function App() {
       if (cancelled) return;
       setSnapshot(next);
       setBrowser(next.browser);
+      setRoxyPreview(next.roxyPreview);
       setLogs(next.logs);
       setOperation(next.operation);
       if (next.operation?.status === "failed" && next.operation.name !== "mcp-verification") {
@@ -61,6 +64,7 @@ export function App() {
         : current);
     });
     const unsubscribeBrowser = api.onBrowserState(setBrowser);
+    const unsubscribeRoxyPreview = api.onRoxyPreview(setRoxyPreview);
     const unsubscribeOperation = api.onOperation((next) => {
       setOperation(next);
       if (next.status === "failed" && next.name !== "mcp-verification") setError(next.message);
@@ -73,6 +77,7 @@ export function App() {
       cancelled = true;
       unsubscribeState();
       unsubscribeBrowser();
+      unsubscribeRoxyPreview();
       unsubscribeOperation();
       unsubscribeLog();
       unsubscribeUpdate();
@@ -121,6 +126,7 @@ export function App() {
             language={language}
             logs={logs}
             operation={operation}
+            roxyPreview={roxyPreview}
             setError={setError}
             snapshot={snapshot}
             updateState={updateState}
@@ -285,6 +291,7 @@ function LauncherShell({
   language,
   logs,
   operation,
+  roxyPreview,
   setError,
   snapshot,
   updateState,
@@ -294,6 +301,7 @@ function LauncherShell({
   language: Language;
   logs: LogRecord[];
   operation: OperationState | null;
+  roxyPreview: RoxyPreviewState | null;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
   updateState: (state: LauncherState) => void;
@@ -309,8 +317,9 @@ function LauncherShell({
   const [sessionReminderBusy, setSessionReminderBusy] = useState(false);
   const [sessionReminderDue, setSessionReminderDue] = useState(false);
   const browserSlotRef = useCallback((node: HTMLDivElement | null) => setBrowserSlot(node), []);
-  const browserSurfaceActive = surface === "browser" && !(compactSidebar && sidebarOpen);
-  const needsBrowser = browser?.authenticated !== true;
+  const roxyMode = !devProfile && snapshot.state.useRoxyBrowser === true;
+  const browserSurfaceActive = surface === "browser" && !(compactSidebar && sidebarOpen) && !roxyMode;
+  const needsBrowser = !roxyMode && browser?.authenticated !== true;
   const needsSetup = !needsBrowser
     && (snapshot.state.coreSetupComplete !== true || snapshot.state.codexCatalogVerified !== true);
   const mcpOptional = snapshot.state.codexCatalogVerified === true && snapshot.state.mcpSetupComplete !== true;
@@ -566,6 +575,8 @@ function LauncherShell({
                 browser={browser}
                 browserSlotRef={browserSlotRef}
                 copy={copy}
+                roxyMode={roxyMode}
+                roxyPreview={roxyPreview}
                 setError={setError}
               />
             ) : null}
@@ -692,13 +703,27 @@ function BrowserSurface({
   browser,
   browserSlotRef,
   copy,
+  roxyMode,
+  roxyPreview,
   setError,
 }: {
   browser: BrowserState | null;
   browserSlotRef: (node: HTMLDivElement | null) => void;
   copy: Copy;
+  roxyMode: boolean;
+  roxyPreview: RoxyPreviewState | null;
   setError: (error: string | null) => void;
 }) {
+  if (roxyMode) {
+    return (
+      <RoxyBrowserSurface
+        browserSlotRef={browserSlotRef}
+        copy={copy}
+        preview={roxyPreview}
+        setError={setError}
+      />
+    );
+  }
   const visible = browser?.visible === true;
   const navigationLocked = browser?.status === "running" || browser?.status === "testing";
   const navigate = async (action: "back" | "forward" | "reload") => {
@@ -829,6 +854,84 @@ function BrowserSurface({
   );
 }
 
+function RoxyBrowserSurface({
+  browserSlotRef,
+  copy,
+  preview,
+  setError,
+}: {
+  browserSlotRef: (node: HTMLDivElement | null) => void;
+  copy: Copy;
+  preview: RoxyPreviewState | null;
+  setError: (error: string | null) => void;
+}) {
+  const active = preview?.active === true;
+  const stage = preview?.stage && preview.stage !== "idle"
+    ? preview.stage.replaceAll("_", " ").replace(":failed", " · failed")
+    : copy.roxyWaiting;
+  const takeControl = async () => {
+    try {
+      await api!.takeControlOfRoxy();
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
+  };
+
+  return (
+    <section className="browser-surface roxy-browser-surface">
+      <div className="browser-tab-strip">
+        <div className="browser-tab is-active" role="tab" aria-selected="true">
+          <BrandMark small />
+          <span>{copy.roxyRuntime}</span>
+          <StateDot state={active ? "ready" : "idle"} />
+        </div>
+        <div className="browser-tab-drag draggable" />
+      </div>
+      <div className="browser-toolbar roxy-browser-toolbar">
+        <div className="roxy-runtime-status">
+          <StateDot state={active ? "ready" : "idle"} />
+          <strong>{active ? copy.roxyLive : copy.roxyReady}</strong>
+          <span>{stage}</span>
+        </div>
+        <div className="browser-address" title={preview?.url || copy.roxyRuntime}>
+          <Icon name="globe" />
+          <span>{preview?.url ? formatBrowserAddress(preview.url, copy) : copy.roxyHiddenRuntime}</span>
+        </div>
+        <button
+          className="toolbar-text-button"
+          disabled={!active}
+          onClick={() => void takeControl()}
+          title={copy.roxyTakeControlHint}
+          type="button"
+        >
+          {copy.roxyTakeControl}
+        </button>
+      </div>
+      <div className="browser-viewport roxy-preview-viewport" ref={browserSlotRef}>
+        {active && preview?.dataUrl ? (
+          <>
+            <img alt={copy.roxyLivePreview} className="roxy-preview-image" src={preview.dataUrl} />
+            <div className="roxy-preview-badge">
+              <StateDot state="ready" />
+              <span>{copy.roxyLivePreview}</span>
+              <em>{stage}</em>
+            </div>
+          </>
+        ) : (
+          <div className="browser-empty roxy-preview-empty">
+            <BrandMark />
+            <h1>{active ? copy.roxyConnecting : copy.roxyReady}</h1>
+            <p>{active ? copy.roxyConnectingBody : copy.roxyReadyBody}</p>
+            {active ? (
+              <PrimaryButton onClick={() => void takeControl()}>{copy.roxyTakeControl}</PrimaryButton>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SetupSurface({
   activateBrowser,
   browser,
@@ -856,6 +959,9 @@ function SetupSurface({
     || browser?.status === "loading"
     || browser?.status === "testing"
     || browser?.status === "running";
+  const useSystemBrowser = !devProfile && snapshot.state.useSystemBrowser;
+  const useRoxyBrowser = !devProfile && snapshot.state.useRoxyBrowser;
+  const externalBrowser = useSystemBrowser || useRoxyBrowser;
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
     setLocalBusy(true);
@@ -891,26 +997,34 @@ function SetupSurface({
     >
       <SectionHeading label={devProfile ? copy.devCoreSetup : copy.coreSetup} />
       <div className="setup-list">
-        <SetupRow
-          action={browser?.authenticated
-            ? copy.signedIn
-            : browser?.status === "loading" ? copy.checkingSignIn : copy.signIn}
-          complete={browser?.authenticated === true}
-          description={copy.stepAccountBody}
-          disabled={busy}
-          index={1}
-          onAction={openLogin}
-          title={copy.stepAccount}
-        />
-        <SetupRow
-          action={snapshot.smokePassed ? copy.smokePassed : copy.runSmoke}
-          complete={snapshot.smokePassed}
-          description={copy.stepSmokeBody}
-          disabled={busy || !browser?.authenticated}
-          index={2}
-          onAction={smoke}
-          title={copy.stepSmoke}
-        />
+        {externalBrowser ? (
+          <NoticeRow icon="browser" tone={useRoxyBrowser ? "success" : "warning"}>
+            {useRoxyBrowser ? copy.useRoxyBrowserBody : copy.useSystemBrowserBody}
+          </NoticeRow>
+        ) : (
+          <>
+            <SetupRow
+              action={browser?.authenticated
+                ? copy.signedIn
+                : browser?.status === "loading" ? copy.checkingSignIn : copy.signIn}
+              complete={browser?.authenticated === true}
+              description={copy.stepAccountBody}
+              disabled={busy}
+              index={1}
+              onAction={openLogin}
+              title={copy.stepAccount}
+            />
+            <SetupRow
+              action={snapshot.smokePassed ? copy.smokePassed : copy.runSmoke}
+              complete={snapshot.smokePassed}
+              description={copy.stepSmokeBody}
+              disabled={busy || !browser?.authenticated}
+              index={2}
+              onAction={smoke}
+              title={copy.stepSmoke}
+            />
+          </>
+        )}
         <SetupRow
           action={snapshot.state.coreSetupComplete
             ? devProfile ? copy.devReinstall : copy.reinstall
@@ -918,8 +1032,8 @@ function SetupSurface({
           complete={snapshot.state.codexCatalogVerified === true}
           description={devProfile ? copy.devStepInstallBody : copy.stepInstallBody}
           disabled={busy
-            || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
-          index={3}
+            || (!externalBrowser && !snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
+          index={externalBrowser ? 1 : 3}
           onAction={install}
           repeatable
           title={devProfile ? copy.devStepInstall : copy.stepInstall}
@@ -966,6 +1080,7 @@ function McpSurface({
   const [step, setStep] = useState(Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)));
   const [tunnelId, setTunnelId] = useState("");
   const [runtimeKey, setRuntimeKey] = useState("");
+  const [connectorName, setConnectorName] = useState(snapshot.connectorName);
   const [credentialsConfigured, setCredentialsConfigured] = useState(snapshot.mcpCredentialsConfigured);
   const [replacingCredentials, setReplacingCredentials] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1003,11 +1118,14 @@ function McpSurface({
     setLocalBusy(true);
     setError(null);
     try {
+      const selectedConnectorName = connectorName.trim();
       await api!.setupMcp({
+        ...(!devProfile ? { connectorName: selectedConnectorName } : {}),
         ...(credentialsConfigured && !replacingCredentials
           ? { replace: false }
           : { tunnelId, runtimeKey, replace: true }),
       });
+      if (!devProfile) setConnectorName(selectedConnectorName);
       setRuntimeKey("");
       setTunnelId("");
       setCredentialsConfigured(true);
@@ -1043,6 +1161,9 @@ function McpSurface({
     >
       {!snapshot.state.codexCatalogVerified ? (
         <NoticeRow icon="setup" tone="warning">{copy.mcpCatalogRequired}</NoticeRow>
+      ) : null}
+      {snapshot.state.codexCatalogVerified && !snapshot.state.mcpRuntimeInstalled ? (
+        <NoticeRow icon="alert" tone="warning">{copy.mcpReconfigureRequired}</NoticeRow>
       ) : null}
 
       <div className="wizard-stepper" aria-label={`${step + 1} / 3`}>
@@ -1093,7 +1214,24 @@ function McpSurface({
               </div>
             ) : null}
             {step === 1 ? (
-              credentialsConfigured && !replacingCredentials ? (
+              <>
+                {!devProfile ? (
+                  <div className="field-list">
+                    <FieldRow label={copy.connectorName}>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        maxLength={80}
+                        onChange={(event) => setConnectorName(event.target.value)}
+                        placeholder="Codex Native3"
+                        spellCheck={false}
+                        value={connectorName}
+                      />
+                    </FieldRow>
+                    <p className="mcp-step-two-hint">{copy.connectorNameHint}</p>
+                  </div>
+                ) : null}
+                {credentialsConfigured && !replacingCredentials ? (
                 <div className="saved-credentials">
                   <NoticeRow icon="check" tone="success">
                     <span>
@@ -1148,7 +1286,8 @@ function McpSurface({
                     </button>
                   ) : null}
                 </div>
-              )
+              )}
+              </>
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
@@ -1162,7 +1301,7 @@ function McpSurface({
                 </NoticeRow>
                 <div className="connector-name">
                   <span>{copy.connectorName}</span>
-                  <code>{snapshot.connectorName}</code>
+                  <code>{devProfile ? snapshot.connectorName : connectorName.trim() || snapshot.connectorName}</code>
                 </div>
                 <div className="inline-actions">
                   <SecondaryButton
@@ -1196,6 +1335,7 @@ function McpSurface({
             disabled={
               busy
               || !snapshot.state.codexCatalogVerified
+              || (!devProfile && !connectorName.trim())
               || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
             }
             onClick={() => void install()}
@@ -1281,6 +1421,20 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const [roxyEnabled, setRoxyEnabled] = useState(snapshot.state.useRoxyBrowser);
+  const [roxyProfileId, setRoxyProfileId] = useState(snapshot.state.roxyBrowserProfileId);
+  const [roxyDataDir, setRoxyDataDir] = useState(snapshot.state.roxyBrowserDataDir);
+  const [roxyAutoOpen, setRoxyAutoOpen] = useState(snapshot.state.roxyBrowserAutoOpen);
+  const [roxyApiHost, setRoxyApiHost] = useState(snapshot.state.roxyBrowserApiHost || "http://127.0.0.1:50000");
+  const [roxyApiKey, setRoxyApiKey] = useState("");
+  const [roxyApiKeyConfigured, setRoxyApiKeyConfigured] = useState(snapshot.roxyApiKeyConfigured);
+  const [roxySaved, setRoxySaved] = useState(false);
+  const [proxyMode, setProxyMode] = useState<"auto" | "direct" | "custom">(snapshot.state.networkProxyMode || "auto");
+  const [proxyUrl, setProxyUrl] = useState(snapshot.state.networkProxyUrl || "");
+  const [proxyStatus, setProxyStatus] = useState(snapshot.networkProxy);
+  const [proxySaved, setProxySaved] = useState(false);
+  const [proxyRestartMessage, setProxyRestartMessage] = useState("");
+  const [diagnosticCopied, setDiagnosticCopied] = useState(false);
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1297,6 +1451,27 @@ function SettingsSurface({
       setError(messageOf(cause));
     } finally {
       setBusy(false);
+    }
+  };
+  const copyDiagnosticSummary = async () => {
+    if (!doctor) return;
+    const browserMode = snapshot.state.useRoxyBrowser
+      ? "RoxyBrowser"
+      : snapshot.state.useSystemBrowser ? "System Browser" : "Embedded Launcher browser";
+    const lines = [
+      "AsterBridge diagnostic summary",
+      `Launcher: v${snapshot.version}`,
+      `Platform: ${snapshot.platform}`,
+      `Browser: ${browserMode}`,
+      `Proxy: ${snapshot.state.networkProxyMode} (${snapshot.networkProxy.source}; ${snapshot.networkProxy.display})`,
+      `Mode: ${doctor.mode || "unknown"}`,
+      ...doctor.checks.map((check) => `[${check.status.toUpperCase()}] ${check.id}: ${check.message}`),
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setDiagnosticCopied(true);
+    } catch (cause) {
+      setError(messageOf(cause));
     }
   };
   const cancelTurns = async () => {
@@ -1331,6 +1506,46 @@ function SettingsSurface({
         updateState(result.state);
         setIntegrationRemoved(true);
       }
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveNetworkProxy = async () => {
+    setBusy(true);
+    setError(null);
+    setProxySaved(false);
+    setProxyRestartMessage("");
+    try {
+      const result = await api!.setNetworkProxy({ mode: proxyMode, ...(proxyMode === "custom" ? { url: proxyUrl } : {}) });
+      updateState(result.state);
+      setProxyStatus({ source: result.source, display: result.display });
+      setProxySaved(true);
+      setProxyRestartMessage(result.restartRequired ? copy.proxyRestartRequired : result.runtimeRestarted ? copy.proxyRestarted : "");
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveRoxyBrowser = async () => {
+    setBusy(true);
+    setError(null);
+    setRoxySaved(false);
+    try {
+      const result = await api!.setRoxyBrowserConfig({
+        enabled: roxyEnabled,
+        profileId: roxyProfileId,
+        dataDir: roxyDataDir,
+        autoOpen: roxyAutoOpen,
+        apiHost: roxyApiHost,
+        ...(roxyApiKey.trim() ? { apiKey: roxyApiKey } : {}),
+      });
+      updateState(result.state);
+      setRoxyApiKeyConfigured(result.apiKeyConfigured);
+      setRoxyApiKey("");
+      setRoxySaved(true);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -1373,6 +1588,117 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        {!devProfile ? <SettingRow body={copy.useSystemBrowserBody} label={copy.useSystemBrowser}>
+          <Switch
+            checked={snapshot.state.useSystemBrowser}
+            disabled={busy}
+            onChange={(checked) => {
+              if (checked) setRoxyEnabled(false);
+              void api!.setPreference("useSystemBrowser", checked)
+                .then(updateState)
+                .catch((cause) => setError(messageOf(cause)));
+            }}
+          />
+        </SettingRow> : null}
+        {!devProfile ? <SettingRow body={copy.useRoxyBrowserBody} label={copy.useRoxyBrowser}>
+          <Switch
+            checked={roxyEnabled}
+            disabled={busy}
+            onChange={(checked) => setRoxyEnabled(checked)}
+          />
+        </SettingRow> : null}
+        {!devProfile && (roxyEnabled || snapshot.state.useRoxyBrowser || roxyProfileId) ? (
+          <div className="field-list">
+            <FieldRow label={copy.roxyProfileId}>
+              <input
+                autoCapitalize="none"
+                autoCorrect="off"
+                maxLength={128}
+                onChange={(event) => setRoxyProfileId(event.target.value)}
+                placeholder="0123456789abcdef0123456789abcdef"
+                spellCheck={false}
+                value={roxyProfileId}
+              />
+            </FieldRow>
+            <p className="mcp-step-two-hint">{copy.roxyProfileIdHint}</p>
+            <FieldRow label={copy.roxyDataDir}>
+              <input
+                autoCapitalize="none"
+                autoCorrect="off"
+                onChange={(event) => setRoxyDataDir(event.target.value)}
+                placeholder="E:\\roxybrowserdata"
+                spellCheck={false}
+                value={roxyDataDir}
+              />
+            </FieldRow>
+            <p className="mcp-step-two-hint">{copy.roxyDataDirHint}</p>
+            <FieldRow label={copy.roxyAutoOpen}>
+              <Switch checked={roxyAutoOpen} disabled={busy} onChange={setRoxyAutoOpen} />
+            </FieldRow>
+            <p className="mcp-step-two-hint">{copy.roxyAutoOpenBody}</p>
+            {roxyAutoOpen ? (
+              <>
+                <FieldRow label={copy.roxyApiHost}>
+                  <input
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    onChange={(event) => setRoxyApiHost(event.target.value)}
+                    placeholder="http://127.0.0.1:50000"
+                    spellCheck={false}
+                    value={roxyApiHost}
+                  />
+                </FieldRow>
+                <FieldRow label={copy.roxyApiKey}>
+                  <input
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    onChange={(event) => setRoxyApiKey(event.target.value)}
+                    placeholder={roxyApiKeyConfigured ? "••••••••" : "API key"}
+                    spellCheck={false}
+                    type="password"
+                    value={roxyApiKey}
+                  />
+                </FieldRow>
+                {roxyApiKeyConfigured ? <p className="mcp-step-two-hint">{copy.roxyApiKeyConfigured}</p> : null}
+              </>
+            ) : null}
+            <button className="text-button" disabled={busy} onClick={() => void saveRoxyBrowser()} type="button">
+              {roxySaved ? copy.roxySaved : copy.roxySave}
+            </button>
+          </div>
+        ) : null}
+        {!devProfile ? <SettingRow body={copy.networkProxyBody} label={copy.networkProxy}>
+          <span className="settings-inline-value">{proxyStatus.display}</span>
+        </SettingRow> : null}
+        {!devProfile ? (
+          <div className="field-list network-proxy-fields">
+            <FieldRow label={copy.proxyMode}>
+              <select disabled={busy} onChange={(event) => setProxyMode(event.target.value as "auto" | "direct" | "custom")} value={proxyMode}>
+                <option value="auto">{copy.proxyAuto}</option>
+                <option value="direct">{copy.proxyDirect}</option>
+                <option value="custom">{copy.proxyCustom}</option>
+              </select>
+            </FieldRow>
+            <p className="mcp-step-two-hint">{proxyMode === "auto" ? copy.proxyAutoHint : proxyMode === "custom" ? copy.proxyUrlHint : copy.networkProxyBody}</p>
+            {proxyMode === "custom" ? (
+              <FieldRow label={copy.proxyUrl}>
+                <input
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  onChange={(event) => setProxyUrl(event.target.value)}
+                  placeholder="http://127.0.0.1:7890"
+                  spellCheck={false}
+                  value={proxyUrl}
+                />
+              </FieldRow>
+            ) : null}
+            <p className="mcp-step-two-hint">{copy.proxyEffective}: {proxyStatus.source} · {proxyStatus.display}</p>
+            {proxyRestartMessage ? <p className="mcp-step-two-hint">{proxyRestartMessage}</p> : null}
+            <button className="text-button" disabled={busy} onClick={() => void saveNetworkProxy()} type="button">
+              {proxySaved ? copy.proxySaved : copy.proxySave}
+            </button>
+          </div>
+        ) : null}
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
@@ -1384,6 +1710,22 @@ function SettingsSurface({
         <span>
           <strong>{copy.runDoctor}</strong>
           <small>{doctor ? (doctor.ok ? copy.healthy : copy.needsAttention) : copy.status}</small>
+        </span>
+        <Icon name="chevron" />
+      </button>
+      {doctor ? <button className="diagnostic-row" disabled={busy} onClick={() => void copyDiagnosticSummary()} type="button">
+        <Icon name="logs" />
+        <span>
+          <strong>{copy.copyDiagnosticSummary}</strong>
+          <small>{diagnosticCopied ? copy.diagnosticSummaryCopied : copy.status}</small>
+        </span>
+        <Icon name="chevron" />
+      </button> : null}
+      <button className="diagnostic-row" disabled={busy} onClick={() => void api!.openExternal(snapshot.urls.troubleshooting).catch((cause) => setError(messageOf(cause)))} type="button">
+        <Icon name="external" />
+        <span>
+          <strong>{copy.troubleshootingGuide}</strong>
+          <small>{copy.troubleshootingGuideBody}</small>
         </span>
         <Icon name="chevron" />
       </button>
@@ -1758,10 +2100,12 @@ function BrandMark({ small = false }: { small?: boolean }) {
   return (
     <span className={`brand-mark${small ? " is-small" : ""}`}>
       <svg aria-hidden="true" viewBox="0 0 24 24">
-        <path
-          d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"
-          fill="currentColor"
-        />
+        <path d="M4.2 15.2c2.4-5.9 7.2-9.2 15.6-10.2" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+        <path d="M4.4 8.9c4.2 1.2 8.1 4.4 11.1 10.1" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+        <circle cx="4.1" cy="15.4" fill="#7ee7f2" r="1.55" />
+        <circle cx="19.6" cy="4.9" fill="#f7f8ff" r="1.35" />
+        <path d="m12 8.2 3.8 3.8-3.8 3.8L8.2 12 12 8.2Z" fill="currentColor" />
+        <circle cx="12" cy="12" fill="#111520" r="1.25" />
       </svg>
     </span>
   );
@@ -1836,7 +2180,7 @@ function FatalMessage({ message }: { message: string }) {
   return (
     <main className="fatal-message">
       <BrandMark />
-      <h1>Codex Web GPT</h1>
+      <h1>AsterBridge</h1>
       <p>{message}</p>
     </main>
   );

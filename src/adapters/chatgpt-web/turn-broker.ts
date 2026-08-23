@@ -42,6 +42,7 @@ interface TurnChannel {
   externalOwner: boolean;
   environment: PendingTurn;
   bindingId?: string;
+  sessionKeys: Set<string>;
   queuedCallIds: string[];
   invocations: Map<string, PendingInvocation>;
   waiters: Set<ToolWaiter>;
@@ -62,6 +63,7 @@ interface BrokerRequest {
     | "owner_complete"
     | "owner_revoke";
   token?: string;
+  sessionKey?: string;
   bindingId?: string;
   wireName?: string;
   freeform?: boolean;
@@ -163,6 +165,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private readonly channels = new Map<string, TurnChannel>();
   private readonly pending = new Map<string, TurnChannel>();
   private readonly bindings = new Map<string, { token: string; channel: TurnChannel }>();
+  private readonly sessionBindings = new Map<string, { token: string; channel: TurnChannel }>();
   // The Codex context replayed into ChatGPT still carries the handles of finished turns, so a model
   // can present one. Remembering which turn retired a handle is what separates "you are holding a
   // previous turn's handle" from "this handle never existed".
@@ -206,6 +209,7 @@ export class TurnBroker implements TurnBrokerOwner {
         ...environment,
         ...(ttlMs !== undefined ? { expiresAt: Date.now() + ttlMs } : {}),
       },
+      sessionKeys: new Set(),
       queuedCallIds: [],
       invocations: new Map(),
       waiters: new Set(),
@@ -272,6 +276,11 @@ export class TurnBroker implements TurnBrokerOwner {
       this.bindings.delete(channel.bindingId);
       this.retire(this.retiredBindings, channel.bindingId, channel.traceId);
     }
+    for (const sessionKey of channel.sessionKeys) {
+      const mapped = this.sessionBindings.get(sessionKey);
+      if (mapped?.token === token && mapped.channel === channel) this.sessionBindings.delete(sessionKey);
+    }
+    channel.sessionKeys.clear();
     this.retire(this.retiredTokens, token, channel.traceId);
     this.rejectChannel(channel, new Error("Codex turn binding was revoked"));
   }
@@ -487,19 +496,54 @@ export class TurnBroker implements TurnBrokerOwner {
       return { revoked: true };
     }
     if (request.method === "claim") {
-      const token = request.token;
-      if (typeof token !== "string" || token.length === 0) throw new Error("turn token is required");
-      const channel = this.channels.get(token);
+      const requestedToken = request.token;
+      if (typeof requestedToken !== "string" || requestedToken.length === 0) throw new Error("turn token is required");
+      const sessionKey = request.sessionKey?.trim();
+      if (sessionKey !== undefined && !/^[a-f0-9]{64}$/.test(sessionKey)) {
+        throw new Error("turn session key is invalid");
+      }
+      let token = requestedToken;
+      let channel = this.channels.get(token);
       const retiredTurn = channel ? undefined : this.retiredTokens.get(token);
       console.error(
-        `[chatgpt-web] broker claim received (tokenChars=${token.length}, tokenHash=${handleFingerprint(token)}, valid=${Boolean(channel)}`
-        + `${channel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`})`,
+        `[chatgpt-web] broker claim received (tokenChars=${requestedToken.length}, tokenHash=${handleFingerprint(requestedToken)}, valid=${Boolean(channel)}`
+        + `${channel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`}${sessionKey ? ", session=present" : ""})`,
       );
+
+      if (!channel && sessionKey) {
+        const mapped = this.sessionBindings.get(sessionKey);
+        if (mapped && this.channels.get(mapped.token) === mapped.channel) {
+          token = mapped.token;
+          channel = mapped.channel;
+        } else {
+          if (mapped) this.sessionBindings.delete(sessionKey);
+          const pending = [...this.pending.entries()].filter(([candidateToken, candidate]) => (
+            this.channels.get(candidateToken) === candidate
+          ));
+          if (pending.length === 1) {
+            [token, channel] = pending[0]!;
+            console.warn(
+              `[chatgpt-web] broker trace=${channel.traceId} recovered a model-mutated turn token from one unique OpenAI MCP session`,
+            );
+          } else if (pending.length > 1) {
+            throw new Error("turn session cannot be bound safely while multiple Codex turns are awaiting their first MCP call");
+          }
+        }
+      }
+
       if (!channel) {
         throw new Error(retiredTurn !== undefined
           ? `This turn_token was issued for ${retiredTurnLabel(retiredTurn)}, which has already finished.`
           + " This Codex Native action can no longer run."
           : "turn token is invalid, expired, or revoked");
+      }
+      if (sessionKey) {
+        const existingSession = this.sessionBindings.get(sessionKey);
+        if (existingSession && (existingSession.token !== token || existingSession.channel !== channel)) {
+          throw new Error("OpenAI MCP session is already bound to another active Codex turn");
+        }
+        this.sessionBindings.set(sessionKey, { token, channel });
+        channel.sessionKeys.add(sessionKey);
       }
       if (channel.bindingId) {
         const existing = this.bindings.get(channel.bindingId);
@@ -691,7 +735,7 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
       status = await callTurnBroker(this.socketPath, { method: "owner_status" });
     } catch (error) {
       throw new Error(
-        "The running launcher runtime does not expose the DEV turn-owner protocol; update and restart Codex Web GPT once before using the working-tree DEV chat"
+        "The running launcher runtime does not expose the DEV turn-owner protocol; update and restart AsterBridge once before using the working-tree DEV chat"
         + ` (${error instanceof Error ? error.message : String(error)})`,
       );
     }

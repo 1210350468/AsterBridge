@@ -8,6 +8,7 @@ function subscription(channel, listener) {
 
 contextBridge.exposeInMainWorld("codexWebLauncher", {
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
+  takeControlOfRoxy: () => ipcRenderer.invoke("launcher:roxy-take-control"),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),
   completeOnboarding: (language) => ipcRenderer.invoke("launcher:complete-onboarding", language),
@@ -34,6 +35,8 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   setMcpStep: (step) => ipcRenderer.invoke("launcher:set-mcp-step", step),
   setAutostart: (enabled) => ipcRenderer.invoke("launcher:autostart", enabled),
   setPreference: (key, value) => ipcRenderer.invoke("launcher:set-preference", key, value),
+  setRoxyBrowserConfig: (input) => ipcRenderer.invoke("launcher:set-roxy-browser-config", input),
+  setNetworkProxy: (input) => ipcRenderer.invoke("launcher:set-network-proxy", input),
   setSidebarState: (state) => ipcRenderer.invoke("launcher:sidebar-state", state),
   logs: (limit) => ipcRenderer.invoke("launcher:logs", limit),
   openLogs: () => ipcRenderer.invoke("launcher:open-logs"),
@@ -43,6 +46,7 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   onWindowStateChanged: (listener) => subscription("launcher:window-state-changed", listener),
   onStateChanged: (listener) => subscription("launcher:state-changed", listener),
   onBrowserState: (listener) => subscription("launcher:browser-state", listener),
+  onRoxyPreview: (listener) => subscription("launcher:roxy-preview", listener),
   onOperation: (listener) => subscription("launcher:operation", listener),
   onLog: (listener) => subscription("launcher:log", listener),
   onUpdateState: (listener) => subscription("launcher:update-state", listener),

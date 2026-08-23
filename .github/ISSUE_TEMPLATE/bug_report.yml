@@ -1,0 +1,116 @@
+name: Bug report
+description: Report a reproducible Launcher, browser, MCP, or Codex integration problem
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, run **Launcher → Settings → Run diagnostics** and read the [Troubleshooting guide](https://github.com/1210350468/AsterBridge/blob/main/docs/troubleshooting.md).
+        Never paste API keys, cookies, bearer tokens, full turn tokens, browser profiles, or Tunnel credentials.
+
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      placeholder: "3.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: codex
+    attributes:
+      label: Codex version
+      placeholder: "0.149.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11 x64
+        - macOS arm64
+        - macOS x64
+        - Linux x64
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser backend
+      options:
+        - RoxyBrowser
+        - Embedded Launcher browser
+        - System Chrome / Edge
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Runtime mode
+      options:
+        - Browser-only
+        - Full Harness / MCP
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: proxy
+    attributes:
+      label: Network proxy mode
+      description: Do not paste proxy usernames/passwords. Choose the Launcher mode only.
+      options:
+        - Automatic
+        - Direct
+        - Custom HTTP/HTTPS proxy
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor result (redacted)
+      description: Paste failed/warning check names and safe details from Settings → Run diagnostics.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start Launcher
+        2. Select ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: activity
+    attributes:
+      label: Relevant Activity log lines (redacted)
+      description: Start from the first warning/error, not the final stream-disconnected message.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Security checklist
+      options:
+        - label: I removed API keys, cookies, bearer tokens, Tunnel credentials, full turn tokens, and browser profile data.
+          required: true
+        - label: I checked the Troubleshooting guide and did not delete my configuration before running Doctor.
+          required: true

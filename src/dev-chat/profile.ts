@@ -82,34 +82,46 @@ function executableFile(path: string): boolean {
   }
 }
 
-export function installedLauncherCandidates({
-  environment = process.env,
-  homeDirectory = homedir(),
-  platform = process.platform,
-  windowsInstallLocation,
-}: {
+export function installedLauncherCandidates(options: {
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   platform?: NodeJS.Platform;
   windowsInstallLocation?: string;
 } = {}): string[] {
+  const environment = options.environment ?? process.env;
+  const homeDirectory = options.homeDirectory ?? homedir();
+  const platform = options.platform ?? process.platform;
+  const windowsInstallLocation = options.windowsInstallLocation;
   const override = environment.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE?.trim();
   const candidates = override ? [expandUserPath(override)] : [];
   const targetPath = platform === "win32" ? win32 : posix;
   if (platform === "darwin") {
     candidates.push(
+      "/Applications/AsterBridge.app/Contents/MacOS/AsterBridge",
+      posix.join(homeDirectory, "Applications", "AsterBridge.app", "Contents", "MacOS", "AsterBridge"),
       "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
       posix.join(homeDirectory, "Applications", "Codex Web GPT.app", "Contents", "MacOS", "Codex Web GPT"),
     );
   } else if (platform === "win32") {
+    const shouldReadHostRegistry = windowsInstallLocation === undefined
+      && options.environment === undefined
+      && options.homeDirectory === undefined
+      && options.platform === undefined
+      && process.platform === "win32";
     const registeredLocation = windowsInstallLocation?.trim()
-      || (process.platform === "win32" ? registeredWindowsLauncherInstallLocation() : undefined);
+      || (shouldReadHostRegistry ? registeredWindowsLauncherInstallLocation() : undefined);
     if (registeredLocation && win32.isAbsolute(registeredLocation)) {
-      candidates.push(win32.join(registeredLocation, "Codex Web GPT.exe"));
+      candidates.push(
+        win32.join(registeredLocation, "AsterBridge.exe"),
+        win32.join(registeredLocation, "Codex Web GPT.exe"),
+      );
     } else {
       const localAppData = environment.LOCALAPPDATA?.trim();
       if (localAppData) {
-        candidates.push(win32.join(localAppData, "Programs", "Codex Web GPT", "Codex Web GPT.exe"));
+        candidates.push(
+          win32.join(localAppData, "Programs", "AsterBridge", "AsterBridge.exe"),
+          win32.join(localAppData, "Programs", "Codex Web GPT", "Codex Web GPT.exe"),
+        );
       }
     }
   } else if (platform === "linux") {
@@ -126,7 +138,7 @@ export function findInstalledLauncherExecutable(options: Parameters<typeof insta
   const executable = candidates.find(executableFile);
   if (executable) return executable;
   throw new Error(
-    "Installed Codex Web GPT launcher was not found. Install it first or set CODEX_WEB_GPT_LAUNCHER_EXECUTABLE to its absolute executable path."
+    "Installed AsterBridge launcher was not found. Install it first or set CODEX_WEB_GPT_LAUNCHER_EXECUTABLE to its absolute executable path."
       + ` Checked: ${candidates.join(", ") || "no platform candidates"}`,
   );
 }

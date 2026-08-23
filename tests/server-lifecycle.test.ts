@@ -343,7 +343,12 @@ test("health proves that Codex received a successful augmented model catalog", a
   const endpoint = `http://127.0.0.1:${server.port}`;
   try {
     expect(await (await fetch(`${endpoint}/healthz`)).json()).toMatchObject({
+      total_model_catalog_requests: 0,
       successful_model_catalog_requests: 0,
+      failed_model_catalog_requests: 0,
+      last_model_catalog_status: null,
+      last_model_catalog_error: null,
+      last_model_catalog_request_at: null,
       last_successful_model_catalog_request_at: null,
     });
 
@@ -353,8 +358,40 @@ test("health proves that Codex received a successful augmented model catalog", a
     expect(models.status).toBe(200);
 
     const health = await (await fetch(`${endpoint}/healthz`)).json() as Record<string, unknown>;
+    expect(health.total_model_catalog_requests).toBe(1);
     expect(health.successful_model_catalog_requests).toBe(1);
+    expect(health.failed_model_catalog_requests).toBe(0);
+    expect(health.last_model_catalog_status).toBe(200);
+    expect(health.last_model_catalog_error).toBeNull();
+    expect(typeof health.last_model_catalog_request_at).toBe("string");
     expect(typeof health.last_successful_model_catalog_request_at).toBe("string");
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("health records failed model catalog attempts with status and error", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config, {
+    fetchUpstream: async () => {
+      throw new Error("Unable to connect. Is the computer able to access the url?");
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    const models = await fetch(`${endpoint}/v1/models`, {
+      headers: { authorization: "Bearer test-codex-session" },
+    });
+    expect(models.status).toBe(502);
+
+    const health = await (await fetch(`${endpoint}/healthz`)).json() as Record<string, unknown>;
+    expect(health.total_model_catalog_requests).toBe(1);
+    expect(health.successful_model_catalog_requests).toBe(0);
+    expect(health.failed_model_catalog_requests).toBe(1);
+    expect(health.last_model_catalog_status).toBe(502);
+    expect(health.last_model_catalog_error).toBe("Unable to connect. Is the computer able to access the url?");
+    expect(typeof health.last_model_catalog_request_at).toBe("string");
+    expect(health.last_successful_model_catalog_request_at).toBeNull();
   } finally {
     await server.stop(true);
   }

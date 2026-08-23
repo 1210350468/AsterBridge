@@ -15,13 +15,14 @@ test("the public launcher command uses the Electron bootstrap", () => {
 
 test("launcher publishes native packages for all supported desktop operating systems", () => {
   assert.equal(manifest.build.appId, "dev.codexwebgpt.launcher");
-  assert.equal(manifest.build.artifactName, "codex-web-gpt-${version}-${os}-${arch}.${ext}");
+  assert.equal(manifest.build.artifactName, "asterbridge-${version}-${os}-${arch}.${ext}");
   assert.deepEqual(manifest.build.mac.target, ["dmg", "zip"]);
   assert.deepEqual(manifest.build.win.target, ["nsis"]);
-  assert.equal(manifest.build.win.icon, "assets/icon.ico");
+  assert.equal(manifest.build.productName, "AsterBridge");
+  assert.equal(manifest.build.win.icon, "assets/icon.svg");
   assert.deepEqual(manifest.build.linux.target, ["AppImage"]);
-  assert.ok(manifest.build.files.includes("assets/icon.png"));
-  assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.ico")));
+  assert.ok(manifest.build.files.includes("assets/icon.svg"));
+  assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.svg")));
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
   assert.equal(manifest.build.nsis.allowElevation, false);
@@ -57,7 +58,7 @@ test("release installers resolve checksummed native launcher assets", () => {
       < shellInstaller.indexOf('"$TEMP_DIR/$ASSET" --appimage-extract'),
     "the downloaded AppImage must be executable before it is inspected",
   );
-  assert.match(windowsInstaller, /codex-web-gpt-\$Version-win-\$Arch\.exe/);
+  assert.match(windowsInstaller, /asterbridge-\$Version-win-\$Arch\.exe/);
   assert.match(windowsInstaller, /\[Environment\]::Is64BitOperatingSystem/);
   assert.doesNotMatch(windowsInstaller, /RuntimeInformation/);
   assert.ok(windowsInstaller.includes(`HKCU:\\Software\\${manifest.build.nsis.guid}`));
@@ -98,7 +99,7 @@ test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
   assert.match(release, /bun run app:smoke/);
   assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
   assert.match(release, /codesign --verify --deep --strict --verbose=2/);
-  assert.match(release, /Codex Web GPT\.app/);
+  assert.match(release, /AsterBridge\.app/);
   assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
 });
 
@@ -115,7 +116,7 @@ test("macOS package smoke unregisters its staged app from LaunchServices", () =>
 test("release publishes the repository demo as a checksummed versioned asset", () => {
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
   const demo = fs.readFileSync(path.join(repositoryRoot, "assets", "demo.gif"));
-  const demoCopy = 'cp assets/demo.gif "release-assets/codex-web-gpt-${GITHUB_REF_NAME#v}-demo.gif"';
+  const demoCopy = 'cp assets/demo.gif "release-assets/asterbridge-${GITHUB_REF_NAME#v}-demo.gif"';
   const checksumStep = release.indexOf("- name: Create checksums");
   assert.equal(demo.subarray(0, 6).toString("ascii"), "GIF89a");
   assert.ok(release.includes(demoCopy));

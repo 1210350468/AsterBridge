@@ -26,6 +26,7 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { applyNetworkProxyEnvironment, normalizeProxyUrl } = require("./network-proxy.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
@@ -49,14 +50,16 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
-const GITHUB_URL = "https://github.com/miuuyy/codex-chatgpt-web";
+const GITHUB_URL = "https://github.com/1210350468/AsterBridge";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
 const KEYS_URL = "https://platform.openai.com/settings/organization/api-keys";
-const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL]);
+const TROUBLESHOOTING_URL = "https://github.com/1210350468/AsterBridge/blob/main/docs/troubleshooting.md";
+const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL, TROUBLESHOOTING_URL]);
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
-const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
+const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.svg");
+const BASE_PROXY_ENVIRONMENT = { ...process.env };
 
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
@@ -178,11 +181,16 @@ async function restoreCodexRouteAfterRuntimeFailure({ logger, stateStore }) {
   }
 }
 
+function applicationIconImage() {
+  const svg = fs.readFileSync(APP_ICON_PATH, "utf8");
+  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+}
+
 function trayImage() {
   if (process.platform !== "darwin") {
-    return nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 18, height: 18 });
+    return applicationIconImage().resize({ width: 18, height: 18 });
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M4.1 3.4h6.4l3.4 3.4v7.8H7.5l-3.4-3.4V3.4Z" fill="none" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><path d="m7 7 2-2 2 2M7 11l2 2 2-2" fill="none" stroke="white" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M3.2 12.9C5.1 8.4 8.8 5.8 15 4.9M3.4 7.4c3.1.9 6 3.3 8.2 7.5" fill="none" stroke="white" stroke-width="1.55" stroke-linecap="round"/><path d="m9 6.2 2.8 2.8L9 11.8 6.2 9 9 6.2Z" fill="white"/><circle cx="3.2" cy="12.9" r="1.05" fill="white"/><circle cx="15" cy="4.9" r=".9" fill="white"/></svg>`;
   const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
   image.setTemplateImage(true);
   return image;
@@ -260,9 +268,9 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
     minWidth: MIN_WINDOW_BOUNDS.width,
     minHeight: MIN_WINDOW_BOUNDS.height,
     title: LAUNCHER_PROFILE.displayName,
-    icon: APP_ICON_PATH,
+    icon: applicationIconImage(),
     show: false,
-    backgroundColor: isMac ? "#00000000" : "#181818",
+    backgroundColor: isMac ? "#00000000" : "#111520",
     titleBarStyle: isMac ? "hiddenInset" : "hidden",
     transparent: isMac,
     ...(isMac ? {
@@ -355,6 +363,54 @@ function smokePassedForCurrentVersion(state) {
   return state.browserSmokePassed === true && state.browserSmokeVersion === app.getVersion();
 }
 
+function roxyBrowserOptionsFromState(state) {
+  if (state.useRoxyBrowser !== true) return null;
+  return {
+    profileId: state.roxyBrowserProfileId,
+    dataDir: state.roxyBrowserDataDir,
+    autoOpen: state.roxyBrowserAutoOpen === true,
+    apiHost: state.roxyBrowserApiHost || "http://127.0.0.1:50000",
+  };
+}
+
+function networkProxyStatus(state) {
+  const target = {};
+  const applied = applyNetworkProxyEnvironment({
+    mode: state.networkProxyMode,
+    customUrl: state.networkProxyUrl,
+    target,
+    baseEnvironment: BASE_PROXY_ENVIRONMENT,
+  });
+  return { source: applied.source, display: applied.display };
+}
+
+function synchronizeExternalBrowserState(stateStore) {
+  const state = stateStore.read();
+  if (IS_DEV_PROFILE || !runtimeHost) return state;
+  let runtimeConfig;
+  try {
+    runtimeConfig = runtimeHost.runtimeConfigSnapshot().config;
+  } catch {
+    return state;
+  }
+  const turnHost = runtimeConfig?.turnBrowserHost ?? runtimeConfig?.browserHost;
+  const noExplicitExternalDraft = state.useSystemBrowser !== true
+    && state.useRoxyBrowser !== true
+    && !state.roxyBrowserProfileId;
+  if (!noExplicitExternalDraft) return state;
+  if (turnHost === "roxybrowser") {
+    return stateStore.update({
+      useRoxyBrowser: true,
+      roxyBrowserProfileId: runtimeConfig.roxyBrowserProfileId || "",
+      roxyBrowserDataDir: runtimeConfig.roxyBrowserDataDir || "",
+      roxyBrowserAutoOpen: runtimeConfig.roxyBrowserAutoOpen === true,
+      roxyBrowserApiHost: runtimeConfig.roxyBrowserApiHost || "http://127.0.0.1:50000",
+    });
+  }
+  if (turnHost === "system-browser") return stateStore.update({ useSystemBrowser: true });
+  return state;
+}
+
 function registerIpc({ logger, stateStore }) {
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
   handle("launcher:snapshot", async () => ({
@@ -364,12 +420,15 @@ function registerIpc({ logger, stateStore }) {
       codexHome: LAUNCHER_PROFILE.codexHome,
       userData: launcherUserData,
     },
-    state: stateStore.read(),
+    state: synchronizeExternalBrowserState(stateStore),
     browser: browserHost?.snapshot() ?? null,
+    roxyPreview: browserControl?.roxyPreviewSnapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
+    roxyApiKeyConfigured: runtimeHost?.roxyBrowserApiKeyConfigured() ?? false,
+    networkProxy: networkProxyStatus(stateStore.read()),
     logs: logger.recent(),
-    urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL },
+    urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL, troubleshooting: TROUBLESHOOTING_URL },
     platform: process.platform,
     packaged: app.isPackaged,
     version: app.getVersion(),
@@ -379,6 +438,7 @@ function registerIpc({ logger, stateStore }) {
   }));
 
   handle("launcher:set-language", (_event, language) => stateStore.update({ language: validateLanguage(language) }));
+  handle("launcher:roxy-take-control", () => browserControl.requestRoxyAction("take-control"));
   handle("launcher:open-social", async (_event, target) => {
     const url = target === "github" ? GITHUB_URL : target === "x" ? X_URL : null;
     if (!url) throw new Error("Unknown social target");
@@ -475,7 +535,12 @@ function registerIpc({ logger, stateStore }) {
     }
     try {
       publishOperation({ name: operationName, status: "running", message: "Checking ChatGPT connector" });
-      await browserHost.verifyConnector(runtimeHost.mcpConnectorName());
+      const verificationState = stateStore.read();
+      if (!IS_DEV_PROFILE && (verificationState.useSystemBrowser === true || verificationState.useRoxyBrowser === true)) {
+        await runtimeHost.verifySystemBrowserConnector();
+      } else {
+        await browserHost.verifyConnector(runtimeHost.mcpConnectorName());
+      }
       const state = stateStore.update({ mcpSetupComplete: true });
       send("launcher:state-changed", state);
       const successMessage = IS_DEV_PROFILE
@@ -534,7 +599,7 @@ function registerIpc({ logger, stateStore }) {
       buttons: chinese ? ["取消", "移除"] : ["Cancel", "Remove"],
       defaultId: 0,
       cancelId: 0,
-      title: chinese ? "移除 Codex Web GPT" : "Remove Codex Web GPT",
+      title: chinese ? "移除 AsterBridge · 星桥" : "Remove AsterBridge",
       message: chinese
         ? "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？"
         : "Remove the ChatGPT Web models from Codex and restore the previous model route?",
@@ -563,24 +628,34 @@ function registerIpc({ logger, stateStore }) {
     return { cancelled: false, state };
   });
   handle("launcher:setup-core", async () => {
-    const browser = await browserHost.probeAuthentication();
-    if (!browser.authenticated) {
-      throw new Error(
-        IS_DEV_PROFILE
-          ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
-          : "Sign in to ChatGPT before installing the Codex integration",
-      );
-    }
     const setupState = stateStore.read();
-    if (!setupState.coreSetupComplete
-      && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
-      throw new Error(
-        IS_DEV_PROFILE
-          ? "Run the browser smoke test before configuring the DEV harness"
-          : "Run the browser smoke test before installing the Codex integration",
-      );
+    const useSystemBrowser = !IS_DEV_PROFILE && setupState.useSystemBrowser === true;
+    const useRoxyBrowser = !IS_DEV_PROFILE && setupState.useRoxyBrowser === true;
+    const externalBrowser = useSystemBrowser || useRoxyBrowser;
+    if (!externalBrowser) {
+      const browser = await browserHost.probeAuthentication();
+      if (!browser.authenticated) {
+        throw new Error(
+          IS_DEV_PROFILE
+            ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
+            : "Sign in to ChatGPT before installing the Codex integration",
+        );
+      }
+      if (!setupState.coreSetupComplete
+        && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
+        throw new Error(
+          IS_DEV_PROFILE
+            ? "Run the browser smoke test before configuring the DEV harness"
+            : "Run the browser smoke test before installing the Codex integration",
+        );
+      }
     }
-    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    const result = IS_DEV_PROFILE
+      ? await runtimeHost.setupDevCore()
+      : await runtimeHost.setupCore({
+          useSystemBrowser,
+          roxyBrowser: useRoxyBrowser ? roxyBrowserOptionsFromState(setupState) : null,
+        });
     stateStore.update({
       bridgeEnabled: IS_DEV_PROFILE ? false : true,
       coreSetupComplete: true,
@@ -605,7 +680,10 @@ function registerIpc({ logger, stateStore }) {
     return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
-    await browserHost.reveal();
+    const browserModeState = stateStore.read();
+    if (IS_DEV_PROFILE || (!browserModeState.useSystemBrowser && !browserModeState.useRoxyBrowser)) {
+      await browserHost.reveal();
+    }
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
       : runtimeHost.setupMcp.bind(runtimeHost);
@@ -613,6 +691,11 @@ function registerIpc({ logger, stateStore }) {
       tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
       runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
       replace: input?.replace === true,
+      ...(!IS_DEV_PROFILE ? {
+        connectorName: typeof input?.connectorName === "string" ? input.connectorName.trim() : "",
+        useSystemBrowser: stateStore.read().useSystemBrowser === true,
+        roxyBrowser: roxyBrowserOptionsFromState(stateStore.read()),
+      } : {}),
     });
     stateStore.update({
       mcpRuntimeInstalled: true,
@@ -637,10 +720,113 @@ function registerIpc({ logger, stateStore }) {
     };
   });
   handle("launcher:set-preference", (_event, key, value) => {
-    if (key !== "keepRunningOnClose" && key !== "showBrowserDuringTurns") {
+    if (key !== "keepRunningOnClose" && key !== "showBrowserDuringTurns" && key !== "useSystemBrowser") {
       throw new Error("Unknown preference");
     }
-    return stateStore.update({ [key]: value === true });
+    const enabled = value === true;
+    if (key === "useSystemBrowser") {
+      const current = stateStore.read();
+      if (current.useSystemBrowser === enabled && (!enabled || current.useRoxyBrowser !== true)) return current;
+      stopCatalogVerificationMonitor();
+      return stateStore.update({
+        useSystemBrowser: enabled,
+        ...(enabled ? { useRoxyBrowser: false } : {}),
+        coreSetupComplete: false,
+        codexCatalogVerified: false,
+        codexRestartRequired: true,
+      });
+    }
+    return stateStore.update({ [key]: enabled });
+  });
+  handle("launcher:set-network-proxy", async (_event, input) => {
+    if (!input || typeof input !== "object") throw new Error("Proxy configuration is required");
+    const mode = typeof input.mode === "string" ? input.mode : "";
+    if (!["auto", "direct", "custom"].includes(mode)) throw new Error("Proxy mode must be auto, direct, or custom");
+    const url = mode === "custom" ? normalizeProxyUrl(input.url) : "";
+    if (mode === "custom" && !url) throw new Error("Custom proxy mode requires a proxy address");
+    if (mode === "custom") {
+      const parsed = new URL(url);
+      if (parsed.username || parsed.password) {
+        throw new Error("Authenticated proxies are not stored in Launcher settings; configure them with HTTPS_PROXY/HTTP_PROXY instead");
+      }
+    }
+
+    const nextState = stateStore.update({ networkProxyMode: mode, networkProxyUrl: url });
+    const applied = applyNetworkProxyEnvironment({
+      mode,
+      customUrl: url,
+      target: process.env,
+      baseEnvironment: BASE_PROXY_ENVIRONMENT,
+    });
+    logger.info("network.proxy_configured", { mode, source: applied.source, proxy: applied.display });
+
+    let runtimeRestarted = false;
+    let restartRequired = false;
+    try {
+      const configured = runtimeHost?.runtimeConfigSnapshot().configured === true;
+      if (configured && runtimeSupervisor) {
+        await runtimeSupervisor.restart();
+        runtimeRestarted = true;
+      }
+    } catch (error) {
+      restartRequired = true;
+      logger.warn("network.proxy_runtime_restart_deferred", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    send("launcher:state-changed", nextState);
+    return {
+      state: nextState,
+      source: applied.source,
+      display: applied.display,
+      runtimeRestarted,
+      restartRequired,
+    };
+  });
+
+  handle("launcher:set-roxy-browser-config", (_event, input) => {
+    if (IS_DEV_PROFILE) throw new Error("RoxyBrowser turn hosting is unavailable in the isolated DEV launcher");
+    if (!input || typeof input !== "object") throw new Error("RoxyBrowser configuration is required");
+    const enabled = input.enabled === true;
+    const profileId = typeof input.profileId === "string" ? input.profileId.trim() : "";
+    const dataDir = typeof input.dataDir === "string" ? input.dataDir.trim() : "";
+    const autoOpen = input.autoOpen === true;
+    const apiHost = typeof input.apiHost === "string" && input.apiHost.trim()
+      ? input.apiHost.trim()
+      : "http://127.0.0.1:50000";
+    if ((enabled || profileId) && !/^[A-Za-z0-9_-]{8,128}$/.test(profileId)) {
+      throw new Error("RoxyBrowser profile/window ID is invalid");
+    }
+    if (enabled && (!dataDir || !path.isAbsolute(dataDir))) {
+      throw new Error("RoxyBrowser data directory must be an absolute path");
+    }
+    if (autoOpen) {
+      let parsed;
+      try { parsed = new URL(apiHost); } catch { throw new Error("RoxyBrowser API host is invalid"); }
+      if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") {
+        throw new Error("RoxyBrowser API host must use http://127.0.0.1:<port>");
+      }
+    }
+    if (input.clearApiKey === true) runtimeHost.setRoxyBrowserApiKey("");
+    else if (typeof input.apiKey === "string" && input.apiKey.trim()) runtimeHost.setRoxyBrowserApiKey(input.apiKey);
+    if (enabled && autoOpen && !runtimeHost.roxyBrowserApiKeyConfigured()) {
+      throw new Error("Automatic RoxyBrowser startup requires an API key");
+    }
+    stopCatalogVerificationMonitor();
+    const state = stateStore.update({
+      useRoxyBrowser: enabled,
+      ...(enabled ? { useSystemBrowser: false } : {}),
+      roxyBrowserProfileId: profileId,
+      roxyBrowserDataDir: dataDir,
+      roxyBrowserAutoOpen: autoOpen,
+      roxyBrowserApiHost: apiHost,
+      coreSetupComplete: false,
+      codexCatalogVerified: false,
+      mcpSetupComplete: false,
+      codexRestartRequired: true,
+    });
+    send("launcher:state-changed", state);
+    return { state, apiKeyConfigured: runtimeHost.roxyBrowserApiKeyConfigured() };
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
@@ -680,7 +866,7 @@ async function requestQuit() {
   try {
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
     if (activeOperation) {
-      throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
+      throw new Error(`Wait for ${activeOperation} to finish before quitting AsterBridge`);
     }
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
@@ -734,6 +920,13 @@ async function start() {
   };
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  const initialProxyState = stateStore.read();
+  applyNetworkProxyEnvironment({
+    mode: initialProxyState.networkProxyMode,
+    customUrl: initialProxyState.networkProxyUrl,
+    target: process.env,
+    baseEnvironment: BASE_PROXY_ENVIRONMENT,
+  });
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
       language: stateStore.read().language || "en",
@@ -775,6 +968,7 @@ async function start() {
     logger,
     getBrowserHost: () => browserHost,
     getPreferences: () => stateStore.read(),
+    publishRoxyPreview: (preview) => send("launcher:roxy-preview", preview),
   }).start();
   runtimeSupervisor = new RuntimeSupervisor({
     app,
@@ -800,6 +994,7 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
   });
+  synchronizeExternalBrowserState(stateStore);
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
@@ -955,6 +1150,8 @@ async function start() {
     }
     return runtimeSupervisor.startIfConfigured();
   })().then(async (runtime) => {
+    const synchronizedBrowserState = synchronizeExternalBrowserState(stateStore);
+    send("launcher:state-changed", synchronizedBrowserState);
     if (runtime.status === "bridge-disabled") {
       stopCatalogVerificationMonitor();
       return;
@@ -1004,7 +1201,7 @@ async function start() {
     if (runtime.status === "external" || runtime.status === "needs-setup") {
       const detail = runtime.detail || (
         runtime.status === "external"
-          ? "Another process owns the configured Codex Web GPT runtime"
+          ? "Another process owns the configured AsterBridge runtime"
           : "The installed runtime configuration must be repaired from Setup"
       );
       publishOperation({
@@ -1047,7 +1244,7 @@ void start().catch((error) => {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
   } catch {}
   try {
-    dialog.showErrorBox("Codex Web GPT could not start", message);
+    dialog.showErrorBox("AsterBridge could not start", message);
   } catch {}
   app.exit(1);
 });

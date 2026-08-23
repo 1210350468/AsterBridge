@@ -56,28 +56,73 @@ function devHostFor(existingConfig) {
   return { host, invocation: () => invocation };
 }
 
-test("core setup preserves an existing full-harness installation", async () => {
-  const fixture = hostFor({ mode: "full", appName: "Codex Native2" });
+test("core setup deliberately resets an existing full harness to browser-only before MCP is configured", async () => {
+  const fixture = hostFor({ mode: "full", appName: "Codex Native3" });
   const result = await fixture.host.setupCore();
-  assert.equal(result.mode, "full");
+  assert.equal(result.mode, "browser-only");
   assert.deepEqual(fixture.invocation().args, [
     "setup",
-    "--full",
+    "--browser-only",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--refresh-account-capabilities",
     "--replace-codex-route",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
+    "--embedded-browser",
   ]);
 });
 
-test("core setup replaces the known legacy connector identity with the direct-turn identity", async () => {
+test("core setup can run ChatGPT turns in the authorized main browser while launcher keeps runtime ownership", async () => {
+  const fixture = hostFor({ mode: "browser-only", appName: "Codex Native3" });
+  await fixture.host.setupCore({ useSystemBrowser: true });
+  assert.equal(fixture.invocation().args.includes("--browser-host-descriptor"), true);
+  assert.equal(fixture.invocation().args.includes("--system-browser"), true);
+  assert.deepEqual(
+    fixture.invocation().args.slice(-2),
+    ["--system-browser-channel", "auto"],
+  );
+  assert.equal(fixture.invocation().args.includes("--embedded-browser"), false);
+});
+
+test("core setup routes RoxyBrowser profile settings and keeps its Local API key out of argv", async () => {
+  const fixture = hostFor({ mode: "browser-only", appName: "Codex Native3" });
+  const keyPath = fixture.host.roxyBrowserApiKeyPath();
+  fs.rmSync(keyPath, { force: true });
+  try {
+    fixture.host.setRoxyBrowserApiKey("private-roxy-api-key");
+    const dataDir = path.join(os.tmpdir(), "roxybrowserdata");
+    await fixture.host.setupCore({
+      roxyBrowser: {
+        profileId: "0123456789abcdef0123456789abcdef",
+        dataDir,
+        autoOpen: true,
+        apiHost: "http://127.0.0.1:50000",
+      },
+    });
+    const args = fixture.invocation().args;
+    assert.equal(args.includes("--embedded-browser"), false);
+    assert.equal(args.includes("--system-browser"), false);
+    assert.deepEqual(args.slice(args.indexOf("--roxy-browser-profile"), args.indexOf("--roxy-browser-profile") + 4), [
+      "--roxy-browser-profile",
+      "0123456789abcdef0123456789abcdef",
+      "--roxy-browser-data-dir",
+      path.resolve(dataDir),
+    ]);
+    assert.equal(args.includes("--roxy-browser-auto-open"), true);
+    assert.equal(args[args.indexOf("--roxy-browser-api-host") + 1], "http://127.0.0.1:50000");
+    assert.equal(args[args.indexOf("--roxy-browser-api-key-file") + 1], keyPath);
+    assert.equal(args.some(value => String(value).includes("private-roxy-api-key")), false);
+  } finally {
+    fs.rmSync(keyPath, { force: true });
+  }
+});
+
+test("core setup never validates or migrates a connector before the separate MCP stage", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   await fixture.host.setupCore();
-  assert.deepEqual(fixture.invocation().args.slice(-2), ["--app-name", "Codex Native2"]);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
+  assert.equal(fixture.invocation().args.includes("--full"), false);
 });
 
 test("core setup starts in browser-only mode when no installation exists", async () => {
@@ -144,7 +189,7 @@ test("DEV MCP setup reuses only DEV-home credentials and targets its distinct co
     purpose: "dev-harness",
     mode: "full",
     browserHost: "launcher",
-    appName: "Codex Native2",
+    appName: "Codex Native3",
     tunnel: {
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile,
@@ -161,7 +206,7 @@ test("DEV MCP setup reuses only DEV-home credentials and targets its distinct co
         "--browser-host-descriptor",
         "/dev/runtime/launcher-browser.json",
         "--app-name",
-        "Codex Native2 DEV",
+        "Codex Native3 DEV",
         "--acknowledge-unofficial",
       ],
     });
@@ -177,7 +222,7 @@ test("DEV doctor requires live tunnel readiness without probing a Responses list
   const fixture = devHostFor({
     purpose: "dev-harness",
     mode: "full",
-    appName: "Codex Native2 DEV",
+    appName: "Codex Native3 DEV",
     tunnel: { runtimeKeyFile },
   });
   fixture.host.supervisor.readTunnelHealth = async () => ({
@@ -231,7 +276,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
   const fixture = hostFor({
     mode: "full",
     browserHost: "launcher",
-    appName: "Codex Native2",
+    appName: "Codex Native3",
     releaseVersion: "1.1.1",
   });
   fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
@@ -246,7 +291,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--acknowledge-unofficial",
     "--restart-service",
     "--app-name",
-    "Codex Native2",
+    "Codex Native3",
   ]);
   assert.deepEqual(result, {
     updated: true,
@@ -278,7 +323,7 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--acknowledge-unofficial",
     "--restart-service",
     "--app-name",
-    "Codex Native2",
+    "Codex Native3",
   ]);
   assert.equal(result.updated, true);
   assert.equal(result.connectorMigrated, true);
@@ -309,7 +354,7 @@ test("launcher update transaction leaves current and externally owned runtimes u
   const currentFull = hostFor({
     mode: "full",
     browserHost: "launcher",
-    appName: "Codex Native2",
+    appName: "Codex Native3",
     releaseVersion: "1.1.3",
   });
   const external = hostFor({ mode: "browser-only", browserHost: "managed-chrome", releaseVersion: "1.1.1" });
@@ -328,7 +373,7 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
   const fixture = hostFor({
     mode: "full",
-    appName: "Codex Native2",
+    appName: "Codex Native3",
     tunnel: {
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: keyPath,
@@ -343,8 +388,9 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--app-name",
-      "Codex Native2",
+      "Codex Native3",
       "--replace-codex-route",
+      "--embedded-browser",
       "--acknowledge-unofficial",
       "--restart-service",
     ]);
@@ -369,8 +415,57 @@ test("new MCP setup uses the explicit default connector name", async () => {
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--app-name",
-    "Codex Native2",
+    "Codex Native3",
   ]);
+});
+
+test("MCP setup can change only the ChatGPT App identity while reusing saved tunnel credentials", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-custom-connector-"));
+  const keyPath = path.join(root, "tunnel-runtime.key");
+  fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
+  const fixture = hostFor({
+    mode: "full",
+    appName: "Codex Native2",
+    tunnel: {
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: keyPath,
+    },
+  });
+  try {
+    await fixture.host.setupMcp({
+      replace: false,
+      connectorName: "Codex Local Fresh",
+    });
+    const args = fixture.invocation().args;
+    const appNameIndex = args.indexOf("--app-name");
+    assert.equal(args[appNameIndex + 1], "Codex Local Fresh");
+    assert.equal(args.includes("--tunnel-id"), false);
+    assert.equal(args.includes("--runtime-key-file"), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP setup rejects the retired connector identity even when credentials are reusable", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-legacy-connector-"));
+  const keyPath = path.join(root, "tunnel-runtime.key");
+  fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
+  const fixture = hostFor({
+    mode: "full",
+    appName: "Codex Native2",
+    tunnel: {
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: keyPath,
+    },
+  });
+  try {
+    await assert.rejects(
+      Promise.resolve().then(() => fixture.host.setupMcp({ replace: false, connectorName: "Codex Native" })),
+      /retired identity/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {
@@ -625,13 +720,13 @@ test("integration removal rejects a command that leaves an inactive journal behi
 });
 
 test("connector verification uses the current identity and rejects a legacy local runtime", () => {
-  const full = hostFor({ mode: "full", appName: "Codex Native2" });
-  assert.equal(full.host.mcpConnectorName(), "Codex Native2");
-  assert.equal(full.host.browserConnectorName(), "Codex Native2");
+  const full = hostFor({ mode: "full", appName: "Codex Native3" });
+  assert.equal(full.host.mcpConnectorName(), "Codex Native3");
+  assert.equal(full.host.browserConnectorName(), "Codex Native3");
   const defaultName = hostFor(null);
   assert.equal(defaultName.host.browserConnectorName(), CURRENT_CONNECTOR_NAME);
   const legacyFull = hostFor({ mode: "full", appName: "Codex Native" });
-  assert.equal(legacyFull.host.browserConnectorName(), "Codex Native2");
+  assert.equal(legacyFull.host.browserConnectorName(), "Codex Native3");
   assert.throws(
     () => legacyFull.host.mcpConnectorName(),
     /still targets legacy ChatGPT connector.*create that connector as a new ChatGPT plugin/,
@@ -640,9 +735,9 @@ test("connector verification uses the current identity and rejects a legacy loca
   assert.throws(() => invalidFull.host.mcpConnectorName(), /Connector name is invalid/);
   assert.throws(() => invalidFull.host.browserConnectorName(), /Connector name is invalid/);
   const browserOnly = hostFor({ mode: "browser-only", appName: "Codex Native" });
-  assert.equal(browserOnly.host.browserConnectorName(), "Codex Native2");
+  assert.equal(browserOnly.host.browserConnectorName(), "Codex Native3");
   assert.throws(() => browserOnly.host.mcpConnectorName(), /MCP runtime is not configured/);
-  const dev = devHostFor({ mode: "full", appName: "Codex Native2" });
+  const dev = devHostFor({ mode: "full", appName: "Codex Native3" });
   assert.equal(dev.host.browserConnectorName(), DEV_CONNECTOR_NAME);
   assert.equal(dev.host.mcpConnectorName(), DEV_CONNECTOR_NAME);
 });

@@ -2,8 +2,8 @@
   "name": "codex-web-gpt-launcher",
   "version": "3.0.0",
   "private": true,
-  "description": "Desktop control center for Codex ChatGPT Web",
-  "author": "miuuyy",
+  "description": "AsterBridge desktop control center for Codex, ChatGPT Web, and native tools",
+  "author": "AsterBridge contributors",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -37,8 +37,8 @@
   },
   "build": {
     "appId": "dev.codexwebgpt.launcher",
-    "productName": "Codex Web GPT",
-    "artifactName": "codex-web-gpt-${version}-${os}-${arch}.${ext}",
+    "productName": "AsterBridge",
+    "artifactName": "asterbridge-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "directories": {
       "output": "release"
@@ -46,7 +46,7 @@
     "files": [
       "dist/**",
       "electron/**",
-      "assets/icon.png",
+      "assets/icon.svg",
       "package.json"
     ],
     "extraResources": [
@@ -57,18 +57,18 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.svg",
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,
       "target": ["dmg", "zip"]
     },
     "win": {
-      "icon": "assets/icon.ico",
+      "icon": "assets/icon.svg",
       "target": ["nsis"]
     },
     "linux": {
       "category": "Development",
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.svg",
       "target": ["AppImage"]
     },
     "nsis": {

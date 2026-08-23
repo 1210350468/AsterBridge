@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_CHATGPT_WEB_REPOSITORY:-miuuyy/codex-chatgpt-web}"
+REPOSITORY="${CODEX_CHATGPT_WEB_REPOSITORY:-1210350468/AsterBridge}"
 VERSION="${CODEX_CHATGPT_WEB_VERSION:-3.0.0}"
 BIN_DIR="${CODEX_CHATGPT_WEB_BIN_DIR:-$HOME/.local/bin}"
 LIB_DIR="${CODEX_CHATGPT_WEB_LIB_DIR:-$HOME/.local/lib/codex-chatgpt-web}"

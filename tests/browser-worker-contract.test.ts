@@ -84,7 +84,7 @@ test("browser configuration rejects the retired connector identity before openin
     adapter: "chatgpt-web",
     baseUrl: "browser://chatgpt",
     chatgptWeb: { appName: "Codex Native" },
-  })).toThrow(/requires a newly created connector named "Codex Native2".*do not rename or refresh/s);
+  })).toThrow(/requires a newly created connector named "Codex Native3".*do not rename or refresh/s);
 });
 
 test("connector verification reports a legacy-only ChatGPT menu as a migration error", async () => {
@@ -97,7 +97,7 @@ test("connector verification reports a legacy-only ChatGPT menu as a migration e
   }, {}, 4);
 
   expect(message).toContain('Legacy ChatGPT connector "Codex Native" was found');
-  expect(message).toContain('newly created connector named "Codex Native2"');
+  expect(message).toContain('newly created connector named "Codex Native3"');
   expect(message).toContain('do not rename or refresh "Codex Native"');
   expect(message).not.toContain("Another connector");
 
@@ -105,8 +105,15 @@ test("connector verification reports a legacy-only ChatGPT menu as a migration e
     config: { appName: CHATGPT_CONNECTOR_NAME },
     connectorMentionRowTitles: async () => ["Codex Native", "Codex Native2"],
   }, {}, 4);
-  expect(mixedMessage).not.toContain("Legacy ChatGPT connector");
-  expect(mixedMessage).toContain('no row named "Codex Native2"');
+  expect(mixedMessage).toContain('Legacy ChatGPT connector "Codex Native" was found');
+  expect(mixedMessage).toContain('newly created connector named "Codex Native3"');
+
+  const native2Message = await connectorMentionFailure.call({
+    config: { appName: CHATGPT_CONNECTOR_NAME },
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+  }, {}, 4);
+  expect(native2Message).toContain('Legacy ChatGPT connector "Codex Native2" was found');
+  expect(native2Message).toContain('newly created connector named "Codex Native3"');
 });
 
 test("browser stage timeout aborts late page acquisition", async () => {
@@ -600,7 +607,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
       expect(selector).toBe('[data-id^="plugin:"][data-keyword]');
       return {
         filter: (options: { hasText: string; visible: boolean }) => {
-          expect(options).toEqual({ hasText: "Codex Native2", visible: true });
+          expect(options).toEqual({ hasText: "Codex Native3", visible: true });
           return selectedConnector;
         },
       };
@@ -616,7 +623,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   };
   const page = {
     getByText: (text: string, options: { exact: boolean }) => {
-      expect(text).toBe("Codex Native2");
+      expect(text).toBe("Codex Native3");
       expect(options).toEqual({ exact: true });
       return { exactConnectorLabel: true };
     },
@@ -646,7 +653,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
 
   let activeComposerCalls = 0;
   const resolved = await selectConnector.call({
-    config: { appName: "Codex Native2" },
+    config: { appName: "Codex Native3" },
     connectorIsSelected: async () => connectorSelected,
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => {
@@ -702,7 +709,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   }).selectConnector;
 
   await expect(selectConnector.call({
-    config: { appName: "Codex Native2 DEV" },
+    config: { appName: "Codex Native3 DEV" },
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => selected ? selectedComposer : initialComposer,
@@ -762,7 +769,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
 
   let activeComposerCalls = 0;
   await selectConnector.call({
-    config: { appName: "Codex Native2" },
+    config: { appName: "Codex Native3" },
     connectorIsSelected: async () => selected,
     connectorMentionRowTitles: async () => [],
     selectedConnectorControl: () => selectedConnector,
@@ -803,7 +810,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
   };
   const visibleRows = {
-    allInnerTexts: async () => catalogFresh ? ["Codex Native2"] : ["Another connector"],
+    allInnerTexts: async () => catalogFresh ? ["Codex Native3"] : ["Another connector"],
   };
   const menuRows = {
     filter: (options: { has?: unknown; visible?: boolean }) => options.visible ? visibleRows : appResult,
@@ -834,7 +841,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   };
   let prepared = 0;
   const fixture = {
-    config: { appName: "Codex Native2" },
+    config: { appName: "Codex Native3" },
     ensurePage: async () => page,
     prepareTemporaryChatSurface: async () => {
       prepared += 1;
@@ -851,7 +858,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   Date.now = () => now;
   try {
     await expect(prototype.verifyConnectorExclusive.call(fixture)).rejects.toThrow(
-      'connector menu opened but exposed no row named "Codex Native2"',
+      'connector menu opened but exposed no row named "Codex Native3"',
     );
     expect(prepared).toBe(1);
     expect(calls.filter(call => call === "reload")).toEqual([]);
@@ -980,7 +987,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
 
   let activeComposerCalls = 0;
   await attachPrompt.call({
-    config: { appName: "Codex Native2" },
+    config: { appName: "Codex Native3" },
     selectConnector,
     insertPromptText,
     connectorIsSelected: async () => selected,

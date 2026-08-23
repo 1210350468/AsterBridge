@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Quick start
+    url: https://github.com/1210350468/AsterBridge/blob/main/docs/quick-start.md
+    about: Follow the first-run path before filing a setup issue.
+  - name: Troubleshooting
+    url: https://github.com/1210350468/AsterBridge/blob/main/docs/troubleshooting.md
+    about: Match common RoxyBrowser, Bridge, MCP, and Codex errors to recovery steps.

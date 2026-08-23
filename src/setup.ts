@@ -2,13 +2,14 @@ import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import type { AppConfig, RuntimeMode } from "./config";
+import type { AppConfig, RuntimeMode, SystemBrowserChannel, TurnBrowserHostMode } from "./config";
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
   defaultConfig,
   getConfigPath,
   loadConfigForSetup,
+  providerConfig,
   resolveDevSetupConnectorName,
   resolveSetupConnectorName,
   saveConfig,
@@ -37,12 +38,20 @@ import {
 import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, stopTunnel, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { ChatGptBrowserWorker, closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 
 export interface SetupOptions {
   mode: RuntimeMode;
   port?: number;
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
+  turnBrowserHost?: TurnBrowserHostMode;
+  systemBrowserChannel?: SystemBrowserChannel;
+  roxyBrowserProfileId?: string;
+  roxyBrowserDataDir?: string;
+  roxyBrowserAutoOpen?: boolean;
+  roxyBrowserApiHost?: string;
+  roxyBrowserApiKeyFile?: string;
   refreshAccountCapabilities?: boolean;
   appName?: string;
   forceLogin?: boolean;
@@ -110,6 +119,13 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     appName: before.appName,
     browserHost: before.browserHost,
     browserHostDescriptorPath: before.browserHostDescriptorPath,
+    turnBrowserHost: before.turnBrowserHost,
+    systemBrowserChannel: before.systemBrowserChannel,
+    roxyBrowserProfileId: before.roxyBrowserProfileId,
+    roxyBrowserDataDir: before.roxyBrowserDataDir,
+    roxyBrowserAutoOpen: before.roxyBrowserAutoOpen,
+    roxyBrowserApiHost: before.roxyBrowserApiHost,
+    roxyBrowserApiKeyFile: before.roxyBrowserApiKeyFile,
     chromeExecutablePath: before.chromeExecutablePath,
     storageStatePath: before.storageStatePath,
     brokerSocketPath: before.brokerSocketPath,
@@ -129,6 +145,13 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     appName: after.appName,
     browserHost: after.browserHost,
     browserHostDescriptorPath: after.browserHostDescriptorPath,
+    turnBrowserHost: after.turnBrowserHost,
+    systemBrowserChannel: after.systemBrowserChannel,
+    roxyBrowserProfileId: after.roxyBrowserProfileId,
+    roxyBrowserDataDir: after.roxyBrowserDataDir,
+    roxyBrowserAutoOpen: after.roxyBrowserAutoOpen,
+    roxyBrowserApiHost: after.roxyBrowserApiHost,
+    roxyBrowserApiKeyFile: after.roxyBrowserApiKeyFile,
     chromeExecutablePath: after.chromeExecutablePath,
     storageStatePath: after.storageStatePath,
     brokerSocketPath: after.brokerSocketPath,
@@ -206,6 +229,13 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
     config.port = options.port;
   }
   if (options.chromeExecutablePath) config.chromeExecutablePath = options.chromeExecutablePath;
+  if (options.turnBrowserHost) config.turnBrowserHost = options.turnBrowserHost;
+  if (options.systemBrowserChannel) config.systemBrowserChannel = options.systemBrowserChannel;
+  if (options.roxyBrowserProfileId) config.roxyBrowserProfileId = options.roxyBrowserProfileId.trim();
+  if (options.roxyBrowserDataDir) config.roxyBrowserDataDir = options.roxyBrowserDataDir;
+  if (options.roxyBrowserAutoOpen !== undefined) config.roxyBrowserAutoOpen = options.roxyBrowserAutoOpen;
+  if (options.roxyBrowserApiHost) config.roxyBrowserApiHost = options.roxyBrowserApiHost.trim();
+  if (options.roxyBrowserApiKeyFile) config.roxyBrowserApiKeyFile = options.roxyBrowserApiKeyFile;
   if (options.browserHostDescriptorPath) {
     config.browserHost = "launcher";
     config.browserHostDescriptorPath = options.browserHostDescriptorPath;
@@ -238,6 +268,19 @@ async function inspectLauncherCapabilities(
     solAvailable: detectCapabilities ? inspected.solAvailable === true : existing!.solAvailable,
     proAvailable: detectCapabilities ? inspected.proAvailable === true : existing!.proAvailable,
   };
+}
+
+async function inspectSystemBrowserCapabilities(config: AppConfig): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
+  const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
+  try {
+    const inspected = await worker.inspectSession(true);
+    return {
+      solAvailable: inspected.solAvailable === true,
+      proAvailable: inspected.proAvailable === true,
+    };
+  } finally {
+    await closeChatGptBrowserWorkers();
+  }
 }
 
 async function configureTunnel(config: AppConfig, existing: AppConfig | undefined, options: SetupOptions): Promise<void> {
@@ -300,10 +343,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   const config = baseConfig(existing, options);
   delete config.purpose;
   const launcherOwned = config.browserHost === "launcher";
-  if (!launcherOwned && process.platform !== "darwin") {
+  const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
+  if (!launcherOwned && turnBrowserHost !== "system-browser" && turnBrowserHost !== "roxybrowser" && process.platform !== "darwin") {
     throw new Error(
       "Terminal-only managed Chrome setup currently requires macOS. "
-      + "Use the Codex Web GPT launcher on Windows or Linux.",
+      + "Use the AsterBridge launcher on Windows or Linux, or select the system browser host.",
     );
   }
   preflightCodexIntegration(config, {
@@ -330,7 +374,14 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let loginCreated = false;
   let solAvailable: boolean | undefined;
   let proAvailable: boolean | undefined;
-  if (config.browserHost === "launcher") {
+  if (turnBrowserHost === "system-browser" || turnBrowserHost === "roxybrowser") {
+    if (options.forceLogin) {
+      throw new Error("External browser login is owned by that browser session; sign in there and retry setup");
+    }
+    const capabilities = await inspectSystemBrowserCapabilities(config);
+    solAvailable = capabilities.solAvailable;
+    proAvailable = capabilities.proAvailable;
+  } else if (config.browserHost === "launcher") {
     if (options.forceLogin) throw new Error("Launcher browser login is owned by the launcher UI; --login cannot replace it");
     const capabilities = await inspectLauncherCapabilities(
       config,

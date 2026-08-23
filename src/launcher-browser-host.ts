@@ -295,16 +295,28 @@ export async function inspectLauncherBrowserHost(
 export const LAUNCHER_SESSION_INSPECTION_TIMEOUT_MS = 30_000;
 export const LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS = 120_000;
 
+export type LauncherExternalBrowserHost = "roxybrowser" | "system-browser";
+
 export type LauncherTurnActivity =
-  | { phase: "start"; traceId: string; helperPid: number }
-  | { phase: "heartbeat"; traceId: string; helperPid: number }
+  | { phase: "start"; traceId: string; helperPid: number; externalHost?: LauncherExternalBrowserHost }
+  | { phase: "heartbeat"; traceId: string; helperPid: number; externalHost?: LauncherExternalBrowserHost }
   | {
       phase: "end";
       traceId: string;
       helperPid: number;
       status: "completed" | "failed" | "aborted";
       message?: string;
+      externalHost?: LauncherExternalBrowserHost;
     };
+
+export interface LauncherRoxyPreviewFrame {
+  traceId: string;
+  helperPid: number;
+  stage: string;
+  url: string;
+  status?: "starting" | "running";
+  dataUrl?: string | null;
+}
 
 export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -319,7 +331,13 @@ export async function notifyLauncherTurn(
     : activity.phase === "heartbeat"
       ? LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS
       : LAUNCHER_TURN_START_TIMEOUT_MS,
-): Promise<{ surfaceId?: string; cancelledByUser?: boolean }> {
+): Promise<{
+  surfaceId?: string;
+  cancelledByUser?: boolean;
+  external?: boolean;
+  previewEnabled?: boolean;
+  action?: "take-control" | null;
+}> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -345,6 +363,12 @@ export async function notifyLauncherTurn(
     }
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (activity.phase === "start") {
+      if (body.external === true) {
+        return {
+          external: true,
+          previewEnabled: body.previewEnabled === true,
+        };
+      }
       if (typeof body.surfaceId !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(body.surfaceId)) {
         throw new Error("Launcher browser control channel returned an invalid turn surface id");
       }
@@ -356,10 +380,44 @@ export async function notifyLauncherTurn(
       }
       return { cancelledByUser: body.cancelledByUser };
     }
+    if (activity.phase === "heartbeat") {
+      return { action: body.action === "take-control" ? "take-control" : null };
+    }
     return {};
   } catch (error) {
     if (error instanceof LauncherBrowserTurnCancelledError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function notifyLauncherRoxyPreview(
+  descriptorPath: string,
+  frame: LauncherRoxyPreviewFrame,
+  timeoutMs = 5_000,
+): Promise<{ action: "take-control" | null }> {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${descriptor.control.endpoint}/v1/turn/preview`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${descriptor.control.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(frame),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) {
+      const detail = typeof body.error === "string" ? body.error : "";
+      throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+    return { action: body.action === "take-control" ? "take-control" : null };
+  } catch (error) {
+    throw new Error(`Launcher RoxyBrowser preview channel failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);
   }

@@ -483,6 +483,23 @@ export async function compactRequest(
   return Response.json({ output: buildCompactV1Output(extractCompactUserMessages(input), summary) });
 }
 
+async function modelCatalogFailureMessage(response: Response): Promise<string | null> {
+  if (response.ok) return null;
+  try {
+    const body = await response.clone().json() as {
+      error?: { message?: unknown } | string;
+    };
+    if (typeof body.error === "string" && body.error.trim()) return body.error.trim();
+    if (body.error && typeof body.error === "object" && typeof body.error.message === "string") {
+      const message = body.error.message.trim();
+      if (message) return message;
+    }
+  } catch {
+    // Preserve a stable status-only fallback for non-JSON upstream failures.
+  }
+  return response.statusText || `HTTP ${response.status}`;
+}
+
 export function startServer(
   config: AppConfig,
   dependencies: { fetchUpstream?: NativeFetch } = {},
@@ -501,7 +518,12 @@ export function startServer(
   }
   let draining = false;
   let shutdownPromise: Promise<void> | undefined;
+  let totalModelCatalogRequests = 0;
   let successfulModelCatalogRequests = 0;
+  let failedModelCatalogRequests = 0;
+  let lastModelCatalogStatus: number | null = null;
+  let lastModelCatalogError: string | null = null;
+  let lastModelCatalogRequestAt: string | null = null;
   let lastSuccessfulModelCatalogRequestAt: string | null = null;
   const httpTurns = new HttpTurnCounter();
   const activity = () => ({
@@ -530,7 +552,12 @@ export function startServer(
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,
           accepting_turns: !draining,
+          total_model_catalog_requests: totalModelCatalogRequests,
           successful_model_catalog_requests: successfulModelCatalogRequests,
+          failed_model_catalog_requests: failedModelCatalogRequests,
+          last_model_catalog_status: lastModelCatalogStatus,
+          last_model_catalog_error: lastModelCatalogError,
+          last_model_catalog_request_at: lastModelCatalogRequestAt,
           last_successful_model_catalog_request_at: lastSuccessfulModelCatalogRequestAt,
           ...activity(),
         });
@@ -577,15 +604,21 @@ export function startServer(
           );
         }
         return httpTurns.track(async signal => {
+          totalModelCatalogRequests += 1;
+          lastModelCatalogRequestAt = new Date().toISOString();
           const response = await modelsRequest(
             new Request(req, { signal }),
             config,
             dependencies.fetchUpstream,
             readCodexModelContextOverride,
           );
+          lastModelCatalogStatus = response.status;
+          lastModelCatalogError = await modelCatalogFailureMessage(response);
           if (response.ok) {
             successfulModelCatalogRequests += 1;
             lastSuccessfulModelCatalogRequestAt = new Date().toISOString();
+          } else {
+            failedModelCatalogRequests += 1;
           }
           return response;
         }, req.signal);

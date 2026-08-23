@@ -176,8 +176,9 @@ test("an unbounded broker call outlives the bounded default timeout", async () =
   const accepted: Socket[] = [];
   const broker = unansweredBrokerEndpoint("cgw-broker-slow-", socket => { accepted.push(socket); });
   await broker.listen();
+  let call: Promise<unknown> | null = null;
   try {
-    const call = callTurnBroker(broker.socketPath, { method: "claim", token: "turn_unbounded" }, null);
+    call = callTurnBroker(broker.socketPath, { method: "claim", token: "turn_unbounded" }, null);
     const outcome = await Promise.race([
       call.then(() => "settled", () => "settled"),
       Bun.sleep(5_300).then(() => "pending"),
@@ -185,9 +186,92 @@ test("an unbounded broker call outlives the bounded default timeout", async () =
     expect(outcome).toBe("pending");
   } finally {
     for (const socket of accepted) socket.destroy();
+    if (call) await call.catch(() => undefined);
     await broker.close();
   }
 }, 15_000);
+
+test("one unique pending Codex turn can recover a model-mutated token from the OpenAI MCP session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-session-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  const sessionKey = "a".repeat(64);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "turn-session-recovery");
+    const recovered = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token: "turn_model-mutated-value",
+      sessionKey,
+    });
+    const retry = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token: "turn_model-mutated-again",
+      sessionKey,
+    });
+    expect(retry.bindingId).toBe(recovered.bindingId);
+
+    broker.revoke(token);
+    await expect(callTurnBroker(socketPath, {
+      method: "claim",
+      token: "turn_model-mutated-after-revoke",
+      sessionKey,
+    })).rejects.toThrow("turn token is invalid, expired, or revoked");
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenAI MCP session recovery fails closed when more than one Codex turn is awaiting its first tool call", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-session-ambiguous-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  const sessionKey = "b".repeat(64);
+  const environment = {
+    cwd: root,
+    roots: [root],
+    writableRoots: [root],
+    sandboxPolicy: { type: "dangerFullAccess" as const },
+    tools: [],
+  };
+  try {
+    const firstToken = await broker.register(environment, 60_000, "turn-first");
+    const secondToken = await broker.register(environment, 60_000, "turn-second");
+    await expect(callTurnBroker(socketPath, {
+      method: "claim",
+      token: "turn_model-mutated-value",
+      sessionKey,
+    })).rejects.toThrow("multiple Codex turns");
+
+    const first = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token: firstToken,
+      sessionKey,
+    });
+    const sessionRetry = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token: "turn_model-mutated-after-binding",
+      sessionKey,
+    });
+    expect(sessionRetry.bindingId).toBe(first.bindingId);
+
+    const second = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token: secondToken,
+      sessionKey: "c".repeat(64),
+    });
+    expect(second.bindingId).not.toBe(first.bindingId);
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("turn broker names the finished turn that owns a replayed handle", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-"));
