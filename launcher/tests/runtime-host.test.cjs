@@ -6,7 +6,7 @@ const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
 const { RuntimeHost } = require("../electron/runtime.cjs");
 
-function hostFor(existingConfig) {
+function hostFor(existingConfig, options = {}) {
   const host = new RuntimeHost({
     app: {
       getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test"),
@@ -15,6 +15,7 @@ function hostFor(existingConfig) {
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
     browserDescriptorPath: "/runtime/launcher-browser.json",
+    coreHome: options.coreHome,
     supervisor: {
       readConfig: () => existingConfig,
       readSetupConfig: () => existingConfig,
@@ -396,6 +397,34 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
     ]);
     assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
     assert.equal(fixture.invocation().args.includes("--replace-codex-route"), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("browser-only runtime rediscovers managed MCP credentials after model reinstall", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-managed-mcp-"));
+  const keyPath = path.join(root, "secrets", "tunnel-runtime.key");
+  const profilePath = path.join(root, "tunnel", "profiles", "codex-chatgpt-web.yaml");
+  fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+  fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
+  fs.writeFileSync(profilePath, JSON.stringify({
+    control_plane: {
+      api_key: `file:${keyPath}`,
+      tunnel_id: "tunnel_abcdef0123456789abcdef0123456789",
+    },
+  }));
+  const fixture = hostFor({ mode: "browser-only", appName: "Codex Native3" }, { coreHome: root });
+  try {
+    assert.equal(fixture.host.mcpCredentialsConfigured(), true);
+    await fixture.host.setupMcp({ replace: false });
+    const args = fixture.invocation().args;
+    const tunnelIdIndex = args.indexOf("--tunnel-id");
+    assert.ok(tunnelIdIndex > 0);
+    assert.equal(args[tunnelIdIndex + 1], "tunnel_abcdef0123456789abcdef0123456789");
+    assert.equal(args.includes("--runtime-key-file"), false);
+    assert.equal(args.includes("--acknowledge-unofficial"), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

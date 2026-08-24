@@ -2,6 +2,26 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.1 - 2026-08-24
+
+### Reliability and onboarding fixes
+
+- Fixed Browser-only model reinstall forgetting previously managed MCP Tunnel credentials. Launcher now rediscovers the private managed runtime key and Tunnel profile without exposing secret material or forcing users to paste credentials again.
+- Fixed Launcher snapshot drift after Setup/MCP operations so derived state such as saved MCP credentials and connector identity refreshes together with persisted state.
+- Updated Connector verification to prove the exact `Codex Native3` entry in ChatGPT's connector catalog instead of depending on the old selected-chip DOM, eliminating a false red Verify result after ChatGPT UI changes.
+- Added an optional **RoxyBrowser executable path**. When profile auto-open is enabled and Local API is unavailable after reboot, AsterBridge can start the RoxyBrowser application first, wait for Local API, and then open the configured Profile.
+- Improved dark-mode native select readability with a dark color scheme and explicit option foreground/background colors.
+- Renamed the ambiguous Chinese navigation labels to **模型设置** and **启动器设置**.
+- Removed X/Twitter from onboarding and the Launcher sidebar, including the obsolete onboarding completion gate that could otherwise block fresh installs after the X action disappeared; GitHub remains the project link.
+- Added copy-paste AI-agent installation prompts to both READMEs so beginners can ask a terminal-capable AI to install the latest Release, run Doctor, prove `WEB_OK`, and then prove Native3 with `ASTERBRIDGE_FULL_OK` without sharing secrets in chat.
+
+### Validation notes
+
+- Launcher regression: **194 pass, 0 fail, 1 Linux-only skip**; TypeScript and production renderer builds passed.
+- Final Windows packaged smoke proved `version=3.0.1`, `packaged=true`, and `runtimeVerified=true` with the durable `3.0.1 / Bun 1.4.0 / win32-x64` runtime.
+- Real Windows cold-start E2E proved AsterBridge can start RoxyBrowser after Local API is down, recover the configured Profile/CDP endpoint, complete a ChatGPT Web turn, verify `Codex Native3`, and execute a real Full Harness `exec_command` returning `ASTERBRIDGE_FULL_OK`.
+- Bun 1.4.0 on Windows can still intermittently crash during very large single-process core test runs; release validation therefore keeps deterministic shorter batches plus packaged/runtime E2E rather than treating a Bun process crash as an application assertion failure.
+
 ## 3.0.0 - 2026-08-24
 
 ### AsterBridge rebrand

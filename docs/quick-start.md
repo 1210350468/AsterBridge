@@ -48,14 +48,15 @@ After saving, Launcher attempts to restart the managed daemon/tunnel automatical
 2. Open Launcher → **Settings → Use RoxyBrowser for ChatGPT turns**.
 3. Enter the profile/window ID and the profile-data root.
 4. Enable **Automatically open the RoxyBrowser profile** if you want zero-touch startup.
-5. For auto-start, enable RoxyBrowser Local API and enter the Local API key in Launcher. The key is stored only in an owner-only private secrets file, never in ordinary config or logs.
-6. Run **Settings → Run diagnostics** once. Continue when the doctor reports that the profile is reachable, or that it is closed but Local API is healthy and ready to auto-open it.
+5. If you also want reboot recovery, set **RoxyBrowser executable** to the absolute application/executable path. When Local API is unavailable, AsterBridge starts RoxyBrowser first, waits for Local API, then lets the existing profile auto-open flow continue.
+6. For auto-start, enable RoxyBrowser Local API and enter the Local API key in Launcher. The key is stored only in an owner-only private secrets file, never in ordinary config or logs.
+7. Run **Launcher settings → Run diagnostics** once. Continue when the doctor reports that the profile is reachable, or that it is closed but Local API is healthy and ready to auto-open it.
 
 Do not point Electron/Chrome directly at the Roxy profile directory and do not copy cookies manually. The project connects to the Chromium CDP endpoint exposed by Roxy itself.
 
 ## 4. Install the ChatGPT Web models
 
-Open **Setup**:
+Open **Model setup**:
 
 1. Complete embedded-browser login or Roxy profile configuration.
 2. Click **Install models**.

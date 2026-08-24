@@ -50,14 +50,15 @@ Launcher 支持三种 ChatGPT Web 浏览器后端：
 2. 打开 Launcher → **设置 → 使用 RoxyBrowser 运行 ChatGPT 对话**。
 3. 填写 Profile/窗口 ID 和 Profile 数据根目录。
 4. 推荐开启 **需要时自动打开 RoxyBrowser Profile**。
-5. 若开启自动启动，在 RoxyBrowser 中启用 Local API，并把 Local API Key 填入 Launcher。Key 只会写入 owner-only 的私密 secrets 文件，不进入普通配置和日志。
-6. 保存后先运行一次 **设置 → 运行诊断**。看到 `RoxyBrowser profile is open and reachable`，或“Profile 当前关闭但 Local API 健康、下一轮会自动打开”即可继续。
+5. 若希望电脑重启后也完全自动恢复，再填写 **RoxyBrowser 程序路径**（例如 Windows 上的 `RoxyBrowser.exe` 绝对路径）。AsterBridge 会在 Local API 不可用时先启动 RoxyBrowser 主程序，再等待 Profile 自动打开。
+6. 若开启自动启动，在 RoxyBrowser 中启用 Local API，并把 Local API Key 填入 Launcher。Key 只会写入 owner-only 的私密 secrets 文件，不进入普通配置和日志。
+7. 保存后先运行一次 **启动器设置 → 运行诊断**。看到 `RoxyBrowser profile is open and reachable`，或“Profile 当前关闭但 Local API 健康、下一轮会自动打开”即可继续。
 
 > 不要把 Roxy 的 Profile 目录直接作为 Electron/Chrome 的 `user-data-dir` 使用，也不要手工复制 Cookie。项目只连接 Roxy 自己暴露的 Chromium CDP endpoint。
 
 ## 4. 安装 ChatGPT Web 模型
 
-进入 **配置 / Setup**：
+进入 **模型设置**：
 
 1. 完成浏览器登录或 Roxy Profile 配置。
 2. 点击 **安装模型**。

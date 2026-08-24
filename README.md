@@ -105,6 +105,25 @@ Then follow the [10-minute quick start](docs/quick-start.md). In short:
 4. Press **Install models**, restart Codex once, and prove a simple `WEB_OK` turn before configuring MCP.
 5. Configure the optional **MCP** page only after Browser-only mode works.
 
+### Copy this into an AI agent: install and prove AsterBridge end to end
+
+If you prefer not to work through the terminal yourself, paste the prompt below into an AI agent that can operate your local terminal/desktop (for example Codex, Claude Code, or Cursor Agent). It tells the agent to prefer the signed Release path and to keep secrets out of chat.
+
+```text
+Install and prove AsterBridge end to end on this computer. Repository: https://github.com/1210350468/AsterBridge
+
+Requirements:
+1. Detect the OS plus any existing AsterBridge/Codex installation. Prefer the latest GitHub Release installer/script. Build from source only if a Release is unavailable. Before repair/update, quit AsterBridge safely and preserve user configuration.
+2. Never ask me to paste API keys, Tunnel runtime keys, cookies, bearer tokens, a RoxyBrowser API key, or a complete turn token into chat. When credentials are needed, tell me to enter them only in the local AsterBridge UI or the appropriate official account page.
+3. Start AsterBridge and run Doctor first. For network failures, check AsterBridge > Launcher settings > Network proxy. On Windows, prefer Automatic so it can inherit the system proxy. Do not randomly modify the global proxy or wipe configuration.
+4. If RoxyBrowser is selected, verify that the RoxyBrowser application is running, Local API is enabled, and AsterBridge can reach 127.0.0.1:50000. A closed Profile should be opened by AsterBridge. Do not copy browser cookies.
+5. Install models from Model setup, restart Codex, then run an actual chatgpt-web/high turn (or another available ChatGPT Web model) that must reply exactly WEB_OK. Do not continue until WEB_OK succeeds.
+6. Configure MCP only after Browser-only works. Reuse safely stored Tunnel/profile/key material when present. For a first-time setup, guide me through creating an OpenAI Tunnel and a Tunnels Read + Use key, but have me enter them only in the local AsterBridge UI.
+7. Confirm the ChatGPT Connector/App name exactly matches AsterBridge (default: Codex Native3). Then use chatgpt-web/high to call Codex Native3 and execute the harmless command Write-Output ASTERBRIDGE_FULL_OK. Full Harness is proven only when the real tool result returns ASTERBRIDGE_FULL_OK.
+8. If any step fails, inspect AsterBridge Doctor, Activity logs, and docs/troubleshooting.md. Diagnose the earliest relevant warning/error instead of repeatedly reinstalling, deleting ~/.codex-chatgpt-web, or resetting Codex.
+9. Finish with a concise status report: AsterBridge version, Codex version, browser backend, proxy source, Browser-only WEB_OK result, MCP/Native3 FULL_OK result, and any remaining manual action.
+```
+
 The launcher detects the current account's ChatGPT controls during setup: Free/Go accounts expose
 only Luna, while Pro appears only when the signed-in account exposes it. The packaged launcher needs
 no model API key, system Node/Bun, or project-managed browser download. RoxyBrowser is optional and

@@ -18,6 +18,7 @@ export interface LauncherState {
   roxyBrowserDataDir: string;
   roxyBrowserAutoOpen: boolean;
   roxyBrowserApiHost: string;
+  roxyBrowserExecutablePath: string;
   networkProxyMode: "auto" | "direct" | "custom";
   networkProxyUrl: string;
   sidebarOpen: boolean;
@@ -118,7 +119,6 @@ export interface LauncherSnapshot {
   logs: LogRecord[];
   urls: {
     github: string;
-    x: string;
     connectors: string;
     tunnels: string;
     keys: string;
@@ -136,7 +136,7 @@ export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
   takeControlOfRoxy(): Promise<RoxyPreviewState>;
   setLanguage(language: Language): Promise<LauncherState>;
-  openSocial(target: "github" | "x"): Promise<LauncherState>;
+  openSocial(target: "github"): Promise<LauncherState>;
   completeOnboarding(language: Language): Promise<LauncherState>;
   openExternal(url: string): Promise<boolean>;
   setBrowserBounds(bounds: { x: number; y: number; width: number; height: number }): Promise<boolean>;
@@ -172,6 +172,7 @@ export interface LauncherApi {
     dataDir: string;
     autoOpen: boolean;
     apiHost: string;
+    executablePath?: string;
     apiKey?: string;
     clearApiKey?: boolean;
   }): Promise<{ state: LauncherState; apiKeyConfigured: boolean }>;

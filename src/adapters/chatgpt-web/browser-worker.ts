@@ -1916,10 +1916,44 @@ export class ChatGptBrowserWorker {
   private async verifyConnectorExclusive(): Promise<string> {
     const page = await this.ensurePage();
     await this.prepareTemporaryChatSurface(page);
-    // The launcher refreshes its owned ChatGPT document before starting this helper. A second
-    // reload here can discard the first catalog's exact mismatch evidence and report a generic
-    // menu failure instead of identifying the connector the account actually exposes.
-    await this.selectConnector(page);
+    // Connector verification is a catalog check, not a synthetic tool call. ChatGPT has changed
+    // the DOM used for the selected connector pill more than once, while the exact @-mention menu
+    // remains the user-visible source of truth for whether the connector is available. Verify the
+    // exact row there and avoid treating a cosmetic selected-pill change as a broken MCP runtime.
+    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const appResult = menuRows.filter({
+      has: page.getByText(this.config.appName, { exact: true }),
+    });
+    const deadline = Date.now() + 20_000;
+    let triggerAttempts = 0;
+    for (;;) {
+      triggerAttempts += 1;
+      const composer = await this.activeComposer(page);
+      await composer.fill("");
+      await composer.focus();
+      await settleChatGptUi();
+      await composer.pressSequentially("@c", { delay: 25 });
+      try {
+        await appResult.waitFor({
+          state: "visible",
+          timeout: Math.min(2_500, Math.max(1, deadline - Date.now())),
+        });
+        break;
+      } catch (error) {
+        if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+        if (Date.now() >= deadline) {
+          throw new Error(await this.connectorMentionFailure(menuRows, triggerAttempts));
+        }
+      }
+    }
+    if (await appResult.count() !== 1) {
+      throw new Error(
+        `ChatGPT connector menu did not expose one exact ${JSON.stringify(this.config.appName)} row`
+        + `; visible rows: ${(await this.connectorMentionRowTitles(menuRows)).map(title => JSON.stringify(title)).join(", ")}`,
+      );
+    }
+    const composer = await this.activeComposer(page);
+    await composer.fill("");
     return this.config.appName;
   }
 

@@ -94,6 +94,25 @@ irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-l
 4. 点击 **安装模型**，重启一次 Codex，先用简单 `WEB_OK` 回合证明 Browser-only 链路。
 5. 只有 Browser-only 已经成功后，再进入可选的 **MCP** 页面配置完整 Harness。
 
+### 复制给 AI：自动安装并跑通 AsterBridge
+
+如果你不熟悉终端，可以把下面整段提示词复制给具备本机终端/桌面操作能力的 AI（例如 Codex、Claude Code、Cursor Agent 等）。它会优先安装正式 Release，而不是要求你从源码构建。
+
+```text
+请在我的电脑上安装并跑通 AsterBridge，仓库是：https://github.com/1210350468/AsterBridge
+
+要求：
+1. 先检测操作系统和现有 AsterBridge/Codex 状态。优先使用 GitHub latest Release 的官方安装脚本/安装包；只有 Release 不可用时才从源码构建。修复/更新前先安全退出已有 AsterBridge，不要删除用户配置。
+2. 不要让我把 API Key、Tunnel runtime key、Cookie、Bearer Token、RoxyBrowser API Key 或完整 turn token 发到聊天里。需要密钥时，让我只在 AsterBridge 本地界面或对应官方页面中填写。
+3. 安装后启动 AsterBridge，先运行 Doctor。网络异常时优先检查 AsterBridge → 启动器设置 → 网络代理；Windows 上优先使用“自动”，它会读取系统代理。不要随意修改全局代理或清空配置。
+4. 如果选择 RoxyBrowser：确认 RoxyBrowser 主程序正在运行、Local API 已启用且 AsterBridge 能访问 127.0.0.1:50000；Profile 关闭时应由 AsterBridge 自动打开。不要复制浏览器 Cookie。
+5. 在“模型设置”中安装模型，完成后重启 Codex。实际运行 chatgpt-web/high（若账户不支持则用可用的 ChatGPT Web 模型），要求只回复 WEB_OK。必须看到 WEB_OK 才继续。
+6. Browser-only 成功后再配置 MCP。若本机已有安全保存的 Tunnel/profile/key，优先复用，不要求我重新粘贴；若是首次配置，引导我在 OpenAI 官方页面创建 Tunnel 和 Tunnels Read + Use key，并只在 AsterBridge 本地界面填写。
+7. MCP 配好后，在 ChatGPT 中确认与 AsterBridge 显示完全相同的 Connector/App 名称（默认 Codex Native3），然后用 chatgpt-web/high 调用 Codex Native3 执行无副作用命令：Write-Output ASTERBRIDGE_FULL_OK。只有真实工具结果返回 ASTERBRIDGE_FULL_OK 才算 Full Harness 跑通。
+8. 任一步失败时，先读取 AsterBridge Doctor、活动日志和仓库 docs/troubleshooting.zh-CN.md，定位最早的 warning/error；不要通过反复重装、删除 ~/.codex-chatgpt-web 或重置 Codex 来碰运气。
+9. 最后向我报告：AsterBridge 版本、Codex 版本、Browser backend、代理来源、Browser-only WEB_OK 是否成功、MCP/Native3 FULL_OK 是否成功，以及仍需我手工完成的步骤。
+```
+
 启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户只会显示 Luna；只有已登录账户
 支持 Pro 时，Pro 才会显示。打包后的启动器不需要模型 API 密钥、系统级 Node/Bun，也不会由本项目
 另行下载浏览器。RoxyBrowser 是可选后端，直接复用它自己的登录 Profile，不复制浏览器 Cookie。

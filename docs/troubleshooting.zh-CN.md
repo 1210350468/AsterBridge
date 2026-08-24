@@ -6,7 +6,7 @@
 
 | 现象 / 错误 | 含义 | 处理 |
 | --- | --- | --- |
-| `browser_unavailable` / `RoxyBrowser profile ... is not open` | 选定的 Roxy Profile 没有可用 CDP endpoint | 手动打开该 Profile，或启用 Launcher 的自动启动并配置 Local API + Key |
+| `browser_unavailable` / `RoxyBrowser profile ... is not open` | 选定的 Roxy Profile 没有可用 CDP endpoint | 启用自动打开 Profile；若电脑重启后 Roxy 主程序也没运行，再在启动器设置中填写 RoxyBrowser 程序路径，使 AsterBridge 先启动主程序再打开 Profile |
 | `is not exposing a reachable Chromium CDP endpoint` | `DevToolsActivePort` 不存在、已过期或端口不可达 | 完全关闭该 Profile 后重新打开；确认 Launcher 中 Profile ID/DataDir 正确 |
 | `stream disconnected before completion` 且前面有浏览器错误 | 上游浏览器任务中断 | 先解决最早出现的浏览器错误；不要把最后的 stream 错误当根因 |
 | `HTTP 426 Upgrade Required` on `/v1/responses` | WebSocket 不可用，客户端会回退 HTTP/SSE | 如果最终 turn 正常完成则忽略；只有回退也失败才需要排查 |
@@ -87,12 +87,13 @@ Launcher 的“自定义代理”会明确拒绝 `user:password@host` 形式，�
 
 可以。需要同时满足：
 
-1. Launcher 中开启自动启动；
+1. Launcher 中开启自动打开 Profile；
 2. RoxyBrowser Local API 在 loopback 上启用；
 3. API Key 已保存；
-4. Profile ID 和数据根目录正确。
+4. Profile ID 和数据根目录正确；
+5. 如果希望电脑重启后连 Roxy 主程序也自动恢复，在 **启动器设置 → RoxyBrowser 程序路径** 中填写主程序绝对路径。
 
-Doctor 在 Profile 关闭时会主动探测 Local API：如果 Local API 健康，会报告“下一轮可自动打开”，而不是把关闭状态误判为不可恢复故障。
+Doctor 在 Profile 关闭时会主动探测 Local API：如果 Local API 健康，会报告“下一轮可自动打开”，而不是把关闭状态误判为不可恢复故障。如果 Local API 完全不可用且配置了程序路径，AsterBridge 会先启动 RoxyBrowser 主程序并等待 Local API 就绪。
 
 ### Live Preview 有画面，但我想手动操作
 

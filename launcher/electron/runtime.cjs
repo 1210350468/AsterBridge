@@ -22,6 +22,33 @@ const CORE_SETUP_TIMEOUT_MS = 5 * 60_000;
 const MCP_SETUP_TIMEOUT_MS = 10 * 60_000;
 const UNINSTALL_TIMEOUT_MS = 2 * 60_000;
 const MAX_CHECKPOINT_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_TUNNEL_PROFILE_BYTES = 256 * 1024;
+const TUNNEL_ID_PATTERN = /^tunnel_[a-f0-9]{32}$/;
+
+function managedMcpCredentials(coreHome) {
+  if (typeof coreHome !== "string" || !path.isAbsolute(coreHome)) return null;
+  const runtimeKeyFile = path.join(coreHome, "secrets", "tunnel-runtime.key");
+  const profilePath = path.join(coreHome, "tunnel", "profiles", "codex-chatgpt-web.yaml");
+  let keyStat;
+  let profileStat;
+  try {
+    keyStat = fs.statSync(runtimeKeyFile);
+    profileStat = fs.statSync(profilePath);
+  } catch {
+    return null;
+  }
+  if (!keyStat.isFile() || keyStat.size < 1 || keyStat.size > 64 * 1024) return null;
+  if (!profileStat.isFile() || profileStat.size < 1 || profileStat.size > MAX_TUNNEL_PROFILE_BYTES) return null;
+  let profile;
+  try {
+    profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+  } catch {
+    return null;
+  }
+  const tunnelId = profile?.control_plane?.tunnel_id;
+  if (typeof tunnelId !== "string" || !TUNNEL_ID_PATTERN.test(tunnelId)) return null;
+  return { source: "managed-profile", tunnelId, runtimeKeyFile };
+}
 function collect(stream, chunks, onLine, onError) {
   let buffered = "";
   let bytes = 0;
@@ -262,16 +289,26 @@ class RuntimeHost {
     };
   }
 
-  mcpCredentialsConfigured() {
+  savedMcpCredentials() {
     const config = this.runtimeConfigSnapshot().config;
     const tunnel = config?.mode === "full" ? config.tunnel : null;
-    return Boolean(
-      tunnel
-      && /^tunnel_[a-f0-9]{32}$/.test(tunnel.tunnelId)
+    if (tunnel
+      && TUNNEL_ID_PATTERN.test(tunnel.tunnelId)
       && typeof tunnel.runtimeKeyFile === "string"
       && path.isAbsolute(tunnel.runtimeKeyFile)
-      && fs.existsSync(tunnel.runtimeKeyFile),
-    );
+      && fs.existsSync(tunnel.runtimeKeyFile)) {
+      return {
+        source: "config",
+        tunnelId: tunnel.tunnelId,
+        runtimeKeyFile: tunnel.runtimeKeyFile,
+      };
+    }
+    if (this.launcherProfile !== "production") return null;
+    return managedMcpCredentials(this.coreHome);
+  }
+
+  mcpCredentialsConfigured() {
+    return Boolean(this.savedMcpCredentials());
   }
 
   roxyBrowserApiKeyPath() {
@@ -983,8 +1020,9 @@ class RuntimeHost {
         `Connector name ${JSON.stringify(requestedConnectorName)} is a retired identity. Choose a new unique ChatGPT App name.`,
       );
     }
-    const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
-    if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
+    const savedCredentials = replace !== true ? this.savedMcpCredentials() : null;
+    const reuseSavedCredentials = Boolean(savedCredentials);
+    if (!reuseSavedCredentials && !TUNNEL_ID_PATTERN.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
     }
     if (!reuseSavedCredentials && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
@@ -1022,6 +1060,9 @@ class RuntimeHost {
       if (useSystemBrowser) args.push("--system-browser-channel", "auto");
     }
     if (reuseSavedCredentials) {
+      if (savedCredentials.source === "managed-profile") {
+        args.push("--tunnel-id", savedCredentials.tunnelId);
+      }
       args.push("--acknowledge-unofficial", "--restart-service");
       return this.runSetup("mcp-setup", args, {
         message: "Reconnecting the native Codex harness with saved tunnel credentials",

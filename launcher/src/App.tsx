@@ -93,6 +93,9 @@ export function App() {
             || (state.browserSmokePassed === true && state.browserSmokeVersion === current.version),
         }
       : current);
+    void api?.snapshot()
+      .then((next) => setSnapshot(next))
+      .catch(() => {});
   }, []);
 
   if (!api) return <FatalMessage message="Launcher IPC is unavailable." />;
@@ -170,7 +173,7 @@ function Onboarding({
     }
   };
 
-  const openSocial = async (target: "github" | "x") => {
+  const openSocial = async (target: "github") => {
     setBusy(true);
     setError(null);
     try {
@@ -250,13 +253,6 @@ function Onboarding({
                 label={snapshot.state.githubOpened ? localized.starred : localized.star}
                 onClick={() => openSocial("github")}
               />
-              <WelcomeAction
-                complete={snapshot.state.xOpened}
-                disabled={busy}
-                icon="x"
-                label={snapshot.state.xOpened ? localized.followed : localized.follow}
-                onClick={() => openSocial("x")}
-              />
             </div>
           )}
         </motion.section>
@@ -275,7 +271,7 @@ function Onboarding({
           <span className={!isLanguage ? "is-active" : ""} />
         </div>
         <PrimaryButton
-          disabled={busy || (!isLanguage && (!snapshot.state.githubOpened || !snapshot.state.xOpened))}
+          disabled={busy || (!isLanguage && !snapshot.state.githubOpened)}
           onClick={isLanguage ? chooseLanguage : finish}
         >
           {isLanguage ? localized.continue : localized.finishWelcome}
@@ -491,11 +487,6 @@ function LauncherShell({
                   icon="github"
                   label="GitHub"
                   onClick={() => void api!.openExternal(snapshot.urls.github).catch((cause) => setError(messageOf(cause)))}
-                />
-                <IconButton
-                  icon="x"
-                  label="X"
-                  onClick={() => void api!.openExternal(snapshot.urls.x).catch((cause) => setError(messageOf(cause)))}
                 />
               </div>
             </div>
@@ -1426,6 +1417,7 @@ function SettingsSurface({
   const [roxyDataDir, setRoxyDataDir] = useState(snapshot.state.roxyBrowserDataDir);
   const [roxyAutoOpen, setRoxyAutoOpen] = useState(snapshot.state.roxyBrowserAutoOpen);
   const [roxyApiHost, setRoxyApiHost] = useState(snapshot.state.roxyBrowserApiHost || "http://127.0.0.1:50000");
+  const [roxyExecutablePath, setRoxyExecutablePath] = useState(snapshot.state.roxyBrowserExecutablePath || "");
   const [roxyApiKey, setRoxyApiKey] = useState("");
   const [roxyApiKeyConfigured, setRoxyApiKeyConfigured] = useState(snapshot.roxyApiKeyConfigured);
   const [roxySaved, setRoxySaved] = useState(false);
@@ -1540,6 +1532,7 @@ function SettingsSurface({
         dataDir: roxyDataDir,
         autoOpen: roxyAutoOpen,
         apiHost: roxyApiHost,
+        executablePath: roxyExecutablePath,
         ...(roxyApiKey.trim() ? { apiKey: roxyApiKey } : {}),
       });
       updateState(result.state);
@@ -1638,6 +1631,17 @@ function SettingsSurface({
             <p className="mcp-step-two-hint">{copy.roxyAutoOpenBody}</p>
             {roxyAutoOpen ? (
               <>
+                <FieldRow label={copy.roxyExecutablePath}>
+                  <input
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    onChange={(event) => setRoxyExecutablePath(event.target.value)}
+                    placeholder="E:\\RoxyBrowser\\RoxyBrowser.exe"
+                    spellCheck={false}
+                    value={roxyExecutablePath}
+                  />
+                </FieldRow>
+                <p className="mcp-step-two-hint">{copy.roxyExecutablePathHint}</p>
                 <FieldRow label={copy.roxyApiHost}>
                   <input
                     autoCapitalize="none"

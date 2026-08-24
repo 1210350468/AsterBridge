@@ -6,7 +6,7 @@ Start with **Launcher → Settings → Run diagnostics**. Do not delete app data
 
 | Symptom / error | What it means | What to do |
 | --- | --- | --- |
-| `browser_unavailable` / `RoxyBrowser profile ... is not open` | The selected Roxy profile has no usable CDP endpoint | Open that profile manually, or enable Launcher auto-start and configure Local API + key |
+| `browser_unavailable` / `RoxyBrowser profile ... is not open` | The selected Roxy profile has no usable CDP endpoint | Enable profile auto-open; after reboot, also set the RoxyBrowser executable path so AsterBridge can start the main app before opening the profile |
 | `is not exposing a reachable Chromium CDP endpoint` | `DevToolsActivePort` is missing/stale or its port is unreachable | Fully close/reopen the profile; verify Profile ID and data root in Launcher |
 | `stream disconnected before completion` after a browser error | The browser task failed upstream | Fix the earliest browser error first; do not treat the final stream message as the root cause |
 | `HTTP 426 Upgrade Required` on `/v1/responses` | WebSocket is unavailable and Codex falls back to HTTP/SSE | Ignore it if the turn completes; investigate only if the fallback also fails |
@@ -85,12 +85,13 @@ The Launcher Custom field intentionally rejects `user:password@host` URLs so pro
 
 Yes, when all of the following are true:
 
-1. Auto-start is enabled in Launcher.
+1. Profile auto-open is enabled in Launcher.
 2. RoxyBrowser Local API is enabled on loopback.
 3. The API key is saved in Launcher.
 4. Profile ID and profile-data root are correct.
+5. For full reboot recovery, **Launcher settings → RoxyBrowser executable** points to the real application/executable.
 
-When the profile is closed, Doctor probes the Local API. A healthy API is reported as "closed but ready to auto-open" instead of a hard failure.
+When the profile is closed, Doctor probes the Local API. A healthy API is reported as "closed but ready to auto-open" instead of a hard failure. If Local API is completely unavailable and an executable path is configured, AsterBridge starts the RoxyBrowser application first and waits for Local API to become ready.
 
 ### Live Preview works but I need manual control
 

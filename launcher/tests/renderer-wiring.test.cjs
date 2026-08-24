@@ -9,6 +9,13 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("onboarding no longer depends on the removed X/Twitter action", () => {
+  assert.doesNotMatch(appSource, /xOpened/);
+  assert.doesNotMatch(electronMain, /X_URL|target === "x"|GitHub and X/);
+  assert.match(appSource, /disabled=\{busy \|\| \(!isLanguage && !snapshot\.state\.githubOpened\)\}/);
+  assert.match(electronMain, /if \(!current\.githubOpened\) throw new Error\("Open the GitHub page before continuing"\)/);
+});
+
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);

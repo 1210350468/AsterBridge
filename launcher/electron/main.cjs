@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const {
   app,
@@ -51,12 +51,11 @@ const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
 const GITHUB_URL = "https://github.com/1210350468/AsterBridge";
-const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
 const KEYS_URL = "https://platform.openai.com/settings/organization/api-keys";
 const TROUBLESHOOTING_URL = "https://github.com/1210350468/AsterBridge/blob/main/docs/troubleshooting.md";
-const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL, TROUBLESHOOTING_URL]);
+const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL, TROUBLESHOOTING_URL]);
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.svg");
 const BASE_PROXY_ENVIRONMENT = { ...process.env };
@@ -370,7 +369,57 @@ function roxyBrowserOptionsFromState(state) {
     dataDir: state.roxyBrowserDataDir,
     autoOpen: state.roxyBrowserAutoOpen === true,
     apiHost: state.roxyBrowserApiHost || "http://127.0.0.1:50000",
+    executablePath: state.roxyBrowserExecutablePath || "",
   };
+}
+
+async function roxyLocalApiHealthy(options) {
+  if (!runtimeHost || !options?.apiHost || !runtimeHost.roxyBrowserApiKeyConfigured()) return false;
+  let token = "";
+  try {
+    token = fs.readFileSync(runtimeHost.roxyBrowserApiKeyPath(), "utf8").trim();
+  } catch {
+    return false;
+  }
+  if (!token) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_500);
+  try {
+    const response = await fetch(`${options.apiHost.replace(/\/$/, "")}/health`, {
+      headers: { token },
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function ensureRoxyBrowserApplication(options, logger) {
+  if (!options?.autoOpen || !options.executablePath) return false;
+  if (await roxyLocalApiHealthy(options)) return false;
+  if (!path.isAbsolute(options.executablePath)) {
+    throw new Error("Configured RoxyBrowser executable path must be absolute");
+  }
+  const executablePath = path.resolve(options.executablePath);
+  if (!fs.existsSync(executablePath)) {
+    throw new Error("Configured RoxyBrowser executable does not exist");
+  }
+  const child = spawn(executablePath, [], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
+  logger.info("browser.roxy_application_started", { executable: path.basename(executablePath) });
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (await roxyLocalApiHealthy(options)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error("RoxyBrowser started, but its Local API did not become ready within 20 seconds");
 }
 
 function networkProxyStatus(state) {
@@ -428,7 +477,7 @@ function registerIpc({ logger, stateStore }) {
     roxyApiKeyConfigured: runtimeHost?.roxyBrowserApiKeyConfigured() ?? false,
     networkProxy: networkProxyStatus(stateStore.read()),
     logs: logger.recent(),
-    urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL, troubleshooting: TROUBLESHOOTING_URL },
+    urls: { github: GITHUB_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL, troubleshooting: TROUBLESHOOTING_URL },
     platform: process.platform,
     packaged: app.isPackaged,
     version: app.getVersion(),
@@ -440,15 +489,13 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:set-language", (_event, language) => stateStore.update({ language: validateLanguage(language) }));
   handle("launcher:roxy-take-control", () => browserControl.requestRoxyAction("take-control"));
   handle("launcher:open-social", async (_event, target) => {
-    const url = target === "github" ? GITHUB_URL : target === "x" ? X_URL : null;
-    if (!url) throw new Error("Unknown social target");
-    await openWebUrl(url);
-    const patch = target === "github" ? { githubOpened: true } : { xOpened: true };
-    return stateStore.update(patch);
+    if (target !== "github") throw new Error("Unknown social target");
+    await openWebUrl(GITHUB_URL);
+    return stateStore.update({ githubOpened: true });
   });
   handle("launcher:complete-onboarding", (_event, language) => {
     const current = stateStore.read();
-    if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
+    if (!current.githubOpened) throw new Error("Open the GitHub page before continuing");
     if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({ language: validateLanguage(language), onboardingComplete: true });
     logger.info("launcher.onboarding_completed", { language: next.language });
@@ -650,6 +697,9 @@ function registerIpc({ logger, stateStore }) {
         );
       }
     }
+    if (!IS_DEV_PROFILE && useRoxyBrowser) {
+      await ensureRoxyBrowserApplication(roxyBrowserOptionsFromState(setupState), logger);
+    }
     const result = IS_DEV_PROFILE
       ? await runtimeHost.setupDevCore()
       : await runtimeHost.setupCore({
@@ -683,6 +733,9 @@ function registerIpc({ logger, stateStore }) {
     const browserModeState = stateStore.read();
     if (IS_DEV_PROFILE || (!browserModeState.useSystemBrowser && !browserModeState.useRoxyBrowser)) {
       await browserHost.reveal();
+    }
+    if (!IS_DEV_PROFILE && browserModeState.useRoxyBrowser === true) {
+      await ensureRoxyBrowserApplication(roxyBrowserOptionsFromState(browserModeState), logger);
     }
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
@@ -794,11 +847,15 @@ function registerIpc({ logger, stateStore }) {
     const apiHost = typeof input.apiHost === "string" && input.apiHost.trim()
       ? input.apiHost.trim()
       : "http://127.0.0.1:50000";
+    const executablePath = typeof input.executablePath === "string" ? input.executablePath.trim() : "";
     if ((enabled || profileId) && !/^[A-Za-z0-9_-]{8,128}$/.test(profileId)) {
       throw new Error("RoxyBrowser profile/window ID is invalid");
     }
     if (enabled && (!dataDir || !path.isAbsolute(dataDir))) {
       throw new Error("RoxyBrowser data directory must be an absolute path");
+    }
+    if (executablePath && (!path.isAbsolute(executablePath) || !fs.existsSync(executablePath))) {
+      throw new Error("RoxyBrowser executable path must point to an existing absolute file");
     }
     if (autoOpen) {
       let parsed;
@@ -820,6 +877,7 @@ function registerIpc({ logger, stateStore }) {
       roxyBrowserDataDir: dataDir,
       roxyBrowserAutoOpen: autoOpen,
       roxyBrowserApiHost: apiHost,
+      roxyBrowserExecutablePath: executablePath,
       coreSetupComplete: false,
       codexCatalogVerified: false,
       mcpSetupComplete: false,
@@ -995,6 +1053,16 @@ async function start() {
     supervisor: runtimeSupervisor,
   });
   synchronizeExternalBrowserState(stateStore);
+  if (!IS_DEV_PROFILE) {
+    const startupRoxy = roxyBrowserOptionsFromState(stateStore.read());
+    if (startupRoxy?.autoOpen && startupRoxy.executablePath) {
+      void ensureRoxyBrowserApplication(startupRoxy, logger).catch((error) => {
+        logger.warn("browser.roxy_application_start_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  }
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,

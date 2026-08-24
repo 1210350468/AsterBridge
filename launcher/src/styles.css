@@ -1396,7 +1396,13 @@ code {
 }
 
 .field-row select {
+  color-scheme: dark;
   cursor: default;
+}
+
+.field-row select option {
+  background: var(--color-background-control);
+  color: var(--color-text-primary);
 }
 
 .settings-inline-value {

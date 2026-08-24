@@ -20,6 +20,7 @@ const DEFAULT_STATE = Object.freeze({
   roxyBrowserDataDir: "",
   roxyBrowserAutoOpen: false,
   roxyBrowserApiHost: "http://127.0.0.1:50000",
+  roxyBrowserExecutablePath: "",
   networkProxyMode: "auto",
   networkProxyUrl: "",
   browserSmokePassed: false,
@@ -59,7 +60,7 @@ function readState(filePath) {
     ]) {
       if (typeof state[key] !== "boolean") state[key] = DEFAULT_STATE[key];
     }
-    for (const key of ["roxyBrowserProfileId", "roxyBrowserDataDir", "roxyBrowserApiHost", "networkProxyUrl"]) {
+    for (const key of ["roxyBrowserProfileId", "roxyBrowserDataDir", "roxyBrowserApiHost", "roxyBrowserExecutablePath", "networkProxyUrl"]) {
       if (typeof state[key] !== "string" || state[key].length > 4096) state[key] = DEFAULT_STATE[key];
     }
     if (!["auto", "direct", "custom"].includes(state.networkProxyMode)) {
