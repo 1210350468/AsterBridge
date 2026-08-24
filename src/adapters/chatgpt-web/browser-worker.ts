@@ -123,15 +123,15 @@ export class ChatGptPromptAttachmentIntegrityError extends Error {
 }
 
 const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dialog"]')
-  .filter({ hasText: /Too many requests/i })
-  .filter({ hasText: /making requests too quickly/i })
+  .filter({ hasText: /Too many requests|太多要求|太多请求/i })
+  .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁/i })
   .last();
 
 export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return;
 
-  const acknowledge = dialog.getByRole("button", { name: "Got it", exact: true }).last();
+  const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了)$/ }).last();
   if (await acknowledge.isVisible().catch(() => false)) {
     try {
       await acknowledge.press("Enter");
