@@ -150,13 +150,24 @@ export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
 
 type ChatGptTextScope = Pick<Locator, "getByText">;
 
-const chatGptSessionFailureAlert = (page: Page): Locator => page
+const chatGptSubscriptionFailureAlert = (page: Page): Locator => page
   .locator('[role="alert"]')
   .filter({ hasText: /Failed to load subscription/i })
   .last();
 
+const chatGptExpiredSessionAlert = (page: Page): Locator => page
+  .locator('[role="alert"], [role="dialog"]')
+  .filter({ hasText: /Your session has expired|你的工作階段已過期|您的工作階段已過期|你的会话已过期|您的会话已过期/i })
+  .last();
+
 export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<void> {
-  if (!await chatGptSessionFailureAlert(page).isVisible().catch(() => false)) return;
+  if (await chatGptExpiredSessionAlert(page).isVisible().catch(() => false)) {
+    throw new ChatGptWebAdapterError(
+      "The ChatGPT session has expired. Sign in again in Codex Web GPT.",
+      { status: 401, errorType: "authentication_error", code: "chatgpt_session_expired", retryable: false },
+    );
+  }
+  if (!await chatGptSubscriptionFailureAlert(page).isVisible().catch(() => false)) return;
   throw new ChatGptWebAdapterError(
     "ChatGPT could not load the account subscription. Reload ChatGPT inside the launcher and retry; sign out only if the error persists.",
     { status: 503, errorType: "server_error", code: "chatgpt_subscription_unavailable", retryable: true },
@@ -1294,10 +1305,12 @@ export class ChatGptBrowserWorker {
     let currentEffort: Locator | undefined;
     const effortDeadline = Date.now() + 70_000;
     while (!currentEffort && Date.now() < effortDeadline) {
+      await throwIfChatGptSessionFailureAlert(page);
       currentEffort = await resolveVisibleEffortControl();
       if (!currentEffort) await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     }
     if (!currentEffort) {
+      await throwIfChatGptSessionFailureAlert(page);
       throw new Error("ChatGPT rendered the composer but its model/effort control did not become ready");
     }
     await settleChatGptUi();
@@ -1315,18 +1328,21 @@ export class ChatGptBrowserWorker {
     const effortChoice = effortChoices.nth(uiEffortIndex);
     const effortSlider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
     const waitAbort = new AbortController();
-    let ready: "effort" | "slider" | "rate-limit";
+    let ready: "effort" | "slider" | "rate-limit" | "session-expired";
     try {
       ready = await Promise.race([
         effortChoice.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "effort" as const),
         effortSlider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "slider" as const),
         chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "rate-limit" as const),
+        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "session-expired" as const),
       ]);
       if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
+      if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
       await captureDiagnostic?.(ready === "slider" ? "effort-slider-visible" : "effort-choice-visible");
     } catch (error) {
       if (error instanceof ChatGptWebAdapterError) throw error;
       await throwIfChatGptRateLimitDialog(page);
+      await throwIfChatGptSessionFailureAlert(page);
       throw new ChatGptWebAdapterError(
         `ChatGPT effort menu did not expose item index ${uiEffortIndex}`
         + `; item count: ${await effortChoices.count().catch(() => 0)}`,
