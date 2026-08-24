@@ -1207,6 +1207,20 @@ describe("ChatGPT outer-native harness v4", () => {
     ], 200)).toThrow("completed text block");
   });
 
+  test("defers irreversible final-answer Markdown while a tool-capable turn can rewrite it", () => {
+    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+    const provisional = [
+      { key: "progress", html: "<p>Checking the repository.</p>", text: "Checking the repository.", streamable: true },
+    ];
+    const final = [
+      { key: "answer", html: "<p>All checks passed.</p>", text: "All checks passed.", streamable: false },
+    ];
+    expect(buffer.observe(provisional, 0, false)).toBe("");
+    expect(buffer.observe([], 10, false)).toBe("");
+    expect(buffer.observe(final, 20, false)).toBe("");
+    expect(buffer.finish()).toEqual({ markdown: "All checks passed.", delta: "All checks passed." });
+  });
+
   test("drops decorative HTML images without removing textual links", () => {
     const markdown = chatGptHtmlToMarkdown([
       '<p>Source card: <a href="https://github.com/example/repo"><img alt="GitHub" src="data:image/png;base64,AAAA"></a></p>',

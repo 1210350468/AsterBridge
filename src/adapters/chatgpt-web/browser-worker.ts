@@ -2627,7 +2627,14 @@ export class ChatGptBrowserWorker {
             capturedResponse = true;
             await diagnostics.capture(page, "response-visible");
           }
-          const textDelta = markdownBuffer.observe(snapshot.markdownSegments);
+          // Tool-capable turns may replace provisional Markdown between MCP calls. Keep
+          // commentary/reasoning live, but defer irreversible final-answer deltas until ChatGPT
+          // exposes terminal completion evidence. Browser-only turns keep the existing streaming path.
+          const textDelta = markdownBuffer.observe(
+            snapshot.markdownSegments,
+            Date.now(),
+            !mode.localTools,
+          );
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);

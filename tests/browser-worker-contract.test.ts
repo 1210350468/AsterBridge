@@ -1794,7 +1794,8 @@ test("response DOM separates streaming commentary from the final Markdown answer
   expect(workerSource).toContain("const markdownSegments = renderedRoots.flatMap");
   expect(workerSource).toContain('key: `${rootIndex}:${childIndex}:${tag}:${itemIndex}`');
   expect(workerSource).toContain("streamable: childIsComplete || itemIndex < listItems.length - 1");
-  expect(workerSource).toContain("markdownBuffer.observe(snapshot.markdownSegments)");
+  expect(workerSource).toContain("!mode.localTools");
+  expect(workerSource).toContain("final-answer channel is irreversible");
   expect(workerSource).not.toContain("stableHtml:");
   expect(workerSource).not.toContain("observeStableHtml");
   expect(workerSource).toContain("const overlapsRenderedAnswer = (candidate: HTMLElement)");
