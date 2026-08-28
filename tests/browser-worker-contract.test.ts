@@ -1316,7 +1316,9 @@ test.each([
 test("effort selection stops as soon as ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
+    filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     waitFor: async () => await neverVisible,
   };
   const composerForm = { locator: () => effortControl };
@@ -1330,6 +1332,7 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
   const hiddenDialog = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     waitFor: async () => await neverVisible,
     isVisible: async () => false,
   };
@@ -1367,7 +1370,9 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
 test("effort menu waiting stops when ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
+    filter() { return this; },
     last() { return this; },
+    count: async () => 1,
     waitFor: async () => {},
     getAttribute: async () => "true",
   };
@@ -1376,6 +1381,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   const effortChoice = { waitFor: async () => await neverVisible };
   const effortChoices = { nth: () => effortChoice, count: async () => 3 };
   const effortMenu = {
+    filter() { return this; },
     last() { return this; },
     isVisible: async () => true,
     locator: () => effortChoices,
