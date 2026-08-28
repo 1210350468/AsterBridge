@@ -198,6 +198,47 @@ test("keeps native encrypted reasoning requests byte-for-byte intact", async () 
   expect(Buffer.from(await upstreamRequest!.arrayBuffer())).toEqual(Buffer.from(originalBody));
 });
 
+test("forwards native Codex image generation and edit requests byte-for-byte", async () => {
+  const cases = [
+    {
+      endpoint: "images/generations" as const,
+      path: "/v1/images/generations",
+      body: JSON.stringify({ model: "gpt-image-2", prompt: "cyan circle", size: "512x512" }),
+      contentType: "application/json",
+    },
+    {
+      endpoint: "images/edits" as const,
+      path: "/v1/images/edits",
+      body: JSON.stringify({ model: "gpt-image-2", prompt: "make it blue", images: [{ image_url: "data:image/png;base64,AAAA" }] }),
+      contentType: "application/json",
+    },
+  ];
+
+  for (const fixture of cases) {
+    const request = new Request(`http://127.0.0.1:17841${fixture.path}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-oauth-token",
+        "content-type": fixture.contentType,
+        "x-codex-test": "image-pass-through",
+      },
+      body: fixture.body,
+    });
+    let upstreamRequest: Request | undefined;
+    const response = await forwardNativeCodexRequest(request, fixture.endpoint, async input => {
+      upstreamRequest = input;
+      return Response.json({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
+    });
+
+    expect(upstreamRequest!.url).toBe(`https://chatgpt.com/backend-api/codex/${fixture.endpoint}`);
+    expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
+    expect(upstreamRequest!.headers.get("x-codex-test")).toBe("image-pass-through");
+    expect(await upstreamRequest!.text()).toBe(fixture.body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
+  }
+});
+
 test("native passthrough fails closed without Codex bearer authentication", async () => {
   const request = new Request("http://127.0.0.1:17841/v1/responses", {
     method: "POST",

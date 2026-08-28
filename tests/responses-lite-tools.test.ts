@@ -53,6 +53,41 @@ test("Responses Lite exposes native exec from the default functions namespace on
   expect(parsed.context.tools?.some(tool => tool.name === "run_script")).toBe(false);
 });
 
+test("Codex image_gen namespace survives routed Responses parsing", () => {
+  const parsed = parseRequest({
+    model: "chatgpt-web/high",
+    input: [],
+    tools: [{
+      type: "namespace",
+      name: "image_gen",
+      description: "Native Codex image generation",
+      tools: [{
+        type: "function",
+        name: "imagegen",
+        description: "Generate or edit an image",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string" },
+            referenced_image_paths: { type: ["array", "null"], items: { type: "string" } },
+            num_last_images_to_include: { type: ["integer", "null"] },
+          },
+          required: ["prompt"],
+          additionalProperties: false,
+        },
+      }],
+    }, {
+      type: "image_generation",
+    }],
+  });
+
+  expect(parsed.context.tools).toContainEqual(expect.objectContaining({
+    namespace: "image_gen",
+    name: "imagegen",
+  }));
+  expect(parsed.context.tools?.some(tool => tool.name === "image_generation")).toBe(false);
+});
+
 test("Responses Lite native exec survives a complete server request as one custom call", async () => {
   const config = defaultConfig("full");
   config.solAvailable = false;

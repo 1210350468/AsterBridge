@@ -16,7 +16,13 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 export type NativeFetch = (request: Request) => Promise<Response>;
-export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search";
+export type NativeCodexEndpoint =
+  | "models"
+  | "responses"
+  | "responses/compact"
+  | "alpha/search"
+  | "images/generations"
+  | "images/edits";
 
 type JsonObject = Record<string, unknown>;
 
@@ -94,15 +100,23 @@ export async function forwardNativeCodexRequest(
   const method = endpoint === "models" ? "GET" : "POST";
   let body: BodyInit | undefined;
   if (method === "POST") {
-    const parseRequest = decodedBody === undefined ? request.clone() : undefined;
+    const shouldScrubResponsesBody = endpoint === "responses" || endpoint === "responses/compact";
+    const parseRequest = shouldScrubResponsesBody && decodedBody === undefined ? request.clone() : undefined;
     const originalBody = await request.arrayBuffer();
-    const scrubbed = scrubBridgeArtifactsForNative(
-      decodedBody === undefined ? await readJsonRequestBody(parseRequest!) : decodedBody,
-    );
-    if (scrubbed.changed) {
-      headers.delete("content-encoding");
-      body = JSON.stringify(scrubbed.value);
+    if (shouldScrubResponsesBody) {
+      const scrubbed = scrubBridgeArtifactsForNative(
+        decodedBody === undefined ? await readJsonRequestBody(parseRequest!) : decodedBody,
+      );
+      if (scrubbed.changed) {
+        headers.delete("content-encoding");
+        body = JSON.stringify(scrubbed.value);
+      } else {
+        body = originalBody;
+      }
     } else {
+      // Search and image-generation endpoints carry provider-owned request shapes. Forward their
+      // bytes exactly instead of parsing/re-encoding them in the bridge; edits may evolve beyond
+      // plain JSON without requiring another AsterBridge transport change.
       body = originalBody;
     }
   }

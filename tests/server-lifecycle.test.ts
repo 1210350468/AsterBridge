@@ -427,6 +427,39 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
   }
 });
 
+test("server forwards native Codex image generation routes on the local v1 base URL", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const upstreamRequests: Request[] = [];
+  const server = startServer(config, {
+    fetchUpstream: async request => {
+      upstreamRequests.push(request);
+      return Response.json({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    for (const path of ["images/generations", "images/edits"] as const) {
+      const body = JSON.stringify({ prompt: path === "images/generations" ? "generate" : "edit" });
+      const response = await fetch(`${endpoint}/v1/${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-codex-session",
+          "content-type": "application/json",
+        },
+        body,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
+      const forwarded = upstreamRequests.at(-1)!;
+      expect(forwarded.url).toBe(`https://chatgpt.com/backend-api/codex/${path}`);
+      expect(forwarded.headers.get("authorization")).toBe("Bearer test-codex-session");
+      expect(await forwarded.text()).toBe(body);
+    }
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("authenticated shutdown requires a verified idle drain", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);

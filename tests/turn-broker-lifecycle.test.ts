@@ -172,6 +172,40 @@ test("an unbounded broker call fails when the broker closes without answering", 
   }
 }, 10_000);
 
+test("a broker call settles only after the response transport closes", async () => {
+  let responseWritten = false;
+  let responseClosed = false;
+  const broker = unansweredBrokerEndpoint("cgw-broker-settle-", socket => {
+    socket.once("data", chunk => {
+      const request = JSON.parse(String(chunk).trim()) as { id: string };
+      socket.write(`${JSON.stringify({ id: request.id, result: { ok: true } })}\n`);
+      responseWritten = true;
+      setTimeout(() => {
+        responseClosed = true;
+        socket.end();
+      }, 75);
+    });
+  });
+  await broker.listen();
+  try {
+    const call = callTurnBroker<{ ok: boolean }>(
+      broker.socketPath,
+      { method: "claim", token: "turn_transport_settle" },
+      null,
+    );
+    while (!responseWritten) await Bun.sleep(5);
+    const early = await Promise.race([
+      call.then(() => "resolved"),
+      Bun.sleep(25).then(() => "pending"),
+    ]);
+    expect(early).toBe("pending");
+    expect(await call).toEqual({ ok: true });
+    expect(responseClosed).toBe(true);
+  } finally {
+    await broker.close();
+  }
+}, 10_000);
+
 test("an unbounded broker call outlives the bounded default timeout", async () => {
   const accepted: Socket[] = [];
   const broker = unansweredBrokerEndpoint("cgw-broker-slow-", socket => { accepted.push(socket); });

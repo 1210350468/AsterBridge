@@ -228,6 +228,18 @@ export async function nativeSearchRequest(
   }
 }
 
+export async function nativeImageRequest(
+  req: Request,
+  endpoint: "images/generations" | "images/edits",
+  fetchUpstream?: NativeFetch,
+): Promise<Response> {
+  try {
+    return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
+  } catch (error) {
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+  }
+}
+
 function toolBridgeMaps(parsed: CodexParsedRequest): {
   toolNsMap: Map<string, { namespace: string; name: string }>;
   freeformToolNames: Set<string>;
@@ -641,6 +653,14 @@ export function startServer(
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(
           signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
+          req.signal,
+        );
+      }
+      if (req.method === "POST" && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")) {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        const endpoint = url.pathname.endsWith("/edits") ? "images/edits" : "images/generations";
+        return httpTurns.track(
+          signal => nativeImageRequest(new Request(req, { signal }), endpoint, dependencies.fetchUpstream),
           req.signal,
         );
       }
