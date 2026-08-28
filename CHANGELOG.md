@@ -2,7 +2,7 @@
 
 All notable AsterBridge changes are documented here.
 
-## Unreleased
+## 3.0.2 - 2026-08-28
 
 ### Compatibility fixes
 
