@@ -7,9 +7,11 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
 ].join(", ");
+export const CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR = 'button[aria-haspopup="menu"][data-tone="neutral"]';
+export const CHATGPT_HEADER_MODEL_CONTROL_SELECTOR = 'button[data-testid="model-switcher-dropdown-button"]';
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
-  'button[aria-haspopup="menu"][data-tone="neutral"]:has([data-animated-slider-trigger="true"])',
-  'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR,
+  CHATGPT_HEADER_MODEL_CONTROL_SELECTOR,
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
@@ -91,13 +93,20 @@ export async function detectChatGptAccountCapabilities(
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
   const composer = composers.last();
   const composerForm = composer.locator("xpath=ancestor::form[1]");
-  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+  const composerEffortControls = composerForm.locator(CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+  const headerModelControls = page.locator(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR).filter({ visible: true });
+  let effortButton: Locator | undefined;
   const deadline = Date.now() + (options.selectorTimeoutMs ?? 30_000);
   const stableAbsenceMs = options.stableAbsenceMs ?? 3_000;
   let absenceSince: number | undefined;
   let presenceObservations = 0;
   while (true) {
-    const effortVisible = await effortButton.isVisible().catch(() => false);
+    const composerEffortCount = await composerEffortControls.count().catch(() => 0);
+    const headerModelCount = await headerModelControls.count().catch(() => 0);
+    effortButton = composerEffortCount > 0
+      ? composerEffortControls.last()
+      : headerModelCount > 0 ? headerModelControls.last() : undefined;
+    const effortVisible = effortButton ? await effortButton.isVisible().catch(() => false) : false;
     if (effortVisible) {
       presenceObservations += 1;
       absenceSince = undefined;
@@ -122,6 +131,7 @@ export async function detectChatGptAccountCapabilities(
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
   }
+  if (!effortButton) throw new Error("ChatGPT account capability probe lost the model/effort control");
   const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
   const menuVisible = await menu.isVisible().catch(() => false);
   const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);

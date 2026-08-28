@@ -1121,6 +1121,7 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
   const hiddenDialog = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     isVisible: async () => false,
   };
   const visibleControls = { count: async () => 0 };

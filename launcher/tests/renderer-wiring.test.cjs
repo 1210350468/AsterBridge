@@ -16,6 +16,11 @@ test("onboarding no longer depends on the removed X/Twitter action", () => {
   assert.match(electronMain, /if \(!current\.githubOpened\) throw new Error\("Open the GitHub page before continuing"\)/);
 });
 
+test("core and MCP setup refresh the current proxy before spawning runtime commands", () => {
+  assert.match(electronMain, /refreshNetworkProxyEnvironment\(setupState, logger, "core-setup"\)/);
+  assert.match(electronMain, /refreshNetworkProxyEnvironment\(browserModeState, logger, "mcp-setup"\)/);
+});
+
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);

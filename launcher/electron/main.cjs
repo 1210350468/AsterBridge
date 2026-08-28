@@ -422,14 +422,28 @@ async function ensureRoxyBrowserApplication(options, logger) {
   throw new Error("RoxyBrowser started, but its Local API did not become ready within 20 seconds");
 }
 
-function networkProxyStatus(state) {
-  const target = {};
-  const applied = applyNetworkProxyEnvironment({
+function applyStateNetworkProxy(state, target = process.env) {
+  return applyNetworkProxyEnvironment({
     mode: state.networkProxyMode,
     customUrl: state.networkProxyUrl,
     target,
     baseEnvironment: BASE_PROXY_ENVIRONMENT,
   });
+}
+
+function refreshNetworkProxyEnvironment(state, logger, reason) {
+  const applied = applyStateNetworkProxy(state, process.env);
+  logger.info("network.proxy_refreshed", {
+    reason,
+    mode: state.networkProxyMode,
+    source: applied.source,
+    proxy: applied.display,
+  });
+  return applied;
+}
+
+function networkProxyStatus(state) {
+  const applied = applyStateNetworkProxy(state, {});
   return { source: applied.source, display: applied.display };
 }
 
@@ -676,6 +690,7 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:setup-core", async () => {
     const setupState = stateStore.read();
+    refreshNetworkProxyEnvironment(setupState, logger, "core-setup");
     const useSystemBrowser = !IS_DEV_PROFILE && setupState.useSystemBrowser === true;
     const useRoxyBrowser = !IS_DEV_PROFILE && setupState.useRoxyBrowser === true;
     const externalBrowser = useSystemBrowser || useRoxyBrowser;
@@ -731,6 +746,7 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const browserModeState = stateStore.read();
+    refreshNetworkProxyEnvironment(browserModeState, logger, "mcp-setup");
     if (IS_DEV_PROFILE || (!browserModeState.useSystemBrowser && !browserModeState.useRoxyBrowser)) {
       await browserHost.reveal();
     }
@@ -979,12 +995,7 @@ async function start() {
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   const initialProxyState = stateStore.read();
-  applyNetworkProxyEnvironment({
-    mode: initialProxyState.networkProxyMode,
-    customUrl: initialProxyState.networkProxyUrl,
-    target: process.env,
-    baseEnvironment: BASE_PROXY_ENVIRONMENT,
-  });
+  applyStateNetworkProxy(initialProxyState, process.env);
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
       language: stateStore.read().language || "en",

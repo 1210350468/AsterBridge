@@ -34,9 +34,11 @@ import {
   assertTemporaryChatPage,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
+  CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
+  CHATGPT_HEADER_MODEL_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
@@ -1266,12 +1268,22 @@ export class ChatGptBrowserWorker {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
+    const composerEffortControls = composerForm
+      .locator(CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR)
+      .filter({ visible: true });
+    const headerModelControls = page
+      .locator(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR)
+      .filter({ visible: true });
+    const resolveVisibleEffortControl = async (): Promise<Locator | undefined> => {
+      if (await composerEffortControls.count().catch(() => 0) > 0) return composerEffortControls.last();
+      if (await headerModelControls.count().catch(() => 0) > 0) return headerModelControls.last();
+      return undefined;
+    };
     const uiEffortIndex = mode.uiEffortIndex;
     if (uiEffortIndex === null) {
       await settleChatGptUi();
       await throwIfChatGptRateLimitDialog(page);
-      const visibleControls = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-      if (await visibleControls.count() > 0) {
+      if (await resolveVisibleEffortControl()) {
         throw new Error(
           "ChatGPT Luna was selected from a Luna-only capability probe, but the account now exposes a model selector; rerun setup",
         );
@@ -1279,10 +1291,13 @@ export class ChatGptBrowserWorker {
       await captureDiagnostic?.("luna-default-confirmed");
       return mode;
     }
-    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
-    try {
-      await currentEffort.waitFor({ state: "visible", timeout: 70_000 });
-    } catch {
+    let currentEffort: Locator | undefined;
+    const effortDeadline = Date.now() + 70_000;
+    while (!currentEffort && Date.now() < effortDeadline) {
+      currentEffort = await resolveVisibleEffortControl();
+      if (!currentEffort) await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    if (!currentEffort) {
       throw new Error("ChatGPT rendered the composer but its model/effort control did not become ready");
     }
     await settleChatGptUi();

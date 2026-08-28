@@ -2,6 +2,19 @@
 
 All notable AsterBridge changes are documented here.
 
+## Unreleased
+
+### Compatibility fixes
+
+- Updated ChatGPT model/effort capability detection for the current composer control and header model-switcher layouts, preventing Sol-capable accounts from being incorrectly downgraded to the Luna-only catalog after a capability refresh.
+- Launcher now refreshes the active network-proxy environment immediately before Core and MCP setup, so a Windows system proxy that starts after AsterBridge is inherited by `tunnel-client` instead of falling back to a blocked direct OpenAI connection and timing out.
+
+### Validation notes
+
+- Current RoxyBrowser account probing reports `sol=true, pro=false`, and the exact `Codex Native3` connector remains available in normal Chat Temporary Chat without forcing the Work surface.
+- Full-mode Doctor reports the Tunnel runtime healthy and ready, and a real Full Harness validation completed successfully through `Codex Native3`.
+- Core regression passed in three deterministic Windows batches (**352 pass, 0 fail**); Launcher regression passed **195 pass, 0 fail, 1 Windows-inapplicable skip**. TypeScript checks, production renderer build, and relocatable runtime smoke also passed. The known Bun 1.4.0 Windows single-process segmentation-fault flake still reproduces only when the entire core suite is forced into one very large process.
+
 ## 3.0.1 - 2026-08-24
 
 ### Reliability and onboarding fixes

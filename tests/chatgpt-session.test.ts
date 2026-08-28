@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
+  CHATGPT_HEADER_MODEL_CONTROL_SELECTOR,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
 
@@ -14,15 +16,18 @@ test("login keeps the established turn composer contract", () => {
   expect(turnSelectors).not.toContain("form textarea[placeholder]");
 });
 
-test("the effort selector identifies the model slider instead of any composer menu button", () => {
-  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-animated-slider-trigger="true"]');
-  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-testid="model-switcher-dropdown-button"]');
-  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).not.toBe('button[aria-haspopup="menu"]');
+test("the effort selector supports the current composer menu plus the legacy/header model control", () => {
+  expect(CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR).toBe('button[aria-haspopup="menu"][data-tone="neutral"]');
+  expect(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR).toBe('button[data-testid="model-switcher-dropdown-button"]');
+  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain(CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR);
+  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR);
 });
 
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
   const effortButton = {
+    filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     isVisible: async () => false,
   };
   const composerForm = {
@@ -37,7 +42,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
     locator: () => composerForm,
   };
   const page = {
-    locator: () => composer,
+    locator: (selector: string) => selector === CHATGPT_HEADER_MODEL_CONTROL_SELECTOR ? effortButton : composer,
     evaluate: async () => true,
   };
 
@@ -50,7 +55,9 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
 test("a transient effort control does not turn a Luna-only account into Sol", async () => {
   let visibilityReads = 0;
   const effortButton = {
+    filter() { return this; },
     last() { return this; },
+    count: async () => 1,
     isVisible: async () => {
       visibilityReads += 1;
       return visibilityReads === 1;
@@ -66,8 +73,14 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
     count: async () => 1,
     locator: () => composerForm,
   };
+  const emptyHeader = {
+    filter() { return this; },
+    last() { return this; },
+    count: async () => 0,
+    isVisible: async () => false,
+  };
   const page = {
-    locator: () => composers,
+    locator: (selector: string) => selector === CHATGPT_HEADER_MODEL_CONTROL_SELECTOR ? emptyHeader : composers,
     evaluate: async () => true,
   };
 
