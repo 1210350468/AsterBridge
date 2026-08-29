@@ -14,6 +14,13 @@ current Windows-first release behavior.
 - Browser-facing changes also require a live RoxyBrowser check before promotion to `main`.
 - Capability compatibility is tested independently from ordinary text-model success.
 
+## Desktop shell side-fixes
+
+- [x] **AsterBridge application/tray icon refresh**
+  - Reworked the generated star/bridge/code concept into a small-size-safe AsterBridge vector icon.
+  - Windows tray now prefers the native icon embedded in the packaged `AsterBridge.exe`, with `.ico` fallback in development, instead of rasterizing the SVG directly at tray size.
+  - Validation: Launcher **196 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and renderer production build passed; unpacked packaged smoke exited 0 with runtime `3.0.2`; `launcher.tray_ready` reported a non-empty **16×16** Windows native icon; extracted EXE icon was **32×32** with 880 non-transparent pixels and 544 colors.
+
 ## P0 — Reliability sync
 
 - [x] **P0-0 Tunnel client 0.0.12**

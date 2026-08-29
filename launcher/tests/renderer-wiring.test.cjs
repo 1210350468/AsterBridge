@@ -46,6 +46,14 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
 
+test("Windows tray uses a native executable or ICO image instead of rasterizing SVG at tray size", () => {
+  assert.match(electronMain, /await app\.getFileIcon\(process\.execPath, \{ size: "small" \}\)/);
+  assert.match(electronMain, /nativeImage\.createFromPath\(DEV_TRAY_ICON_PATH\)/);
+  assert.match(electronMain, /if \(!image \|\| image\.isEmpty\(\)\) throw new Error\("tray image is empty"\)/);
+  assert.match(electronMain, /const trayAvailable = await createTray\(logger\)/);
+  assert.match(electronMain, /logger\.info\("launcher\.tray_ready"/);
+});
+
 test("normal shutdown persists the ChatGPT session before closing browser views", () => {
   assert.match(
     electronMain,

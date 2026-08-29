@@ -1,32 +1,55 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="120" y1="80" x2="904" y2="944" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#171A2B"/>
-      <stop offset="0.55" stop-color="#111521"/>
-      <stop offset="1" stop-color="#090B12"/>
+    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111936"/>
+      <stop offset="0.52" stop-color="#0A1230"/>
+      <stop offset="1" stop-color="#050918"/>
     </linearGradient>
-    <linearGradient id="orbit" x1="160" y1="800" x2="864" y2="180" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7EE7F2"/>
-      <stop offset="0.48" stop-color="#9275FF"/>
-      <stop offset="1" stop-color="#D8CEFF"/>
+    <linearGradient id="aster" x1="332" y1="228" x2="740" y2="786" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7EF5FF"/>
+      <stop offset="0.45" stop-color="#20B8FF"/>
+      <stop offset="0.78" stop-color="#6C63FF"/>
+      <stop offset="1" stop-color="#C167FF"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(548 476) rotate(90) scale(390)">
-      <stop stop-color="#9275FF" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#9275FF" stop-opacity="0"/>
+    <linearGradient id="bridge" x1="228" y1="722" x2="808" y2="718" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55F4FF"/>
+      <stop offset="0.52" stop-color="#2EC7FF"/>
+      <stop offset="1" stop-color="#A56BFF"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientTransform="translate(512 426) rotate(90) scale(410)">
+      <stop stop-color="#31D8FF" stop-opacity="0.28"/>
+      <stop offset="0.58" stop-color="#7567FF" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7567FF" stop-opacity="0"/>
     </radialGradient>
-    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+    <filter id="softGlow" x="-35%" y="-35%" width="170%" height="170%">
       <feGaussianBlur stdDeviation="18"/>
     </filter>
   </defs>
-  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#bg)"/>
-  <circle cx="548" cy="476" r="390" fill="url(#glow)"/>
-  <path d="M182 686C290 414 505 252 842 206" fill="none" stroke="#9275FF" stroke-opacity="0.24" stroke-width="54" stroke-linecap="round" filter="url(#shadow)"/>
-  <path d="M190 394C382 448 574 602 714 828" fill="none" stroke="#7EE7F2" stroke-opacity="0.18" stroke-width="48" stroke-linecap="round" filter="url(#shadow)"/>
-  <path d="M182 686C290 414 505 252 842 206" fill="none" stroke="url(#orbit)" stroke-width="56" stroke-linecap="round"/>
-  <path d="M190 394C382 448 574 602 714 828" fill="none" stroke="url(#orbit)" stroke-width="56" stroke-linecap="round"/>
-  <circle cx="182" cy="686" r="66" fill="#7EE7F2"/>
-  <circle cx="842" cy="206" r="58" fill="#F8F9FF"/>
-  <path d="M512 344 680 512 512 680 344 512 512 344Z" fill="#BCA8FF"/>
-  <path d="M512 420 604 512 512 604 420 512 512 420Z" fill="#111521"/>
-  <circle cx="512" cy="512" r="34" fill="#7EE7F2"/>
+
+  <rect x="48" y="48" width="928" height="928" rx="226" fill="url(#bg)"/>
+  <circle cx="512" cy="456" r="390" fill="url(#halo)"/>
+
+  <!-- orbit / connection -->
+  <path d="M165 602C260 344 490 210 835 245" fill="none" stroke="#36DFFF" stroke-opacity="0.20" stroke-width="34" stroke-linecap="round" filter="url(#softGlow)"/>
+  <path d="M165 602C260 344 490 210 835 245" fill="none" stroke="url(#bridge)" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="165" cy="602" r="30" fill="#5BF2FF"/>
+  <circle cx="835" cy="245" r="26" fill="#B66FFF"/>
+
+  <!-- A / gateway -->
+  <path d="M280 760 450 330c18-45 42-72 62-72s44 27 62 72l170 430h-112L512 445 392 760H280Z" fill="url(#aster)"/>
+  <path d="M357 702h310" fill="none" stroke="#08102B" stroke-width="52" stroke-linecap="round" opacity="0.88"/>
+
+  <!-- bridge -->
+  <path d="M238 722C346 660 438 638 512 638s166 22 274 84" fill="none" stroke="#08102B" stroke-width="72" stroke-linecap="round"/>
+  <path d="M238 722C346 660 438 638 512 638s166 22 274 84" fill="none" stroke="url(#bridge)" stroke-width="34" stroke-linecap="round"/>
+  <path d="M278 718v-95M746 718v-95" stroke="url(#bridge)" stroke-width="30" stroke-linecap="round"/>
+  <path d="M278 630C360 688 427 690 512 650M746 630C664 688 597 690 512 650" fill="none" stroke="#5CEEFF" stroke-width="13" stroke-linecap="round" opacity="0.95"/>
+
+  <!-- compact code gateway -->
+  <path d="m420 525-62 52 62 52M604 525l62 52-62 52M551 505l-78 145" fill="none" stroke="#F6FBFF" stroke-width="25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+
+  <!-- Aster star -->
+  <path d="M512 138c18 83 46 111 129 129-83 18-111 46-129 129-18-83-46-111-129-129 83-18 111-46 129-129Z" fill="#F8FCFF"/>
+  <path d="M512 162c14 65 36 87 101 101-65 14-87 36-101 101-14-65-36-87-101-101 65-14 87-36 101-101Z" fill="url(#aster)" opacity="0.86"/>
+  <circle cx="512" cy="267" r="25" fill="#FFFFFF"/>
 </svg>
