@@ -118,6 +118,8 @@ interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
+  /** Native Codex thread owning this browser runtime, when one is available. */
+  threadId?: string;
   /** Stable retained ChatGPT conversation identity for one Codex thread/compaction epoch. */
   conversationKey?: string;
   /** Idempotently release a retained external-browser conversation when its epoch ends. */
@@ -232,6 +234,10 @@ export class ChatGptTurnSession {
     return this.settledBrowserOutcome;
   }
 
+  threadId(): string | undefined {
+    return this.runtime.threadId;
+  }
+
   conversationKey(): string | undefined {
     return this.runtime.conversationKey;
   }
@@ -299,6 +305,7 @@ export class ChatGptTurnSessions {
   private readonly conversationHeads = new Map<string, ChatGptTurnSession>();
   private readonly retirements = new Map<string, Promise<void>>();
   private readonly conversationRetirements = new Map<string, Promise<void>>();
+  private readonly threadHeads = new Map<string, ChatGptTurnSession>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
@@ -323,6 +330,8 @@ export class ChatGptTurnSessions {
     this.entries.set(key, session);
     const conversationKey = session.conversationKey();
     if (conversationKey) this.conversationHeads.set(conversationKey, session);
+    const threadId = session.threadId();
+    if (threadId) this.threadHeads.set(threadId, session);
     return session;
   }
 
@@ -330,6 +339,19 @@ export class ChatGptTurnSessions {
     const session = this.conversationHeads.get(conversationKey);
     session?.touch();
     return session;
+  }
+
+  async retireThreadAndWait(threadId: string): Promise<number> {
+    const head = this.threadHeads.get(threadId);
+    if (!head) return 0;
+    const conversationKey = head.conversationKey();
+    if (conversationKey) return await this.retireConversationAndWait(conversationKey);
+    const entry = [...this.entries].find(([, session]) => session === head);
+    if (!entry) {
+      this.threadHeads.delete(threadId);
+      return 0;
+    }
+    return await this.retireAndWait(entry[0]) ? 1 : 0;
   }
 
   async retireConversationAndWait(conversationKey: string): Promise<number> {
@@ -342,6 +364,10 @@ export class ChatGptTurnSessions {
     if (matches.length === 0) return 0;
     const head = this.conversationHeads.get(conversationKey);
     this.conversationHeads.delete(conversationKey);
+    for (const [, session] of matches) {
+      const threadId = session.threadId();
+      if (threadId && this.threadHeads.get(threadId) === session) this.threadHeads.delete(threadId);
+    }
     for (const [key, session] of matches) {
       if (this.entries.get(key) === session) this.entries.delete(key);
       if (session.isActive()) session.cancel();
@@ -408,6 +434,7 @@ export class ChatGptTurnSessions {
     for (const session of this.entries.values()) session.cancel();
     this.entries.clear();
     this.conversationHeads.clear();
+    this.threadHeads.clear();
     for (const session of heads) {
       const release = session.runtime.releaseRetainedConversation;
       if (!release) continue;
@@ -441,6 +468,8 @@ export class ChatGptTurnSessions {
   }
 
   private forgetConversationHead(session: ChatGptTurnSession): (() => Promise<void>) | undefined {
+    const threadId = session.threadId();
+    if (threadId && this.threadHeads.get(threadId) === session) this.threadHeads.delete(threadId);
     const conversationKey = session.conversationKey();
     if (!conversationKey || this.conversationHeads.get(conversationKey) !== session) return undefined;
     this.conversationHeads.delete(conversationKey);

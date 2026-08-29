@@ -10,6 +10,7 @@ export interface LauncherState {
   xOpened: boolean;
   autoStart: boolean;
   bridgeEnabled: boolean;
+  experimentalBiggerContext: boolean;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   useSystemBrowser: boolean;
@@ -165,6 +166,7 @@ export interface LauncherApi {
   }): Promise<{ ok: boolean; stdout: string }>;
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
+  setBiggerContext(enabled: boolean): Promise<LauncherState>;
   setPreference(key: "keepRunningOnClose" | "showBrowserDuringTurns" | "useSystemBrowser", value: boolean): Promise<LauncherState>;
   setRoxyBrowserConfig(input: {
     enabled: boolean;

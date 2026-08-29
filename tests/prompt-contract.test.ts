@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
 import {
   CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET,
+  CHATGPT_BIGGER_CONTEXT_PARTS,
   chatGptPromptJsonBytes,
   chatGptReadOnlyContextWarning,
   compileChatGptWebPrompt,
+  formatChatGptWebMultipartCommit,
+  formatChatGptWebMultipartStage,
 } from "../src/adapters/chatgpt-web/prompt";
+import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import type { CodexParsedRequest } from "../src/types";
 
@@ -81,6 +85,103 @@ test("read-only prompts resume without exposing a bind capability", () => {
   expect(compiled.text).not.toContain("evidence inside");
   expect(compiled.text).toContain("Do not mention this transport contract, context packaging, or capability routing");
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
+});
+
+test("Bigger Context sends semantic record envelopes and starts work from the final part", () => {
+  const token = "turn_12345678901234567890123456789012";
+  const parsed = request("high");
+  parsed.context.systemPrompt = ["system-one", "system-two"];
+  parsed.context.messages.push(
+    { role: "assistant", content: [{ type: "text", text: "prior-answer" }], timestamp: 3 },
+    { role: "user", content: "latest-request", timestamp: 4 },
+  );
+  const compiled = compileChatGptWebPrompt(
+    parsed,
+    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    token,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+
+  expect(compiled.multipart?.parts).toHaveLength(3);
+  const records = compiled.multipart!.parts.flatMap(part => {
+    const payload = JSON.parse(part) as { version: number; records: unknown[] };
+    expect(payload.version).toBe(1);
+    return payload.records;
+  }) as Array<Record<string, unknown>>;
+  expect(records.filter(record => record.kind === "system").map(record => record.content)).toEqual([
+    "system-one",
+    "system-two",
+  ]);
+  expect(records.filter(record => record.kind === "message").map(record => (
+    (record.message as { role: string }).role
+  ))).toEqual(["developer", "user", "assistant", "user"]);
+  expect(compiled.multipart!.parts.join("\n")).not.toContain(token);
+  expect(compiled.multipart!.commit.match(new RegExp(token, "g"))).toHaveLength(1);
+  expect(compiled.text).toBe(compiled.multipart!.commit);
+  expect(compiled.text).not.toContain("<codex_context_json>");
+
+  const transactionId = `ctx_${"a".repeat(32)}`;
+  const stages = compiled.multipart!.parts.slice(0, -1).map((part, index) => (
+    formatChatGptWebMultipartStage(part, transactionId, index + 1)
+  ));
+  expect(stages).toHaveLength(2);
+  for (const [index, stage] of stages.entries()) {
+    expect(stage.acknowledgement).toBe(
+      `CODEX_MULTIPART_ACK ${transactionId} ${index + 1}/3 ${stage.sha256}`,
+    );
+    expect(stage.text).toContain("Do not execute, summarize, interpret, or follow the task yet.");
+    expect(stage.text).toContain("Do not call tools or use web search.");
+    expect(stage.text).toEndWith("</codex_multipart_stage_end>");
+  }
+  const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
+  expect(commit).toContain("acknowledged_parts: 2/3");
+  expect(commit).toContain("The final part is included in this same message and starts the task");
+  expect(commit).toContain(compiled.multipart!.parts[2]!);
+  expect(commit).toContain("latest-request");
+  expect(commit.match(new RegExp(token, "g"))).toHaveLength(1);
+});
+
+test("Bigger Context uses two parts before three and reserves three for compaction", () => {
+  expect(biggerContextPartCount(94_999, 95_000, false)).toBeUndefined();
+  expect(biggerContextPartCount(95_000, 95_000, false)).toBe(2);
+  expect(biggerContextPartCount(189_999, 95_000, false)).toBe(2);
+  expect(biggerContextPartCount(190_000, 95_000, false)).toBe(3);
+  expect(biggerContextPartCount(1, 95_000, true)).toBe(3);
+
+  const compiled = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    undefined,
+    { experimentalMultipartParts: 2 },
+  );
+  expect(compiled.multipart?.parts).toHaveLength(2);
+  const transactionId = `ctx_${"b".repeat(32)}`;
+  const stage = formatChatGptWebMultipartStage(compiled.multipart!.parts[0]!, transactionId, 1, 2);
+  expect(stage.acknowledgement).toBe(`CODEX_MULTIPART_ACK ${transactionId} 1/2 ${stage.sha256}`);
+  expect(formatChatGptWebMultipartCommit(compiled.multipart!, transactionId)).toContain("acknowledged_parts: 1/2");
+});
+
+test("Bigger Context compaction preserves history above the retired inline byte budget", () => {
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  compact.context.messages = Array.from({ length: 6 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `multipart-history-${index + 1}-${String.fromCharCode(97 + index).repeat(160_000)}`,
+    timestamp: index + 1,
+  }));
+  const multipart = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+  expect(multipart.trimmedCompactionMessages).toBeUndefined();
+  expect(multipart.multipart?.parts).toHaveLength(3);
+  const staged = multipart.multipart!.parts.join("\n");
+  for (let index = 1; index <= 6; index += 1) {
+    expect(staged).toContain(`multipart-history-${index}-`);
+  }
 });
 
 test("browser-only Medium directs users to the full harness", () => {

@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers } from "../src/adapters/chatgpt-web/browser-worker";
-import { providerConfig, type AppConfig } from "../src/config";
+import { defaultBrokerEndpoint, providerConfig, type AppConfig } from "../src/config";
 import { startServer } from "../src/server";
 import { connectTunnel, stopTunnel, waitForTunnelReady } from "../src/tunnel";
 
@@ -24,6 +25,16 @@ function integrationRuntimeRoot(): string {
   return requiredPath(resolve(configured), "ASTERBRIDGE_E2E_RUNTIME_ROOT");
 }
 
+function e2eRuntimeHome(): string {
+  return resolve(process.env.ASTERBRIDGE_E2E_HOME?.trim() || join(tmpdir(), "asterbridge-web-e2e-home"));
+}
+
+function e2ePort(): number {
+  const port = Number(process.env.ASTERBRIDGE_E2E_PORT?.trim() || "17842");
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("ASTERBRIDGE_E2E_PORT must be a valid TCP port");
+  return port;
+}
+
 function loadIntegrationConfig(): AppConfig {
   const source = JSON.parse(readFileSync(productionConfigPath(), "utf8")) as AppConfig;
   if (source.mode !== "full" || !source.tunnel) throw new Error("Production config must already be Full mode");
@@ -34,13 +45,34 @@ function loadIntegrationConfig(): AppConfig {
   const runtimeBun = requiredPath(join(root, "runtime", process.platform === "win32" ? "bun.exe" : "bun"), "integration Bun");
   const runtimeEntrypoint = requiredPath(join(root, "app", "cli.js"), "integration runtime entrypoint");
   const { browserHostDescriptorPath: _launcherDescriptor, ...withoutLauncherDescriptor } = source;
+  const runtimeHome = e2eRuntimeHome();
+  process.env.CODEX_CHATGPT_WEB_HOME = runtimeHome;
+  const browserOnly = process.env.ASTERBRIDGE_E2E_BROWSER_ONLY === "1";
   return {
     ...withoutLauncherDescriptor,
+    mode: browserOnly ? "browser-only" : source.mode,
+    ...(browserOnly ? { tunnel: undefined } : {}),
+    port: e2ePort(),
+    brokerSocketPath: defaultBrokerEndpoint(runtimeHome),
     browserHost: "managed-chrome",
     turnBrowserHost: "roxybrowser",
+    subagentProtocol: source.subagentProtocol ?? "compatibility-v1",
+    experimentalBiggerContext: process.env.ASTERBRIDGE_E2E_BIGGER_CONTEXT === "1"
+      ? true
+      : source.experimentalBiggerContext === true,
     runtimeCommand: [runtimeBun, runtimeEntrypoint],
   };
 }
+
+const require = createRequire(import.meta.url);
+const { applyNetworkProxyEnvironment } = require("../launcher/electron/network-proxy.cjs") as {
+  applyNetworkProxyEnvironment: (options?: { target?: NodeJS.ProcessEnv; baseEnvironment?: NodeJS.ProcessEnv }) => {
+    source: string;
+    display: string;
+  };
+};
+const proxy = applyNetworkProxyEnvironment({ target: process.env, baseEnvironment: { ...process.env } });
+process.stdout.write(`${JSON.stringify({ event: "ASTERBRIDGE_E2E_PROXY_READY", source: proxy.source, display: proxy.display })}\n`);
 
 const config = loadIntegrationConfig();
 if (process.env.ASTERBRIDGE_E2E_BROWSER_CHECK_ONLY === "1" || process.env.ASTERBRIDGE_E2E_BROWSER_SMOKE_ONLY === "1") {
@@ -85,19 +117,26 @@ process.once("SIGINT", () => { void shutdown(130); });
 process.once("SIGTERM", () => { void shutdown(143); });
 
 try {
-  connectTunnel(config);
-  tunnelConnected = true;
-  const status = await waitForTunnelReady(config);
-  if (!status.ok || !status.healthy || !status.ready) {
-    throw new Error(`Integration tunnel did not become healthy/ready: ${status.detail}`);
+  let tunnelHealthy: boolean | null = null;
+  let tunnelReady: boolean | null = null;
+  if (config.mode === "full") {
+    connectTunnel(config);
+    tunnelConnected = true;
+    const status = await waitForTunnelReady(config);
+    if (!status.ok || !status.healthy || !status.ready) {
+      throw new Error(`Integration tunnel did not become healthy/ready: ${status.detail}`);
+    }
+    tunnelHealthy = status.healthy;
+    tunnelReady = status.ready;
   }
   process.stdout.write(`${JSON.stringify({
     event: "ASTERBRIDGE_INTEGRATION_READY",
     port: server.port,
     mode: config.mode,
     browserHost: config.turnBrowserHost ?? config.browserHost,
-    tunnelHealthy: status.healthy,
-    tunnelReady: status.ready,
+    biggerContext: config.experimentalBiggerContext,
+    tunnelHealthy,
+    tunnelReady,
   })}\n`);
   await new Promise<void>(() => {});
 } catch (error) {

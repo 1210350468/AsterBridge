@@ -2,11 +2,16 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 const codexBin = process.env.ASTERBRIDGE_CODEX_BIN?.trim();
-const threadId = process.env.ASTERBRIDGE_CODEX_THREAD_ID?.trim();
+const requestedThreadId = process.env.ASTERBRIDGE_CODEX_THREAD_ID?.trim();
+const createThread = process.env.ASTERBRIDGE_CODEX_CREATE_THREAD === "1";
+const baseUrl = process.env.ASTERBRIDGE_E2E_BASE_URL?.trim();
 if (!codexBin) throw new Error("ASTERBRIDGE_CODEX_BIN is required");
-if (!threadId) throw new Error("ASTERBRIDGE_CODEX_THREAD_ID is required");
+if (!createThread && !requestedThreadId) throw new Error("ASTERBRIDGE_CODEX_THREAD_ID is required unless ASTERBRIDGE_CODEX_CREATE_THREAD=1");
+let threadId = requestedThreadId ?? "";
 
-const child = spawn(codexBin, ["app-server", "--listen", "stdio://"], {
+const appServerArgs = ["app-server", "--listen", "stdio://"];
+if (baseUrl) appServerArgs.push("-c", `openai_base_url=${JSON.stringify(baseUrl)}`);
+const child = spawn(codexBin, appServerArgs, {
   env: process.env,
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
@@ -52,6 +57,27 @@ const exited = new Promise<never>((_, reject) => {
   child.once("exit", (code, signal) => reject(new Error(`Codex app-server exited early: code=${code} signal=${signal}`)));
 });
 
+async function waitForTurnCompletion(targetThreadId: string, afterIndex: number, timeoutMs = 180_000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (let index = afterIndex; index < notifications.length; index += 1) {
+      const message = notifications[index] as any;
+      if (message?.method === "turn/completed" && message?.params?.threadId === targetThreadId) return message;
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for Codex turn completion");
+}
+
+async function runTextTurn(text: string): Promise<any> {
+  const startIndex = notifications.length;
+  await Promise.race([send("turn/start", {
+    threadId,
+    input: [{ type: "text", text }],
+  }), exited]);
+  return Promise.race([waitForTurnCompletion(threadId, startIndex), exited]);
+}
+
 async function waitForCompaction(timeoutMs = 180_000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -84,14 +110,27 @@ try {
     }),
     exited,
   ]);
-  await Promise.race([send("thread/resume", { threadId }), exited]);
+  if (createThread) {
+    const started = await Promise.race([send("thread/start", {
+      model: "chatgpt-web/light",
+      cwd: process.cwd(),
+    }), exited]) as any;
+    threadId = started?.thread?.id ?? "";
+    if (!threadId) throw new Error("Codex app-server did not return a thread id");
+    await runTextTurn("Reply exactly SAME_OWNER_COMPACT_FIRST_OK. Do not use tools.");
+    await runTextTurn("Reply exactly SAME_OWNER_COMPACT_SECOND_OK. Do not use tools.");
+  } else {
+    await Promise.race([send("thread/resume", { threadId }), exited]);
+  }
   await Promise.race([send("thread/compact/start", { threadId }), exited]);
   const completed = await Promise.race([waitForCompaction(), exited]);
+  if (createThread) await runTextTurn("Reply exactly SAME_OWNER_POST_COMPACTION_OK. Do not use tools.");
   process.stdout.write(`${JSON.stringify({
     event: "ASTERBRIDGE_CODEX_COMPACTION_OK",
     threadId,
     notification: completed?.method ?? "item/completed",
     itemType: completed?.params?.item?.type ?? "contextCompaction",
+    sameOwner: createThread,
   })}\n`);
 } finally {
   child.stdin.end();

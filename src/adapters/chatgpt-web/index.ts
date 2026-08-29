@@ -12,7 +12,7 @@ import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage } from "./usage";
+import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import { chatGptConversationKey, retainedConversationResumeRequest } from "./conversation-key";
 import { runRetainedCompaction } from "./compaction-handoff";
@@ -167,6 +167,10 @@ export function createChatGptWebAdapter(
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const broker = dependencies.broker ?? TurnBroker.forSocket(brokerSocketPath(provider));
   const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
+  const experimentalBiggerContext = provider.chatgptWeb?.experimentalBiggerContext;
+  if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
+    throw new Error("ChatGPT Bigger Context preference must be a boolean");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
@@ -206,6 +210,17 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
+    const compileOptionsFor = (input: CodexParsedRequest) => {
+      const experimentalMultipartParts = experimentalBiggerContext
+        ? resolveBiggerContextMultipartParts(input, turnCapabilities)
+        : undefined;
+      return {
+        captureLunaCheckpoint,
+        ...(experimentalMultipartParts !== undefined
+          ? { experimentalMultipartParts }
+          : {}),
+      };
+    };
     const retainExternalConversation = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
       && mode.localTools
@@ -250,7 +265,7 @@ export function createChatGptWebAdapter(
             checkpointInput.parsed,
             turnCapabilities,
             undefined,
-            { captureLunaCheckpoint },
+            compileOptionsFor(checkpointInput.parsed),
           ),
           release: () => {},
         }),
@@ -292,7 +307,7 @@ export function createChatGptWebAdapter(
           input,
           turnCapabilities,
           turnToken,
-          { captureLunaCheckpoint },
+          compileOptionsFor(input),
         );
         return { ...compiled, release: () => {} };
       } catch (error) {
@@ -331,6 +346,7 @@ export function createChatGptWebAdapter(
       browser,
       trace,
       text,
+      ...(identity.threadId ? { threadId: identity.threadId } : {}),
       ...(conversationKey ? {
         conversationKey,
         releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
@@ -491,8 +507,18 @@ export function createChatGptWebAdapter(
                 throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
               }
               for (const message of results) {
+                const request = outstanding.find(candidate => candidate.callId === message.toolCallId);
                 await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
                 session.markResultDelivered(message.toolCallId);
+                const closedThreadId = request?.wireName === "multi_agent_v1__close_agent"
+                  && message.isError === false
+                  && typeof request.arguments?.target === "string"
+                  ? request.arguments.target
+                  : undefined;
+                if (closedThreadId) {
+                  const retired = await chatGptTurnSessions.retireThreadAndWait(closedThreadId);
+                  console.info(`[chatgpt-web] released closed subagent retained thread=${closedThreadId.slice(0, 17)} sessions=${retired}`);
+                }
               }
             }
           } else if (session.outstanding().length > 0) {

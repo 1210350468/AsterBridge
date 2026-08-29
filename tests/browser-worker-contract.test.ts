@@ -12,13 +12,37 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const runBrowserTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
 
+  const sendAttachedPrompt = workerSource.slice(
+    workerSource.indexOf("  private async sendAttachedPrompt("),
+    workerSource.indexOf("  private async waitForMultipartAcknowledgement("),
+  );
   expect(runBrowserTurn).toContain("return this.attachPromptWithCompactionRetry(");
-  expect(runBrowserTurn).toContain('.locator("xpath=ancestor::form[1]")');
-  expect(runBrowserTurn).toContain('.getByTestId("send-button")');
-  expect(runBrowserTurn).toContain('await sendButton.press("Enter")');
-  expect(runBrowserTurn).toContain("await this.waitForSubmissionAccepted(");
+  expect(runBrowserTurn).toContain("this.sendAttachedPrompt(page, submissionBaseline");
+  expect(sendAttachedPrompt).toContain('.locator("xpath=ancestor::form[1]")');
+  expect(sendAttachedPrompt).toContain('.getByTestId("send-button")');
+  expect(sendAttachedPrompt).toContain('await sendButton.press("Enter")');
+  expect(sendAttachedPrompt).toContain("return await this.waitForSubmissionAccepted(");
   expect(runBrowserTurn).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
+});
+
+test("Bigger Context stages inert parts before the final task-bearing commit", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const runBrowserTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
+  const acknowledgement = workerSource.slice(
+    workerSource.indexOf("  private async waitForMultipartAcknowledgement("),
+    workerSource.indexOf("  private async attachedPromptText("),
+  );
+
+  expect(runBrowserTurn).toContain("prepared.multipart.parts.slice(0, -1)");
+  expect(runBrowserTurn).toContain("formatChatGptWebMultipartStage(");
+  expect(runBrowserTurn).toContain("formatChatGptWebMultipartCommit(");
+  expect(runBrowserTurn).toContain("stageSignal => this.attachPrompt(");
+  expect(runBrowserTurn).toContain("stage.text,\r\n              false,");
+  expect(runBrowserTurn).toContain("const finalPrompt = multipartFinalPrompt ?? prepared.text");
+  expect(runBrowserTurn).toContain("final_part_effort_selection");
+  expect(acknowledgement).toContain("actual !== stage.acknowledgement");
+  expect(acknowledgement).toContain('code: "multipart_protocol_violation"');
 });
 
 test("browser turns run concurrently up to the five-tab limit", async () => {

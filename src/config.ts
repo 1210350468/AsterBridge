@@ -10,6 +10,7 @@ export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
 export type TurnBrowserHostMode = BrowserHostMode | "system-browser" | "roxybrowser";
 export type SystemBrowserChannel = "auto" | "chrome" | "msedge";
+export type SubagentProtocol = "compatibility-v1" | "native";
 
 /**
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
@@ -86,7 +87,9 @@ export interface AppConfig {
   headed: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  experimentalBiggerContext: boolean;
   autoApproveToolCalls: boolean;
+  subagentProtocol: SubagentProtocol;
   controlToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
@@ -185,7 +188,9 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     headed: true,
     solAvailable: true,
     proAvailable: false,
+    experimentalBiggerContext: false,
     autoApproveToolCalls: false,
+    subagentProtocol: "compatibility-v1",
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
@@ -393,6 +398,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (typeof parsed.autoApproveToolCalls !== "boolean") {
     throw new Error(`Invalid autoApproveToolCalls in ${path}`);
   }
+  const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
+  if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
+    throw new Error(`Invalid subagentProtocol in ${path}`);
+  }
   const requiredStrings: Array<keyof AppConfig> = [
     "appName", "chromeExecutablePath", "storageStatePath", "brokerSocketPath", "controlToken",
   ];
@@ -449,12 +458,23 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
+  if (parsed.experimentalBiggerContext !== undefined
+    && typeof parsed.experimentalBiggerContext !== "boolean") {
+    throw new Error(`Invalid experimentalBiggerContext in ${path}`);
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
+  const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
-  return { ...parsed, solAvailable, proAvailable } as AppConfig;
+  return {
+    ...parsed,
+    subagentProtocol,
+    solAvailable,
+    proAvailable,
+    experimentalBiggerContext,
+  } as AppConfig;
 }
 
 export function saveConfig(config: AppConfig): void {
@@ -499,6 +519,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       localToolsEnabled: config.mode === "full",
       solAvailable: config.solAvailable,
       proAvailable: config.proAvailable,
+      experimentalBiggerContext: config.experimentalBiggerContext,
       autoApproveToolCalls: config.autoApproveToolCalls,
     },
   };

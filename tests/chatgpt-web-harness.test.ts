@@ -1929,6 +1929,37 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(waitRequest?.input).toBeUndefined();
       broker.completeTool(token, waitRequest!.callId, toolResult({ output: "completed" }));
       expect((await waitPromise).structuredContent).toEqual({ output: "completed" });
+
+      const deferredSpawn = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "multi_agent_v1__spawn_agent",
+        arguments: { message: "Return CHILD_OK only." },
+      });
+      const [spawnRequest] = await broker.nextToolBatch(token);
+      expect(spawnRequest).toMatchObject({
+        wireName: "multi_agent_v1__spawn_agent",
+        freeform: false,
+        arguments: { message: "Return CHILD_OK only." },
+      });
+      broker.completeTool(token, spawnRequest!.callId, toolResult({ agent_id: "agent-1" }));
+      expect((await deferredSpawn).structuredContent).toEqual({ agent_id: "agent-1" });
+
+      const deferredWait = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "multi_agent_v1__wait_agent",
+        arguments: { ids: ["agent-1"], timeout_ms: 60_000 },
+      });
+      const [agentWaitRequest] = await broker.nextToolBatch(token);
+      expect(agentWaitRequest).toMatchObject({
+        wireName: "multi_agent_v1__wait_agent",
+        freeform: false,
+        arguments: { ids: ["agent-1"], timeout_ms: 10_000 },
+      });
+      broker.completeTool(token, agentWaitRequest!.callId, toolResult({
+        status: { "agent-1": { completed: "CHILD_OK" } },
+        timed_out: false,
+      }));
+      expect((await deferredWait).structuredContent).toMatchObject({ timed_out: false });
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);

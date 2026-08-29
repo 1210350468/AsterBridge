@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { extractChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
+import { extractChatGptTurnEnvironment, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
 import type { CodexParsedRequest, CodexTool } from "../src/types";
 
@@ -71,6 +71,23 @@ function currentWire(
 }
 
 describe("trusted current Codex environment envelope", () => {
+  test("subagent notifications do not replace the current human turn revision", () => {
+    const parsed = currentWire();
+    const input = (parsed._rawBody as { input: unknown[] }).input;
+    const originalRevision = structuredClone(extractChatGptTurnUserRevision(parsed));
+    input.push({
+      type: "message",
+      id: "msg_subagent_notification",
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: "<subagent_notification>\n{\"agent_path\":\"child\",\"status\":{\"completed\":\"CHILD_AGENT_OK\"}}\n</subagent_notification>",
+      }],
+    });
+
+    expect(extractChatGptTurnUserRevision(parsed)).toEqual(originalRevision);
+  });
+
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {
     expect(extractChatGptTurnEnvironment(currentWire())).toEqual({
       cwd: root,

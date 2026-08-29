@@ -83,6 +83,16 @@ describe("native /models augmentation", () => {
     }
   });
 
+  test("publishes Bigger Context limits in the Codex model catalog", () => {
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    config.experimentalBiggerContext = true;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
+    expect(pro.context_window).toBe(336_579);
+    expect(pro.auto_compact_token_limit).toBe(285_000);
+  });
+
   test("keeps every routed Web model in a native-rooted V1 spawn-agent model registry", () => {
     const config = defaultConfig("full");
     config.proAvailable = true;

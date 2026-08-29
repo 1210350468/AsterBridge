@@ -10,6 +10,7 @@ export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  experimentalBiggerContext?: boolean;
 }
 
 export interface ChatGptWebModelMode {

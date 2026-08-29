@@ -128,9 +128,11 @@ export function augmentNativeModelCatalog(
   const nativeModels = structuredClone(
     catalog.models.filter(model => !slug(model)?.startsWith(CHATGPT_WEB_MODEL_PREFIX)),
   );
-  for (const candidate of nativeModels) {
-    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
-      useReadableV1SubagentSurface(candidate as JsonObject);
+  if (config.subagentProtocol === "compatibility-v1") {
+    for (const candidate of nativeModels) {
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        useReadableV1SubagentSurface(candidate as JsonObject);
+      }
     }
   }
   const template = selectNativeTemplate(nativeModels, config);

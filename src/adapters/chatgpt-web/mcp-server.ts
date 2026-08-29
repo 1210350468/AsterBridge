@@ -60,18 +60,38 @@ function result(value: Record<string, unknown>, isError = false) {
   };
 }
 
+export const CODEX_SUBAGENT_WAIT_WIRE_NAME = "multi_agent_v1__wait_agent";
+export const CODEX_SUBAGENT_WAIT_POLL_MS = 10_000;
+export const CODEX_DEFERRED_SUBAGENT_WIRE_NAMES = new Set([
+  "multi_agent_v1__spawn_agent",
+  "multi_agent_v1__send_input",
+  "multi_agent_v1__resume_agent",
+  CODEX_SUBAGENT_WAIT_WIRE_NAME,
+  "multi_agent_v1__close_agent",
+]);
+
+export function isDeferredSubagentWireName(value: string): boolean {
+  return CODEX_DEFERRED_SUBAGENT_WIRE_NAMES.has(value);
+}
+
+export function boundedCodexToolArguments(
+  requestedWireName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (requestedWireName !== CODEX_SUBAGENT_WAIT_WIRE_NAME) return args;
+  const requested = args.timeout_ms;
+  const timeoutMs = typeof requested === "number" && Number.isFinite(requested) && requested > 0
+    ? Math.min(Math.trunc(requested), CODEX_SUBAGENT_WAIT_POLL_MS)
+    : CODEX_SUBAGENT_WAIT_POLL_MS;
+  return { ...args, timeout_ms: timeoutMs };
+}
+
 function wireName(tool: CodexTool): string {
   return namespacedToolName(tool.namespace, tool.name);
 }
 
 function exactTool(environment: ChatGptTurnEnvironment, name: string): CodexTool | undefined {
   return environment.tools.find(tool => !tool.namespace && tool.name === name);
-}
-
-function namedTool(environment: ChatGptTurnEnvironment, requestedWireName: string): CodexTool {
-  const tool = environment.tools.find(candidate => wireName(candidate) === requestedWireName);
-  if (!tool) throw new Error(`Codex tool is not available in this turn: ${requestedWireName}`);
-  return tool;
 }
 
 function invocationTimeout(environment: ChatGptTurnEnvironment & { expiresAt?: number }): number | null {
@@ -167,21 +187,29 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     });
   };
 
-  const invoke = async (
+  const invokeWire = async (
     bindingId: string,
     bound: ChatGptTurnEnvironment & { expiresAt?: number },
-    tool: CodexTool,
+    requestedWireName: string,
+    freeform: boolean,
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
     const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
       method: "invoke",
       bindingId,
-      wireName: wireName(tool),
-      freeform: tool.freeform === true,
-      ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
+      wireName: requestedWireName,
+      freeform,
+      ...(freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
     }, invocationTimeout(bound));
     return asMcpResult(response);
   };
+
+  const invoke = async (
+    bindingId: string,
+    bound: ChatGptTurnEnvironment & { expiresAt?: number },
+    tool: CodexTool,
+    payload: { arguments?: Record<string, unknown>; input?: string },
+  ) => invokeWire(bindingId, bound, wireName(tool), tool.freeform === true, payload);
 
   const invokeNestedNative = (
     bindingId: string,
@@ -392,14 +420,27 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       }
       const claimed = await claimTurn("codex_tool_call", turn_token, extra);
       const bound = claimed.environment;
-      const tool = namedTool(bound, wire_name);
+      const tool = bound.tools.find(candidate => wireName(candidate) === wire_name);
+      if (!tool) {
+        if (!isDeferredSubagentWireName(wire_name)) {
+          throw new Error(`Codex tool is not available in this turn: ${wire_name}`);
+        }
+        if (input !== undefined) {
+          throw new Error(`Deferred Codex tool ${wire_name} does not accept freeform input`);
+        }
+        return invokeWire(claimed.bindingId, bound, wire_name, false, {
+          arguments: boundedCodexToolArguments(wire_name, args ?? {}),
+        });
+      }
       if (tool.freeform) {
         if (input === undefined) throw new Error(`Freeform Codex tool ${wire_name} requires input`);
         if (args && Object.keys(args).length > 0) throw new Error(`Freeform Codex tool ${wire_name} does not accept arguments`);
         return invoke(claimed.bindingId, bound, tool, { input });
       }
       if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
-      return invoke(claimed.bindingId, bound, tool, { arguments: args ?? {} });
+      return invoke(claimed.bindingId, bound, tool, {
+        arguments: boundedCodexToolArguments(wire_name, args ?? {}),
+      });
     },
   );
 

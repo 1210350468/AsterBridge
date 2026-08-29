@@ -82,6 +82,14 @@ test("the renderer bridge switch reaches the fail-closed runtime route", () => {
   assert.match(electronMain, /codexRestartRequired:\s*true/);
 });
 
+test("Bigger Context setting uses the setup transaction and persists runtime state", () => {
+  assert.match(appSource, /<SettingRow body=\{copy\.biggerContextBody\} label=\{copy\.biggerContext\}>/);
+  assert.match(appSource, /api!\.setBiggerContext\(enabled\)/);
+  assert.match(preloadSource, /launcher:bigger-context/);
+  assert.match(electronMain, /runtimeHost\.setBiggerContext\(enabled === true\)/);
+  assert.match(electronMain, /experimentalBiggerContext:\s*result\.enabled/);
+});
+
 test("MCP connection remains unavailable until the model catalog is verified", () => {
   assert.match(
     appSource,
