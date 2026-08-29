@@ -12,6 +12,7 @@ const expectedVersion = launcherManifest.version;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-smoke-"));
 const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
+const WINDOWS_INSTALL_TIMEOUT_MS = 10 * 60_000;
 let macAppBundle;
 
 function run(command, args, options = {}) {
@@ -93,8 +94,19 @@ try {
     env.APPIMAGE_EXTRACT_AND_RUN = "1";
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
-    run(installer, ["/S", "/currentuser"], { timeout: 120_000 });
-    executable = path.join(windowsInstallLocation(), `${launcherManifest.build.productName}.exe`);
+    run(installer, ["/S", "/currentuser"], { timeout: WINDOWS_INSTALL_TIMEOUT_MS });
+    const installLocation = windowsInstallLocation();
+    executable = path.join(installLocation, `${launcherManifest.build.productName}.exe`);
+    const packagedRuntimeRoot = path.join(installLocation, "resources", "runtime");
+    for (const required of [
+      path.join(packagedRuntimeRoot, "runtime", "bun.exe"),
+      path.join(packagedRuntimeRoot, "bin", "codex-chatgpt-web.cmd"),
+      path.join(packagedRuntimeRoot, "manifest.json"),
+    ]) {
+      if (!fs.existsSync(required) || !fs.statSync(required).isFile()) {
+        throw new Error(`Windows installer completed without required packaged runtime file: ${required}`);
+      }
+    }
     command = executable;
     args = ["--launcher-smoke-test"];
   } else {
@@ -108,6 +120,7 @@ try {
   if (marker.ok !== true
     || marker.packaged !== true
     || marker.runtimeVerified !== true
+    || (process.platform === "win32" && marker.trayReady !== true)
     || marker.version !== expectedVersion
     || marker.platform !== process.platform) {
     throw new Error(`Unexpected packaged launcher marker: ${JSON.stringify(marker)}`);

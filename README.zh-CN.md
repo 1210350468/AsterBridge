@@ -206,6 +206,8 @@ bun run verify
 bun run app:package
 ```
 
+正式打包请使用上面的 package 脚本；Windows 也可显式运行 `bun run --cwd launcher package:win`。不要直接调用 `launcher/scripts/package.cjs --win`，因为正式入口会先构建 Renderer 和内置 runtime，再交给 electron-builder。随后用 `bun run app:smoke` 安装真实安装包并验证 packaged Bun/runtime、durable runtime；Windows 还会验证 Tray 已就绪。较慢磁盘上的 NSIS 安装可能正常超过两分钟，因此 smoke 会等待安装器真正完成，不再把 120 秒时被中止的半解包目录误判成坏包。
+
 ### 使用主 Chrome / Edge 运行 Web 模型回合
 
 源码桌面端可让 Launcher 继续监管本地 Bridge/MCP，但把真正的 ChatGPT Web 回合切换到你日常使用、已登录的 Chrome 或 Edge：

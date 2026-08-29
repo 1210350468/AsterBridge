@@ -2,6 +2,27 @@
 
 All notable AsterBridge changes are documented here.
 
+## Unreleased
+
+### Upstream v4 integration
+
+- Added retained Roxy task conversations with native compaction epoch recovery, reversible Subagent Compatibility V1 / Native behavior, bounded deferred `wait_agent` polling, and opt-in transactional Bigger Context transport.
+- Preserved the public `Codex Native3` MCP ABI while carrying deferred Multi-agent calls through the generic tool contract and keeping native image-generation passthrough on the official image endpoints.
+- Added Launcher Bigger Context controls and retained the existing prompt-verification, bounded insertion, UTF-16, proxy, Roxy, and route-ownership guarantees.
+
+### Windows packaging reliability
+
+- Added NSIS recovery for a half-uninstalled AsterBridge registration when the recorded current/legacy launcher and uninstaller files are all gone, avoiding upgrade failure on a stale missing uninstaller.
+- Fixed packaged smoke incorrectly killing a valid but slow Windows NSIS install after 120 seconds. Windows smoke now allows up to 10 minutes, verifies the packaged Bun/runtime files before launch, and requires the readiness marker to report tray availability.
+- Final Windows package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; the installed package contains all 5,986 runtime files, `runtime/bun.exe`, a verified durable runtime, and a ready tray.
+
+### Validation notes
+
+- Launcher regression: **200 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and production renderer build passed.
+- Focused Subagent/Bigger Context/Browser Worker/Full Harness regression: **180 pass, 0 fail / 888 assertions**.
+- Native compaction completed through one Codex app-server owner across retained → compact → new epoch with a native `contextCompaction` item. Final Full runtime reported Tunnel healthy/ready; text, Native3 MCP, retained sessions, Subagent, Nested, and Bigger Context live chains passed.
+- Final `image_gen` routing reached the official image backend. The current Plus account returned `429 usage_limit_reached`; earlier validation through the same AsterBridge endpoint produced a real PNG, so the quota response is not treated as a bridge regression.
+
 ## 3.0.2 - 2026-08-28
 
 ### Compatibility fixes

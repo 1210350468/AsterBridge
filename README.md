@@ -238,6 +238,8 @@ bun run verify
 bun run app:package
 ```
 
+For release packaging, use the package scripts above (or `bun run --cwd launcher package:win` on Windows) rather than invoking `launcher/scripts/package.cjs` directly. The package scripts build the renderer and embedded runtime before electron-builder runs. `bun run app:smoke` then installs the real package, verifies the packaged Bun/runtime bundle and durable runtime, and on Windows also requires tray readiness. A Windows NSIS install can legitimately take several minutes on slower disks, so the smoke waits for installer completion instead of treating a 120-second partial extraction as a package failure.
+
 ### Use your main Chrome / Edge session for Web turns
 
 The source launcher can keep ownership of the local bridge and MCP runtime while running actual ChatGPT Web turns in your normal signed-in Chrome or Edge session:

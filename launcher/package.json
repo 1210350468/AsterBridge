@@ -73,6 +73,7 @@
     },
     "nsis": {
       "guid": "d1a6026a-6210-588e-9a2b-da3936f94e02",
+      "include": "scripts/installer.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,

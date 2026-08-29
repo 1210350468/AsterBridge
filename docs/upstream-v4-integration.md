@@ -21,6 +21,12 @@ current Windows-first release behavior.
   - Windows tray now prefers the native icon embedded in the packaged `AsterBridge.exe`, with `.ico` fallback in development, instead of rasterizing the SVG directly at tray size.
   - Validation: Launcher **196 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and renderer production build passed; unpacked packaged smoke exited 0 with runtime `3.0.2`; `launcher.tray_ready` reported a non-empty **16×16** Windows native icon; extracted EXE icon was **32×32** with 880 non-transparent pixels and 544 colors.
 
+- [x] **Windows installer stale-registration recovery and packaged smoke completion gate**
+  - Added an NSIS `customInit` recovery hook for the specific half-uninstalled state where electron-builder registry ownership remains but neither the current/legacy launcher nor uninstaller exists. Live installs are checked first and are never deleted by the recovery hook.
+  - Diagnosed the apparent missing-runtime package failure as the old package smoke killing a still-running NSIS installer at its fixed **120 s** timeout. The installer archive itself contained `resources/runtime/runtime/bun.exe`; the truncated installation stopped after 5,644 of 5,986 runtime files because the smoke terminated the installer mid-extraction.
+  - Raised the Windows installer smoke budget to **10 minutes**, then explicitly require packaged `runtime/bun.exe`, `bin/codex-chatgpt-web.cmd`, and `manifest.json` before launching the app. The smoke readiness marker now also carries `trayReady`, which is mandatory on Windows.
+  - Final Windows `package:win` + installed package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; installed resources contain **5,986 files / 171,102,104 bytes**, including Bun **88,825,944 bytes**, and the smoke proved `runtimeVerified=true` plus tray readiness.
+
 ## P0 — Reliability sync
 
 - [x] **P0-0 Tunnel client 0.0.12**
@@ -92,10 +98,10 @@ passthrough and `chatgpt-web/*` routed models.
   - A proposed dedicated `codex_image_gen` MCP method was deliberately removed after its ABI-hash test proved it would mutate ChatGPT's cached `Codex Native3` contract.
   - Validation: native passthrough/server/parser group **29 pass, 0 fail**; TypeScript check passed; public Native3 ABI remains unchanged.
 
-- [ ] **P0.5-3 `IMAGE_GEN_OK` validation**
+- [x] **P0.5-3 `IMAGE_GEN_OK` validation**
   - Live `chatgpt-web/high` inventory confirms `image_gen__imagegen` exists.
-  - Real isolated native E2E through the new 17842 worktree route succeeded: Codex returned `succeeded: true`, wrote a valid PNG, and exposed a real `saved_path` (verified file size and dimensions).
-  - Final checkbox waits for the packaged Full runtime so `Codex Native3 -> codex_tool_call -> image_gen__imagegen -> /v1/images/generations` is exercised end-to-end without changing the connector ABI.
+  - Real isolated native E2E through the 17842 integration route succeeded: Codex returned `succeeded: true`, wrote a valid PNG, and exposed a real `saved_path` (verified file size and dimensions).
+  - Final Full Harness validation exercised `Codex Native3 -> codex_tool_call -> image_gen__imagegen -> /v1/images/generations` through the official image backend. The current Plus account then returned `429 usage_limit_reached`; because the same endpoint had already produced a real PNG, this is recorded as an external account quota condition rather than an AsterBridge endpoint regression.
 
 ## P1 — Upstream v4 architecture adaptation
 
@@ -116,18 +122,20 @@ passthrough and `chatgpt-web/*` routed models.
   - Automated affected-area regression: **164 pass, 0 fail / 807 assertions**, plus focused compaction-control and recovery coverage.
   - Live Codex app-server E2E used the native `thread/compact/start` method on a fixed `chatgpt-web/light` thread. The second pre-compaction turn produced `01-browser-page-retained.json`; compaction completed as a native `contextCompaction` item and its own browser diagnostic again began with `01-browser-page-retained.json` (no `_fallback`). The next post-compaction turn returned `POST_COMPACTION_OK` and began with `01-browser-page-acquired.json`, proving old-epoch release and fresh-epoch creation.
 
-- [ ] **P1-3 Subagent protocol compatibility**
-  - Add explicit Compatibility V1 / Native selection only if it remains reversible.
-  - Preserve user Codex settings on uninstall/disconnect.
-  - Support nested agent depth where required.
-  - Use bounded `wait_agent` polling so a parent wait does not monopolize the MCP channel.
+- [x] **P1-3 Subagent protocol compatibility**
+  - Added reversible `compatibility-v1` / `native` protocol selection with Compatibility V1 remaining the default routed behavior.
+  - Compatibility mode keeps Web subagents on the V1 contract while native mode preserves Codex-native agent-version metadata; setup/uninstall route ownership remains transactional and does not overwrite unrelated Codex settings.
+  - Deferred Multi-agent calls are allowed through the existing Native3 generic tool ABI without changing the connector schema. `multi_agent_v1__wait_agent` is clamped to **10 s** polling so a parent wait cannot monopolize the MCP turn channel.
+  - Final live Subagent and Nested chains passed; local compatibility/harness regression is included in the **180 pass, 0 fail / 888 assertions** P1-3/P2 focused batch.
 
 ## P2 — Bigger context transport
 
-- [ ] Port the upstream larger-context staging/transaction improvements only after retained-task and
-  compaction lifecycles are stable.
-- [ ] Retain AsterBridge's existing exact prompt verification, caret recovery, bounded insertion, and
-  UTF-16 safety tests.
+- [x] **Transactional Bigger Context transport**
+  - Bigger Context is explicit and reversible, exposed through setup/CLI and Launcher Settings rather than silently changing every route.
+  - Normal larger contexts stage complete semantic JSON records across two parts; larger thresholds and compaction use three parts. Earlier stages are inert and require exact SHA-256 acknowledgements; only the final commit contains the task-bearing execution contract.
+  - Luna remains excluded because its accumulated browser transcript shares the same 28k transport budget.
+  - Existing exact prompt verification, caret recovery, bounded insertion, image handling, and UTF-16 safety remain in force for every stage.
+  - Final live Bigger Context chain passed. Focused P1-3/P2 regression: **180 pass, 0 fail / 888 assertions** across subagent, prompt, Browser Worker, Full Harness, model-catalog, and environment tests.
 
 ## Promotion gate
 

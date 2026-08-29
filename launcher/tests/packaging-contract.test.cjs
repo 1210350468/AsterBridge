@@ -25,9 +25,25 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.svg")));
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
+  assert.equal(manifest.build.nsis.include, "scripts/installer.nsh");
   assert.equal(manifest.build.nsis.allowElevation, false);
   assert.equal(manifest.build.nsis.runAfterFinish, true);
   assert.match(manifest.build.nsis.guid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+});
+
+test("Windows installer recovers a stale AsterBridge registration without deleting a live install", () => {
+  const recovery = fs.readFileSync(path.join(launcherRoot, "scripts", "installer.nsh"), "utf8");
+  assert.match(recovery, /!macro customInit/);
+  assert.match(recovery, /AsterBridge\.exe/);
+  assert.match(recovery, /Codex Web GPT\.exe/);
+  assert.match(recovery, /Uninstall AsterBridge\.exe/);
+  assert.match(recovery, /Uninstall Codex Web GPT\.exe/);
+  assert.match(recovery, /DeleteRegKey HKCU "\$\{UNINSTALL_REGISTRY_KEY\}"/);
+  assert.match(recovery, /DeleteRegKey HKCU "\$\{INSTALL_REGISTRY_KEY\}"/);
+  assert.ok(
+    recovery.indexOf('IfFileExists "$0\\AsterBridge.exe"') < recovery.indexOf('DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"'),
+    "a live installation must be checked before stale registration keys are removed",
+  );
 });
 
 test("release installers resolve checksummed native launcher assets", () => {
@@ -67,7 +83,11 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.ok(windowsInstaller.includes(`Join-Path $InstallLocation "${manifest.build.productName}.exe"`));
   assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
+  assert.match(packageSmoke, /WINDOWS_INSTALL_TIMEOUT_MS = 10 \* 60_000/);
+  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\], \{ timeout: WINDOWS_INSTALL_TIMEOUT_MS \}\)/);
+  assert.match(packageSmoke, /resources[\s\S]*runtime[\s\S]*bun\.exe/);
+  assert.match(packageSmoke, /codex-chatgpt-web\.cmd/);
+  assert.match(packageSmoke, /marker\.trayReady !== true/);
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 
@@ -101,6 +121,12 @@ test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
   assert.match(release, /codesign --verify --deep --strict --verbose=2/);
   assert.match(release, /AsterBridge\.app/);
   assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
+});
+
+test("packaged launcher smoke marker records tray readiness", () => {
+  const main = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
+  assert.match(main, /runtimeVerified:\s*true/);
+  assert.match(main, /trayReady:\s*trayAvailable/);
 });
 
 test("macOS package smoke unregisters its staged app from LaunchServices", () => {

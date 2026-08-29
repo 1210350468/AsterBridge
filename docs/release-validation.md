@@ -11,6 +11,8 @@ Record the release version, operating-system version, install path (`clean` or `
 plan, Codex version, result of each check, and a redacted Activity log for every failure. Never
 capture cookies, tunnel IDs, API keys, bearer tokens, or prompt contents.
 
+The native package smoke is a separate prerequisite. On Windows it must use the completed NSIS process rather than a partial installation, verify `resources/runtime/runtime/bun.exe`, the runtime launcher and manifest before app startup, execute the durable installed runtime, and require the Launcher readiness marker to report tray availability. A valid Windows installation may exceed two minutes on slower storage; the smoke uses a bounded ten-minute installer budget so its own timeout cannot manufacture a half-installed package failure.
+
 ## Windows 11 gate
 
 Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account. Treat it as a first-user journey, not just an internal feature checklist:
