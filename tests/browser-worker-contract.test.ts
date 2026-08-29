@@ -27,6 +27,9 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { browserHost: "managed-chrome" },
     activeRuns: new Map(),
+    activeRunConversationKeys: new Map(),
+    retainedExternalPages: new Map(),
+    conversationTails: new Map(),
     runExclusive: (turn: { traceId: string }) => new Promise<string>(resolve => {
       releases.set(turn.traceId, () => resolve(turn.traceId));
     }),

@@ -316,36 +316,6 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
   );
 
   server.registerTool(
-    "codex_image_gen",
-    {
-      title: "Generate or edit an image through native Codex",
-      description: "Invoke the outer Codex image_gen.imagegen capability and return its generated-image result to this same ChatGPT response.",
-      inputSchema: {
-        turn_token: turnTokenSchema,
-        prompt: z.string().min(1).max(100_000),
-        referenced_image_paths: z.array(z.string().min(1).max(16_384)).max(5).optional(),
-        num_last_images_to_include: z.number().int().min(1).max(5).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    async ({ turn_token, prompt, referenced_image_paths, num_last_images_to_include }, extra) => {
-      if (referenced_image_paths !== undefined && num_last_images_to_include !== undefined) {
-        throw new Error("codex_image_gen accepts either referenced_image_paths or num_last_images_to_include, not both");
-      }
-      const claimed = await claimTurn("codex_image_gen", turn_token, extra);
-      const bound = claimed.environment;
-      const tool = namedTool(bound, "image_gen__imagegen");
-      return invoke(claimed.bindingId, bound, tool, {
-        arguments: {
-          prompt,
-          ...(referenced_image_paths !== undefined ? { referenced_image_paths } : {}),
-          ...(num_last_images_to_include !== undefined ? { num_last_images_to_include } : {}),
-        },
-      });
-    },
-  );
-
-  server.registerTool(
     "codex_tool_inventory",
     {
       title: "Discover tools from the current Codex harness",

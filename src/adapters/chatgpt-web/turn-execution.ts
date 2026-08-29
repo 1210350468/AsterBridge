@@ -118,6 +118,10 @@ interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
+  /** Stable retained ChatGPT conversation identity for one Codex thread/compaction epoch. */
+  conversationKey?: string;
+  /** Idempotently release a retained external-browser conversation when its epoch ends. */
+  releaseRetainedConversation?: () => Promise<void>;
   cancel: () => void;
 }
 
@@ -228,6 +232,10 @@ export class ChatGptTurnSession {
     return this.settledBrowserOutcome;
   }
 
+  conversationKey(): string | undefined {
+    return this.runtime.conversationKey;
+  }
+
   isActive(): boolean {
     return this.settledBrowserOutcome === undefined;
   }
@@ -288,7 +296,9 @@ export class ChatGptTurnSession {
 
 export class ChatGptTurnSessions {
   private readonly entries = new Map<string, ChatGptTurnSession>();
+  private readonly conversationHeads = new Map<string, ChatGptTurnSession>();
   private readonly retirements = new Map<string, Promise<void>>();
+  private readonly conversationRetirements = new Map<string, Promise<void>>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
@@ -311,7 +321,44 @@ export class ChatGptTurnSessions {
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
     const session = new ChatGptTurnSession(start());
     this.entries.set(key, session);
+    const conversationKey = session.conversationKey();
+    if (conversationKey) this.conversationHeads.set(conversationKey, session);
     return session;
+  }
+
+  findConversationHead(conversationKey: string): ChatGptTurnSession | undefined {
+    const session = this.conversationHeads.get(conversationKey);
+    session?.touch();
+    return session;
+  }
+
+  async retireConversationAndWait(conversationKey: string): Promise<number> {
+    const pending = this.conversationRetirements.get(conversationKey);
+    if (pending) {
+      await pending;
+      return 0;
+    }
+    const matches = [...this.entries].filter(([, session]) => session.conversationKey() === conversationKey);
+    if (matches.length === 0) return 0;
+    const head = this.conversationHeads.get(conversationKey);
+    this.conversationHeads.delete(conversationKey);
+    for (const [key, session] of matches) {
+      if (this.entries.get(key) === session) this.entries.delete(key);
+      if (session.isActive()) session.cancel();
+    }
+    const release = head?.runtime.releaseRetainedConversation
+      ?? matches.findLast(([, session]) => session.runtime.releaseRetainedConversation !== undefined)?.[1].runtime.releaseRetainedConversation;
+    const retirement = Promise.all(matches.map(([, session]) => session.browserOutcome))
+      .then(async () => { await release?.(); });
+    this.conversationRetirements.set(conversationKey, retirement);
+    try {
+      await retirement;
+    } finally {
+      if (this.conversationRetirements.get(conversationKey) === retirement) {
+        this.conversationRetirements.delete(conversationKey);
+      }
+    }
+    return matches.length;
   }
 
   async waitForRetirement(key: string): Promise<void> {
@@ -328,8 +375,11 @@ export class ChatGptTurnSessions {
     if (!session) return false;
 
     this.entries.delete(key);
+    const releaseConversation = this.forgetConversationHead(session);
     session.cancel();
-    const retirement = session.browserOutcome.then(() => undefined);
+    const retirement = session.browserOutcome
+      .then(() => undefined)
+      .then(async () => { await releaseConversation?.(); });
     this.retirements.set(key, retirement);
     try {
       await retirement;
@@ -341,15 +391,30 @@ export class ChatGptTurnSessions {
 
   retire(key: string, session: ChatGptTurnSession): boolean {
     if (this.entries.get(key) !== session) return false;
-    session.cancel();
     this.entries.delete(key);
+    const releaseConversation = this.forgetConversationHead(session);
+    session.cancel();
+    if (releaseConversation) {
+      void session.browserOutcome.then(() => releaseConversation()).catch(error => {
+        console.error(`[chatgpt-web] failed to release retired retained conversation: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     return true;
   }
 
   clear(): number {
     const cancelled = this.entries.size;
+    const heads = [...this.conversationHeads.values()];
     for (const session of this.entries.values()) session.cancel();
     this.entries.clear();
+    this.conversationHeads.clear();
+    for (const session of heads) {
+      const release = session.runtime.releaseRetainedConversation;
+      if (!release) continue;
+      void session.browserOutcome.then(() => release()).catch(error => {
+        console.error(`[chatgpt-web] failed to release cleared retained conversation: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     return cancelled;
   }
 
@@ -364,9 +429,22 @@ export class ChatGptTurnSessions {
     const cutoff = Date.now() - this.ttlMs;
     for (const [key, session] of this.entries) {
       if (session.isActive() || session.lastUsedAt() >= cutoff) continue;
-      session.cancel();
       this.entries.delete(key);
+      const releaseConversation = this.forgetConversationHead(session);
+      session.cancel();
+      if (releaseConversation) {
+        void session.browserOutcome.then(() => releaseConversation()).catch(error => {
+          console.error(`[chatgpt-web] failed to release expired retained conversation: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
     }
+  }
+
+  private forgetConversationHead(session: ChatGptTurnSession): (() => Promise<void>) | undefined {
+    const conversationKey = session.conversationKey();
+    if (!conversationKey || this.conversationHeads.get(conversationKey) !== session) return undefined;
+    this.conversationHeads.delete(conversationKey);
+    return session.runtime.releaseRetainedConversation;
   }
 }
 

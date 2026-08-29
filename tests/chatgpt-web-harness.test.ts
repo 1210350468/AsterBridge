@@ -1945,21 +1945,6 @@ describe("ChatGPT outer-native harness v4", () => {
       { name: "write_stdin", description: "Continue a command", parameters: { type: "object" } },
       { name: "apply_patch", description: "Apply a patch", parameters: {}, freeform: true },
       { name: "view_image", description: "View an image", parameters: { type: "object" } },
-      {
-        name: "imagegen",
-        namespace: "image_gen",
-        description: "Generate or edit an image",
-        parameters: {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            referenced_image_paths: { type: ["array", "null"], items: { type: "string" } },
-            num_last_images_to_include: { type: ["integer", "null"] },
-          },
-          required: ["prompt"],
-          additionalProperties: false,
-        },
-      },
     ];
     const token = await broker.register(directEnvironment, 60_000);
     const transport = new StdioClientTransport({
@@ -2052,28 +2037,6 @@ describe("ChatGPT outer-native harness v4", () => {
       broker.completeTool(token, viewRequest!.callId, toolResult({ output: "image-ready" }));
       expect((await view).structuredContent).toEqual({ output: "image-ready" });
 
-      const generated = call("codex_image_gen", {
-        turn_token: token,
-        prompt: "A tiny blue bridge icon on a transparent background",
-        referenced_image_paths: ["/private/tmp/reference.png"],
-      });
-      const [imageGenRequest] = await broker.nextToolBatch(token);
-      expect(imageGenRequest).toEqual(expect.objectContaining({
-        wireName: "image_gen__imagegen",
-        freeform: false,
-        arguments: {
-          prompt: "A tiny blue bridge icon on a transparent background",
-          referenced_image_paths: ["/private/tmp/reference.png"],
-        },
-      }));
-      const imageContent = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
-      broker.completeTool(token, imageGenRequest!.callId, {
-        content: imageContent,
-        structuredContent: { saved_path: "/private/tmp/generated.png" },
-      });
-      const imageGenResult = await generated;
-      expect(imageGenResult.content).toEqual(imageContent);
-      expect(imageGenResult.structuredContent).toEqual({ saved_path: "/private/tmp/generated.png" });
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);

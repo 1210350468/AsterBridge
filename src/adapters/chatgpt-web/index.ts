@@ -14,6 +14,7 @@ import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBro
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
+import { chatGptConversationKey, retainedConversationResumeRequest } from "./conversation-key";
 import {
   ChatGptLunaCheckpointStore,
   type CapturedChatGptLunaCheckpoint,
@@ -204,6 +205,16 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
+    const retainExternalConversation = !parsed._compactionRequest
+      && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
+      && mode.localTools
+      && (provider.chatgptWeb?.browserHost === "roxybrowser" || provider.chatgptWeb?.browserHost === "system-browser");
+    const conversationKey = retainExternalConversation
+      ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
+      : undefined;
+    const resumeInput = conversationKey
+      ? retainedConversationResumeRequest(checkpointInput.parsed)
+      : undefined;
     if (captureLunaCheckpoint) {
       console.info(
         `[chatgpt-web] Luna rolling checkpoint applied=${checkpointInput.applied}${checkpointInput.reason ? ` reason=${checkpointInput.reason}` : ""}`,
@@ -264,33 +275,39 @@ export function createChatGptWebAdapter(
     const token = deferred<string>();
     let tokenSettled = false;
     let activeToken: string | undefined;
+    const prepareWith = async (input: CodexParsedRequest) => {
+      const turnToken = activeToken ?? await broker.register(
+        environment,
+        timeoutMs === undefined ? undefined : timeoutMs + 60_000,
+        traceId,
+      );
+      activeToken = turnToken;
+      if (!tokenSettled) {
+        tokenSettled = true;
+        token.resolve(turnToken);
+      }
+      try {
+        const compiled = compileChatGptWebPrompt(
+          input,
+          turnCapabilities,
+          turnToken,
+          { captureLunaCheckpoint },
+        );
+        return { ...compiled, release: () => {} };
+      } catch (error) {
+        await broker.revoke(turnToken);
+        activeToken = undefined;
+        throw error;
+      }
+    };
     const browser = finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       capabilities: turnCapabilities,
-      prepare: async () => {
-        const turnToken = await broker.register(
-          environment,
-          timeoutMs === undefined ? undefined : timeoutMs + 60_000,
-          traceId,
-        );
-        activeToken = turnToken;
-        tokenSettled = true;
-        token.resolve(turnToken);
-        try {
-          const compiled = compileChatGptWebPrompt(
-            checkpointInput.parsed,
-            turnCapabilities,
-            turnToken,
-            { captureLunaCheckpoint },
-          );
-          return { ...compiled, release: () => {} };
-        } catch (error) {
-          await broker.revoke(turnToken);
-          throw error;
-        }
-      },
+      prepare: () => prepareWith(checkpointInput.parsed),
+      ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+      ...(conversationKey ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
@@ -313,6 +330,10 @@ export function createChatGptWebAdapter(
       browser,
       trace,
       text,
+      ...(conversationKey ? {
+        conversationKey,
+        releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
+      } : {}),
       cancel: () => {
         browserAbort.abort();
         if (activeToken) {

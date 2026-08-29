@@ -339,12 +339,35 @@ function promptInsertChunkEnd(text: string, offset: number): number {
   return end;
 }
 
+export function chatGptPhysicalTaskSurfacePlan(
+  retainedConversationKeys: Iterable<string>,
+  activeConversationKeys: Iterable<string | undefined>,
+  requestedConversationKey?: string,
+): { occupied: number; needsNewPhysicalSlot: boolean } {
+  const retainedKeys = new Set(retainedConversationKeys);
+  let distinctNonRetainedRuns = 0;
+  for (const activeConversationKey of activeConversationKeys) {
+    if (activeConversationKey) retainedKeys.add(activeConversationKey);
+    else distinctNonRetainedRuns += 1;
+  }
+  return {
+    occupied: retainedKeys.size + distinctNonRetainedRuns,
+    needsNewPhysicalSlot: requestedConversationKey ? !retainedKeys.has(requestedConversationKey) : true,
+  };
+}
+
 export interface BrowserTurn {
   traceId: string;
   modelId: string;
   reasoning?: string;
   capabilities: ChatGptWebCapabilities;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  /** Prompt containing only the canonical suffix after the last assistant reply. */
+  prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  /** Retain a completed external-browser Temporary Chat for the next native message in this epoch. */
+  retainConversation?: boolean;
+  /** Stable Codex thread/model/effort/compaction-epoch identity for retained browser reuse. */
+  conversationKey?: string;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
   /** Visible ChatGPT reasoning-summary step titles only; never hidden chain-of-thought. */
@@ -858,7 +881,11 @@ export class ChatGptBrowserWorker {
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
+  /** Conversation key for retained external runs; undefined means the run owns a distinct physical page. */
+  private readonly activeRunConversationKeys = new Map<string, string | undefined>();
   private readonly externalTurnPages = new Map<string, Page>();
+  private readonly retainedExternalPages = new Map<string, Page>();
+  private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly turnStages = new Map<string, string>();
   private roxyOpenedByAutomation = false;
 
@@ -920,21 +947,60 @@ export class ChatGptBrowserWorker {
     if (this.activeRuns.has(turn.traceId)) {
       return Promise.reject(new Error(`Duplicate ChatGPT web browser turn: ${turn.traceId}`));
     }
-    if (this.activeRuns.size >= MAX_CHATGPT_BROWSER_TABS) {
+    const retainedExternal = Boolean(
+      turn.conversationKey
+      && (this.config.browserHost === "roxybrowser" || this.config.browserHost === "system-browser"),
+    );
+    const requestedConversationKey = retainedExternal ? turn.conversationKey! : undefined;
+    const surfacePlan = chatGptPhysicalTaskSurfacePlan(
+      this.retainedExternalPages.keys(),
+      this.activeRunConversationKeys.values(),
+      requestedConversationKey,
+    );
+    if (surfacePlan.needsNewPhysicalSlot && surfacePlan.occupied >= MAX_CHATGPT_BROWSER_TABS) {
       return Promise.reject(new Error(
-        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns; close or finish a browser tab before starting another`,
+        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns or retained task surfaces; release, finish, or compact one before starting another`,
       ));
     }
     const useHelper = this.config.browserHost === "launcher" && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const run = Promise.resolve().then(() => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn));
+    const execute = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
+    let run: Promise<string>;
+    if (retainedExternal) {
+      const key = turn.conversationKey!;
+      const prior = this.conversationTails.get(key) ?? Promise.resolve();
+      run = prior.then(execute);
+      const tail = run.then(() => undefined, () => undefined);
+      this.conversationTails.set(key, tail);
+      void tail.finally(() => {
+        if (this.conversationTails.get(key) === tail) this.conversationTails.delete(key);
+      });
+    } else {
+      run = Promise.resolve().then(execute);
+    }
     this.activeRuns.set(turn.traceId, run);
+    this.activeRunConversationKeys.set(turn.traceId, requestedConversationKey);
     void run.finally(() => {
       if (this.activeRuns.get(turn.traceId) === run) this.activeRuns.delete(turn.traceId);
+      this.activeRunConversationKeys.delete(turn.traceId);
     }).catch(() => {});
     return run;
+  }
+
+  async releaseRetainedConversation(conversationKey: string): Promise<boolean> {
+    for (;;) {
+      const tail = this.conversationTails.get(conversationKey);
+      if (!tail) break;
+      await tail;
+      if (this.conversationTails.get(conversationKey) === tail) break;
+    }
+    const page = this.retainedExternalPages.get(conversationKey);
+    if (!page) return false;
+    this.retainedExternalPages.delete(conversationKey);
+    if (!page.isClosed()) await page.close().catch(() => {});
+    return true;
   }
 
   verifyConnector(): Promise<string> {
@@ -976,6 +1042,10 @@ export class ChatGptBrowserWorker {
     await this.maintenanceTail;
     const browser = this.browser;
     const page = this.page;
+    const retainedPages = [...this.retainedExternalPages.values()];
+    this.retainedExternalPages.clear();
+    this.conversationTails.clear();
+    this.activeRunConversationKeys.clear();
     this.browser = undefined;
     this.context = undefined;
     this.page = undefined;
@@ -983,6 +1053,9 @@ export class ChatGptBrowserWorker {
     if ((this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") && page && !page.isClosed()) {
       await page.close().catch(() => {});
     }
+    await Promise.allSettled(retainedPages.map(async retained => {
+      if (!retained.isClosed()) await retained.close();
+    }));
     // For connectOverCDP, Playwright implements Browser.close as a transport disconnect; it does
     // not close the launcher-owned Electron process. Always release that connection and its
     // artifact directory instead of leaking one per timeout/helper lifecycle.
@@ -1721,10 +1794,15 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
     catalogRefreshAvailable = false,
+    reuseConnector = false,
   ): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
-    if (!localTools) {
+    if (!localTools || reuseConnector) {
       const composer = await this.activeComposer(page);
+      // ChatGPT clears the composer plugin pill after a sent message, but the same un-navigated
+      // conversation remains bound to that connector. A retained continuation therefore inserts
+      // the next prompt directly instead of re-mentioning the app or requiring the transient pill.
+      // Any real connector loss still fails closed when the next MCP capability is actually used.
       // Playwright's multiline fill maps through an input action that ChatGPT's Lexical editor can
       // collapse to the first paragraph on the launcher-owned Electron surface. Clear separately,
       // then transport the complete text in one CDP Input.insertText command.
@@ -1799,6 +1877,7 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
     catalogRefreshAvailable = false,
+    reuseConnector = false,
   ): Promise<void> {
     let retryAvailable = compaction;
     for (;;) {
@@ -1810,6 +1889,7 @@ export class ChatGptBrowserWorker {
           captureDiagnostic,
           abortSignal,
           catalogRefreshAvailable,
+          reuseConnector,
         );
         return;
       } catch (error) {
@@ -2405,7 +2485,21 @@ export class ChatGptBrowserWorker {
       throw new Error("Private rolling checkpoint capture is valid only for ChatGPT Luna");
     }
     const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, turn.capabilities);
-    const prepared = await turn.prepare();
+    const externalRetention = Boolean(
+      turn.conversationKey
+      && (this.config.browserHost === "roxybrowser" || this.config.browserHost === "system-browser"),
+    );
+    let retainedPage = externalRetention ? this.retainedExternalPages.get(turn.conversationKey!) : undefined;
+    if (retainedPage?.isClosed()) {
+      this.retainedExternalPages.delete(turn.conversationKey!);
+      retainedPage = undefined;
+    }
+    const reuseConversation = Boolean(retainedPage);
+    const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
+    if (!prepare) {
+      throw new Error("A retained ChatGPT conversation has no canonical continuation prompt");
+    }
+    const prepared = await prepare();
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
       this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
@@ -2414,6 +2508,7 @@ export class ChatGptBrowserWorker {
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
     let stopRoxyPreview: (() => void) | undefined;
+    let completed = false;
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
@@ -2431,6 +2526,7 @@ export class ChatGptBrowserWorker {
         : Date.now() + this.config.turnTimeoutMs;
       const page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, async (abortSignal) => {
         if (maintenancePage) return maintenancePage;
+        if (retainedPage) return retainedPage;
         if (!launcherSurfaceId) {
           const managed = await this.pageForNewTurn();
           if (abortSignal.aborted) {
@@ -2452,7 +2548,7 @@ export class ChatGptBrowserWorker {
         turnConnection = connection.browser;
         return connection.page;
       });
-      if (!maintenancePage && !launcherSurfaceId) managedPage = page;
+      if (!maintenancePage && !launcherSurfaceId && !reuseConversation) managedPage = page;
       diagnosticPage = page;
       if (launcherExternal?.externalHost === "roxybrowser") {
         this.externalTurnPages.set(turn.traceId, page);
@@ -2465,19 +2561,21 @@ export class ChatGptBrowserWorker {
         }
         if (launcherExternal.previewEnabled) stopRoxyPreview = this.startRoxyPreviewLoop(page, turn.traceId);
       }
-      await diagnostics.capture(page, "browser-page-acquired");
+      await diagnostics.capture(page, reuseConversation ? "browser-page-retained" : "browser-page-acquired");
       console.info(
-        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
+        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, retained=${reuseConversation}, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
       );
-      await this.runStage(
-        turn.traceId,
-        "temporary_chat_preparation",
-        browserStageTimeouts.temporaryChatPreparation,
-        () => this.prepareTemporaryChatSurface(
-          page,
-          checkpoint => diagnostics.capture(page, checkpoint),
-        ),
-      );
+      if (!reuseConversation) {
+        await this.runStage(
+          turn.traceId,
+          "temporary_chat_preparation",
+          browserStageTimeouts.temporaryChatPreparation,
+          () => this.prepareTemporaryChatSurface(
+            page,
+            checkpoint => diagnostics.capture(page, checkpoint),
+          ),
+        );
+      }
       const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
       const initialResponseTurnCount = await responseTurns.count();
       const responseTurn = responseTurns.nth(initialResponseTurnCount);
@@ -2490,7 +2588,9 @@ export class ChatGptBrowserWorker {
         initialResponseTurnCount,
       };
       let mode: ChatGptWebModelMode;
-      let catalogRefreshAvailable = requestedMode.localTools;
+      // A retained conversation already proved its connector binding. Never reload it merely to
+      // refresh the @mention catalog: that would destroy the transcript we are intentionally reusing.
+      let catalogRefreshAvailable = requestedMode.localTools && !reuseConversation;
       for (;;) {
         mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, () => (
           this.selectModelAndEffort(
@@ -2516,6 +2616,7 @@ export class ChatGptBrowserWorker {
               checkpoint => diagnostics.capture(page, checkpoint),
               promptAbortSignal,
               catalogRefreshAvailable,
+              reuseConversation,
             );
           });
           break;
@@ -2700,7 +2801,11 @@ export class ChatGptBrowserWorker {
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
       }
       await diagnostics.capture(page, "turn-completed");
-      console.info(`[chatgpt-web] browser turn ${turn.traceId} completed (markdownChars=${finalText.length})`);
+      completed = true;
+      if (externalRetention && turn.retainConversation && turn.conversationKey && !page.isClosed()) {
+        this.retainedExternalPages.set(turn.conversationKey, page);
+      }
+      console.info(`[chatgpt-web] browser turn ${turn.traceId} completed (markdownChars=${finalText.length}, retained=${externalRetention && turn.retainConversation})`);
       return finalText;
     } catch (error) {
       if (diagnosticPage && !diagnosticPage.isClosed()) {
@@ -2718,12 +2823,26 @@ export class ChatGptBrowserWorker {
             `[chatgpt-web] failed to release launcher browser connection for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,
           );
         });
-      } else if (managedPage && !managedPage.isClosed()) {
-        await managedPage.close().catch(error => {
-          console.error(
-            `[chatgpt-web] failed to close managed browser tab for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+      } else {
+        const shouldRetain = completed
+          && externalRetention
+          && turn.retainConversation === true
+          && turn.conversationKey !== undefined
+          && diagnosticPage !== undefined
+          && !diagnosticPage.isClosed();
+        if (!shouldRetain && turn.conversationKey && this.retainedExternalPages.get(turn.conversationKey) === diagnosticPage) {
+          this.retainedExternalPages.delete(turn.conversationKey);
+        }
+        const pageToClose = shouldRetain
+          ? undefined
+          : managedPage ?? (reuseConversation ? diagnosticPage : undefined);
+        if (pageToClose && !pageToClose.isClosed()) {
+          await pageToClose.close().catch(error => {
+            console.error(
+              `[chatgpt-web] failed to close managed browser tab for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
       }
     }
   }

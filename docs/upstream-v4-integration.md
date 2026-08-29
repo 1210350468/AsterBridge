@@ -71,25 +71,29 @@ passthrough and `chatgpt-web/*` routed models.
   - skills/subagent surfaces: Codex supplies skill context normally and advertises deferred Multi-agent tools through `tool_search`.
   - Validation: real Codex `0.150.1` capability inventory plus parser/harness tests.
 
-- [x] **P0.5-2 First-class Codex `image_gen` bridge and native image endpoints**
-  - Preserved the generic `codex_tool_inventory` / `codex_tool_call` path.
-  - Added dedicated `codex_image_gen`, calling exact outer-Codex `image_gen__imagegen` rather than faking hosted `image_generation` as a function.
+- [x] **P0.5-2 Native Codex `image_gen` compatibility and image endpoints**
+  - Preserved the existing public `Codex Native3` MCP ABI and its generic `codex_tool_inventory` / `codex_tool_call` path; no connector identity migration is required.
+  - Confirmed that outer Codex advertises exact namespace tool `image_gen__imagegen`; the bridge does not fake hosted Responses `image_generation` as a function.
   - Added authenticated byte-preserving native passthrough for `/v1/images/generations` and `/v1/images/edits` to the official Codex backend.
   - Preserved native Responses passthrough semantics and kept hosted `image_generation` parsing separate.
-  - Validation: native passthrough/server/parser group **29 pass, 0 fail**; dedicated direct-token image bridge **1 pass, 0 fail**; TypeScript check passed.
+  - A proposed dedicated `codex_image_gen` MCP method was deliberately removed after its ABI-hash test proved it would mutate ChatGPT's cached `Codex Native3` contract.
+  - Validation: native passthrough/server/parser group **29 pass, 0 fail**; TypeScript check passed; public Native3 ABI remains unchanged.
 
 - [ ] **P0.5-3 `IMAGE_GEN_OK` validation**
-  - Simulated Full Harness proves `codex_image_gen -> image_gen__imagegen`, exact arguments, multimodal content, and `saved_path` preservation.
   - Live `chatgpt-web/high` inventory confirms `image_gen__imagegen` exists.
   - Real isolated native E2E through the new 17842 worktree route succeeded: Codex returned `succeeded: true`, wrote a valid PNG, and exposed a real `saved_path` (verified file size and dimensions).
-  - Final checkbox waits for the packaged Full runtime so the dedicated `codex_image_gen` path itself is exercised through `Codex Native3` end-to-end.
+  - Final checkbox waits for the packaged Full runtime so `Codex Native3 -> codex_tool_call -> image_gen__imagegen -> /v1/images/generations` is exercised end-to-end without changing the connector ABI.
 
 ## P1 — Upstream v4 architecture adaptation
 
-- [ ] **P1-1 Continuous Web Tasks / retained Roxy sessions**
-  - Reuse one ChatGPT Temporary Chat surface across sequential messages in the same Codex task/epoch.
-  - Implement with Roxy/CDP semantics rather than copying upstream Electron-only lifecycle code.
-  - Preserve the five simultaneous active Web-task cap.
+- [x] **P1-1 Continuous Web Tasks / retained Roxy sessions**
+  - Reuse one ChatGPT Temporary Chat surface across sequential messages in the same Codex thread/model/effort/compaction epoch.
+  - Implemented with Roxy/system-browser CDP semantics rather than copying upstream Electron-only lifecycle code.
+  - Continuations send only the canonical suffix after the last assistant reply and do not rerun Temporary Chat preparation or re-mention `Codex Native3`.
+  - Added conversation-head ownership so retiring an older native turn cannot close the current retained page; epoch retirement releases the retained page exactly once.
+  - Physical surface accounting deduplicates retained+active conversation keys and preserves the five-tab safety cap.
+  - Live Roxy validation caught and fixed two lifecycle bugs: a retained page was initially closed by `finally`, and the transient composer plugin pill was incorrectly treated as the durable conversation binding.
+  - Validation: retained/browser/harness regression **124 pass, 0 fail** plus focused **76 pass, 0 fail** after the lifecycle fixes; TypeScript passed. Live Roxy two-message E2E showed first turn `retained=false`, second turn `browser-page-retained` / `retained=true`, returned `RETAIN_SECOND_OK`, skipped Temporary Chat preparation and connector re-mention, then released the test page successfully.
 
 - [ ] **P1-2 Native compaction and retained-page recovery**
   - One-shot compaction control capability bound to the retained source task.
