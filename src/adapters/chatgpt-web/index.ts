@@ -15,6 +15,7 @@ import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey,
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import { chatGptConversationKey, retainedConversationResumeRequest } from "./conversation-key";
+import { runRetainedCompaction } from "./compaction-handoff";
 import {
   ChatGptLunaCheckpointStore,
   type CapturedChatGptLunaCheckpoint,
@@ -385,6 +386,49 @@ export function createChatGptWebAdapter(
         }
       }
       if (parsed._compactionRequest) {
+        const retainedCompactionSupported = configuredCapabilities.localToolsEnabled
+          && broker instanceof TurnBroker
+          && (provider.chatgptWeb?.browserHost === "roxybrowser" || provider.chatgptWeb?.browserHost === "system-browser");
+        if (retainedCompactionSupported) {
+          const compactionExecutionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
+          const handoffTraceId = createHash("sha256")
+            .update(`${compactionExecutionKey}:handoff`)
+            .digest("hex")
+            .slice(0, 12);
+          const summary = await runRetainedCompaction({
+            worker,
+            parsed,
+            sessions: chatGptTurnSessions,
+            broker,
+            capabilities: configuredCapabilities,
+            conversationKey: chatGptConversationKey(parsed, executionNamespace),
+            traceId: handoffTraceId,
+            signal: incoming.abortSignal,
+            timeoutMs,
+            freshFallback: async reason => {
+              console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
+              const fallbackRuntime = startRuntime(
+                parsed,
+                undefined,
+                `${handoffTraceId}_fallback`,
+                turnCapabilities,
+              );
+              try {
+                return await withAbort(fallbackRuntime.browser, incoming.abortSignal);
+              } finally {
+                fallbackRuntime.cancel();
+              }
+            },
+          });
+          emit({ type: "text_delta", text: summary, phase: "final_answer" });
+          emitBrowserCompletion(
+            { type: "final", answer: summary },
+            estimateChatGptWebUsage(parsed, { answer: summary, reasoning: [] }, turnCapabilities),
+            emit,
+          );
+          chatGptWebTurnRetryPolicy.clear(retryKey);
+          return;
+        }
         const responseExecutionKey = `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`;
         await chatGptTurnSessions.retireAndWait(responseExecutionKey);
       }

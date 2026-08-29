@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { namespacedToolName, type CodexTool } from "../../types";
 import type { ChatGptTurnEnvironment } from "./environment";
+import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, type BrokerToolResult } from "./turn-broker";
 
 interface ClaimedTurn {
@@ -369,6 +370,26 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ turn_token, wire_name, arguments: args, input }, extra) => {
+      if (wire_name === CODEX_COMPACTION_CONTROL_WIRE_NAME) {
+        if (input !== undefined) {
+          throw new Error("Compaction control handoff does not accept freeform input");
+        }
+        const handoffId = args?.handoff_id;
+        const summary = args?.summary;
+        if (typeof handoffId !== "string" || handoffId.length === 0) {
+          throw new Error("Compaction control handoff requires handoff_id");
+        }
+        if (typeof summary !== "string") {
+          throw new Error("Compaction control handoff requires summary");
+        }
+        await callTurnBroker(options.brokerSocketPath, {
+          method: "submit_compaction_handoff",
+          token: turn_token,
+          handoffId,
+          summary,
+        });
+        return result({ submitted: true });
+      }
       const claimed = await claimTurn("codex_tool_call", turn_token, extra);
       const bound = claimed.environment;
       const tool = namedTool(bound, wire_name);

@@ -3,6 +3,10 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { isWindowsPipeEndpoint } from "../../config";
+import {
+  CompactionTransactionStore,
+  type CompactionTransactionHandle,
+} from "./compaction-transaction";
 import type { ChatGptTurnEnvironment } from "./environment";
 
 interface PendingTurn extends ChatGptTurnEnvironment {
@@ -44,8 +48,12 @@ interface TurnChannel {
   bindingId?: string;
   sessionKeys: Set<string>;
   queuedCallIds: string[];
+  deliveredCallIds: Set<string>;
   invocations: Map<string, PendingInvocation>;
   waiters: Set<ToolWaiter>;
+  compactionRequested: boolean;
+  compactionResult?: BrokerToolResult;
+  compactionDeliveryCount: number;
   batchTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -61,7 +69,8 @@ interface BrokerRequest {
     | "owner_update"
     | "owner_next"
     | "owner_complete"
-    | "owner_revoke";
+    | "owner_revoke"
+    | "submit_compaction_handoff";
   token?: string;
   sessionKey?: string;
   bindingId?: string;
@@ -74,6 +83,8 @@ interface BrokerRequest {
   traceId?: string;
   callId?: string;
   toolResult?: BrokerToolResult;
+  handoffId?: string;
+  summary?: string;
 }
 
 interface BrokerResponse {
@@ -164,6 +175,7 @@ export class TurnBroker implements TurnBrokerOwner {
 
   private readonly channels = new Map<string, TurnChannel>();
   private readonly pending = new Map<string, TurnChannel>();
+  private readonly compactionTransactions = new CompactionTransactionStore();
   private readonly bindings = new Map<string, { token: string; channel: TurnChannel }>();
   private readonly sessionBindings = new Map<string, { token: string; channel: TurnChannel }>();
   // The Codex context replayed into ChatGPT still carries the handles of finished turns, so a model
@@ -211,13 +223,36 @@ export class TurnBroker implements TurnBrokerOwner {
       },
       sessionKeys: new Set(),
       queuedCallIds: [],
+      deliveredCallIds: new Set(),
       invocations: new Map(),
       waiters: new Set(),
+      compactionRequested: false,
+      compactionDeliveryCount: 0,
     };
     this.channels.set(token, channel);
     this.pending.set(token, channel);
     console.info(`[chatgpt-web] broker trace=${traceId} registered tokenHash=${handleFingerprint(token)}`);
     return token;
+  }
+
+  async beginCompactionTransaction(
+    traceId: string,
+    ttlMs = 120_000,
+  ): Promise<CompactionTransactionHandle> {
+    await this.start();
+    return this.compactionTransactions.begin(traceId, ttlMs);
+  }
+
+  waitForCompactionHandoff(token: string, signal?: AbortSignal): Promise<string> {
+    return this.compactionTransactions.wait(token, signal);
+  }
+
+  abortCompactionTransaction(token: string): void {
+    this.compactionTransactions.abort(token);
+  }
+
+  revokeCompactionTransactions(traceId: string): void {
+    this.compactionTransactions.abortTrace(traceId);
   }
 
   updateEnvironment(token: string, environment: ChatGptTurnEnvironment): void {
@@ -239,6 +274,15 @@ export class TurnBroker implements TurnBrokerOwner {
     this.prune();
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
+    if (channel.compactionRequested) {
+      throw new Error("Codex context compaction superseded ordinary MCP tool delivery");
+    }
+    // Delivery is at-least-once until Codex returns the matching result. If the Responses observer
+    // reconnects after delivery, replay the same call ids instead of losing ChatGPT's invocation.
+    const delivered = [...channel.deliveredCallIds]
+      .map(id => channel.invocations.get(id)?.request)
+      .filter((request): request is BrokerToolRequest => Boolean(request));
+    if (delivered.length > 0) return delivered;
     const ready = this.takeQueued(channel);
     if (ready.length > 0) return ready;
     if (signal?.aborted) throw new DOMException("tool wait aborted", "AbortError");
@@ -261,10 +305,45 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!channel) throw new Error("turn token is invalid or expired");
     const invocation = channel.invocations.get(callId);
     if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
-    if (channel.queuedCallIds.includes(callId)) throw new Error(`tool call was completed before it was delivered: ${callId}`);
+    if (!channel.deliveredCallIds.delete(callId)) {
+      throw new Error(`tool call was completed before it was delivered: ${callId}`);
+    }
     channel.invocations.delete(callId);
     console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
     invocation.resolve(result);
+  }
+
+  requestCompaction(token: string, queuedResult: BrokerToolResult): number {
+    this.prune();
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn token is invalid or expired");
+    if (channel.compactionRequested) {
+      throw new Error("Codex context compaction was already requested for this turn");
+    }
+    channel.compactionRequested = true;
+    channel.compactionResult = structuredClone(queuedResult);
+    if (channel.batchTimer) {
+      clearTimeout(channel.batchTimer);
+      channel.batchTimer = undefined;
+    }
+    const queued = channel.queuedCallIds.splice(0);
+    for (const callId of queued) {
+      const invocation = channel.invocations.get(callId);
+      if (!invocation) continue;
+      channel.invocations.delete(callId);
+      channel.compactionDeliveryCount += 1;
+      invocation.resolve(structuredClone(queuedResult));
+    }
+    if (queued.length > 0) {
+      console.info(
+        `[chatgpt-web] broker trace=${channel.traceId} interrupted queued calls=${queued.length} for context compaction`,
+      );
+    }
+    return queued.length;
+  }
+
+  compactionDeliveryCount(token: string): number {
+    return this.channels.get(token)?.compactionDeliveryCount ?? 0;
   }
 
   revoke(token: string): void {
@@ -313,6 +392,7 @@ export class TurnBroker implements TurnBrokerOwner {
   }
 
   async close(): Promise<void> {
+    this.compactionTransactions.close();
     for (const token of [...this.channels.keys()]) this.revoke(token);
     const server = this.server;
     this.server = undefined;
@@ -455,13 +535,26 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
 
   private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
     this.prune();
+    if (request.method === "submit_compaction_handoff") {
+      if (typeof request.token !== "string" || request.token.length === 0) {
+        throw new Error("compaction control token is required");
+      }
+      if (typeof request.handoffId !== "string" || request.handoffId.length === 0) {
+        throw new Error("compaction handoff id is required");
+      }
+      if (typeof request.summary !== "string") {
+        throw new Error("compaction handoff summary is required");
+      }
+      this.compactionTransactions.submit(request.token, request.handoffId, request.summary);
+      return { submitted: true };
+    }
     if (request.method === "owner_status") {
       return { protocolVersion: 1, acceptingExternalOwners: this.acceptingExternalOwners };
     }
@@ -577,6 +670,13 @@ export class TurnBroker implements TurnBrokerOwner {
       return { released: true };
     }
     if (request.method === "resolve") return { environment: binding.channel.environment };
+    if (binding.channel.compactionRequested) {
+      const result = binding.channel.compactionResult;
+      if (!result) throw new Error("Codex context compaction control result is unavailable");
+      binding.channel.compactionDeliveryCount += 1;
+      console.info(`[chatgpt-web] broker trace=${binding.channel.traceId} intercepted a post-compaction MCP call`);
+      return structuredClone(result);
+    }
 
     const wireName = request.wireName?.trim();
     if (!wireName) throw new Error("wire tool name is required");
@@ -599,6 +699,9 @@ export class TurnBroker implements TurnBrokerOwner {
 
   private takeQueued(channel: TurnChannel): BrokerToolRequest[] {
     const ids = channel.queuedCallIds.splice(0);
+    for (const id of ids) {
+      if (channel.invocations.has(id)) channel.deliveredCallIds.add(id);
+    }
     return ids.map(id => channel.invocations.get(id)?.request).filter((request): request is BrokerToolRequest => Boolean(request));
   }
 
@@ -641,6 +744,7 @@ export class TurnBroker implements TurnBrokerOwner {
     for (const invocation of channel.invocations.values()) invocation.reject(error);
     channel.invocations.clear();
     channel.queuedCallIds = [];
+    channel.deliveredCallIds.clear();
   }
 
   private prune(): void {

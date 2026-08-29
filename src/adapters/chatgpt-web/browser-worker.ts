@@ -198,6 +198,18 @@ function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
   );
 }
 
+function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The retained ChatGPT conversation is no longer available.",
+    {
+      status: 409,
+      errorType: "invalid_request_error",
+      code: "compaction_source_unavailable",
+      retryable: false,
+    },
+  );
+}
+
 export async function resolveChatGptToolConfirmation(
   page: Page,
   appName: string,
@@ -366,6 +378,8 @@ export interface BrowserTurn {
   prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   /** Retain a completed external-browser Temporary Chat for the next native message in this epoch. */
   retainConversation?: boolean;
+  /** Fail closed instead of opening a fresh surface when the requested retained source is gone. */
+  requireRetainedConversation?: boolean;
   /** Stable Codex thread/model/effort/compaction-epoch identity for retained browser reuse. */
   conversationKey?: string;
   abortSignal?: AbortSignal;
@@ -2495,6 +2509,9 @@ export class ChatGptBrowserWorker {
       retainedPage = undefined;
     }
     const reuseConversation = Boolean(retainedPage);
+    if (turn.requireRetainedConversation && !reuseConversation) {
+      throw chatGptRetainedConversationUnavailableError();
+    }
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) {
       throw new Error("A retained ChatGPT conversation has no canonical continuation prompt");
