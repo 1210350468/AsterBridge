@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "private": true,
   "description": "AsterBridge: a local bridge from Codex to ChatGPT Web and native tools.",
   "repository": {
@@ -32,7 +32,7 @@
     "audit": "bun audit",
     "check-version": "bun run scripts/check-version.ts",
     "check-docs": "bun run scripts/check-docs.ts",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "licenses": "bun run scripts/generate-third-party-notices.ts --include-launcher",
     "clean": "bun run scripts/clean.ts",
     "build": "bun run scripts/build-runtime-bundle.ts",

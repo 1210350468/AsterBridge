@@ -2,7 +2,7 @@
 
 All notable AsterBridge changes are documented here.
 
-## Unreleased
+## 3.0.3 - 2026-08-30
 
 ### Upstream v4 integration
 
@@ -15,11 +15,12 @@ All notable AsterBridge changes are documented here.
 - Unified Launcher branding on one canonical AsterBridge SVG. Windows packaging now regenerates a multi-resolution ICO from that SVG before each package, embeds it in the executable, ships it as `resources/icon.ico`, uses it directly for packaged tray/window branding, and the renderer sidebar/onboarding mark now uses the same SVG instead of the old hard-coded orbit icon.
 - Added NSIS recovery for a half-uninstalled AsterBridge registration when the recorded current/legacy launcher and uninstaller files are all gone, avoiding upgrade failure on a stale missing uninstaller.
 - Fixed packaged smoke incorrectly killing a valid but slow Windows NSIS install after 120 seconds. Windows smoke now allows up to 10 minutes, verifies the packaged Bun/runtime files before launch, and requires the readiness marker to report tray availability.
-- Final Windows package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; the installed package contains all 5,986 runtime files, `runtime/bun.exe`, a verified durable runtime, a ready tray, and a generated **67,863-byte / 7-frame** `resources/icon.ico`.
+- Final **3.0.3** Windows package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; the installed `AsterBridge.exe` reports **3.0.3.0** and contains the packaged runtime, `runtime/bun.exe`, a ready tray, and the generated **67,863-byte / 7-frame** `resources/icon.ico`.
+- Root TypeScript validation now invokes the project-local `tsc` binary directly instead of depending on a separate `bunx` shim, keeping local and CI release gates portable.
 
 ### Validation notes
 
-- Launcher regression: **200 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and production renderer build passed.
+- Release-candidate regression after the 3.0.3 version freeze: root suite **390 pass, 0 fail / 1,658 assertions**; Launcher **201 pass, 0 fail, 1 Windows-inapplicable skip**; root/Launcher TypeScript and production renderer build passed.
 - Focused Subagent/Bigger Context/Browser Worker/Full Harness regression: **180 pass, 0 fail / 888 assertions**.
 - Native compaction completed through one Codex app-server owner across retained → compact → new epoch with a native `contextCompaction` item. Final Full runtime reported Tunnel healthy/ready; text, Native3 MCP, retained sessions, Subagent, Nested, and Bigger Context live chains passed.
 - Final `image_gen` routing reached the official image backend. A 2026-08-30 revalidation through `Codex Native3 -> image_gen__imagegen -> /v1/images/generations` succeeded and wrote a valid 668,296-byte PNG (`1254x1254`); the earlier `429 usage_limit_reached` was transient rather than a current bridge or account blocker.
