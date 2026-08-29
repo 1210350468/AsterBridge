@@ -101,7 +101,7 @@ passthrough and `chatgpt-web/*` routed models.
 - [x] **P0.5-3 `IMAGE_GEN_OK` validation**
   - Live `chatgpt-web/high` inventory confirms `image_gen__imagegen` exists.
   - Real isolated native E2E through the 17842 integration route succeeded: Codex returned `succeeded: true`, wrote a valid PNG, and exposed a real `saved_path` (verified file size and dimensions).
-  - Final Full Harness validation exercised `Codex Native3 -> codex_tool_call -> image_gen__imagegen -> /v1/images/generations` through the official image backend. The current Plus account then returned `429 usage_limit_reached`; because the same endpoint had already produced a real PNG, this is recorded as an external account quota condition rather than an AsterBridge endpoint regression.
+  - Final Full Harness validation exercised `Codex Native3 -> codex_tool_call -> image_gen__imagegen -> /v1/images/generations` through the official image backend. A later revalidation on 2026-08-30 succeeded end to end and wrote a valid 668,296-byte PNG (`1254x1254`) to the Codex generated-images directory. The earlier `429 usage_limit_reached` was therefore transient and is not a current release blocker.
 
 ## P1 — Upstream v4 architecture adaptation
 

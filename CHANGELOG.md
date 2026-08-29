@@ -21,7 +21,7 @@ All notable AsterBridge changes are documented here.
 - Launcher regression: **200 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and production renderer build passed.
 - Focused Subagent/Bigger Context/Browser Worker/Full Harness regression: **180 pass, 0 fail / 888 assertions**.
 - Native compaction completed through one Codex app-server owner across retained → compact → new epoch with a native `contextCompaction` item. Final Full runtime reported Tunnel healthy/ready; text, Native3 MCP, retained sessions, Subagent, Nested, and Bigger Context live chains passed.
-- Final `image_gen` routing reached the official image backend. The current Plus account returned `429 usage_limit_reached`; earlier validation through the same AsterBridge endpoint produced a real PNG, so the quota response is not treated as a bridge regression.
+- Final `image_gen` routing reached the official image backend. A 2026-08-30 revalidation through `Codex Native3 -> image_gen__imagegen -> /v1/images/generations` succeeded and wrote a valid 668,296-byte PNG (`1254x1254`); the earlier `429 usage_limit_reached` was transient rather than a current bridge or account blocker.
 
 ## 3.0.2 - 2026-08-28
 
