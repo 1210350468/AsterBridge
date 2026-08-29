@@ -38,9 +38,9 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──browser runtim
      └──────── native UI, context, images, tracing, and tool lifecycle ─────┘
 ```
 
-Codex 会保留原生任务、上下文生命周期、界面和工具 harness。本地 Responses 桥接程序只会将
-所选模型的轮次转发到全新的 ChatGPT 临时聊天；在完整模式下，MCP 会把 ChatGPT 连接回同一个
-Codex 任务的工具。
+Codex 会保留原生任务、上下文生命周期、界面和工具 harness。本地 Responses 桥接程序会为
+所选任务打开一个 ChatGPT 临时聊天，并在兼容的后续轮次中保留这个与任务绑定的页面；在完整
+模式下，MCP 会把 ChatGPT 连接回同一个 Codex 任务的工具。
 
 ## 亮点
 
@@ -50,14 +50,20 @@ Codex 任务的工具。
   最多可并行运行五个与 Codex 任务绑定的浏览器回合；此上限用于避免对 ChatGPT 账户产生过多并行流量。
 - **ChatGPT 就是所选模型。** 它作为 Codex 原生模型运行，而不是由另一个宿主模型调用的工具。
   原有的模型选择器、任务生命周期、流式输出、追踪和工具界面保持不变。
-- **本地优先的任务会话。** Codex 仍然是电脑上任务历史的真实来源。每个浏览器轮次都会从一个
-  全新的 ChatGPT 临时聊天开始，并接收当前编译后的上下文。达到实测浏览器上限时会触发压缩，
-  Luna 则通过自适应滚动检查点携带已完成的状态。浏览器聊天不会在任务之间复用，也不会加入普通
-  ChatGPT 历史记录。
+- **本地优先的保留式任务会话。** Codex 仍然是电脑上任务历史的真实来源。首个浏览器轮次会
+  新建 ChatGPT 临时聊天；同一 Codex 任务的兼容后续轮次会复用该保留页面，不再重复绑定 Connector。
+  原生压缩只有在检查点被证明完成后才关闭旧 epoch，并在需要时创建新 epoch。浏览器聊天不会跨
+  不同任务复用，也不会加入普通 ChatGPT 历史记录。
 - **通过 MCP 使用完整 Codex harness。** 在完整模式下，登录账户可用的每一个 effort——Luna、
   Instant、Medium、High、Extra High 和 Pro——都会通过同一个与当前回合绑定的 MCP 能力，使用
   Codex 任务的文件系统、shell、图片、审批以及已配置的工具和应用。调用及其真实结果会留在
   同一个浏览器响应中，不会被模拟成文本。
+- **Subagent 保持 Codex 原生语义。** 完整模式通过现有 `Codex Native3` 契约承载延迟发现的
+  Multi-agent 工具。Compatibility V1 仍是安全默认值，也可切换 Native 模式保留当前 Codex agent
+  版本元数据；父 Agent 的等待采用有界轮询，避免一个子 Agent 长时间独占 MCP 通道。
+- **可选 Bigger Context。** 设置中可为大型非 Luna 任务启用可逆的 2/3 段事务式上下文传输。
+  前置分段保持惰性并通过 SHA-256 确认，只有最后一次 commit 才真正开始执行任务；普通任务仍默认
+  使用标准单消息传输。
 - **Pro 没有例外。** Pro 与其他所有 effort 遵循完全相同的 MCP、上下文、图片、追踪、工具轮次、
   浏览器上限和压缩契约。不存在按 effort 区分的 MCP 限制。仅浏览器模式下，所有路由都保持只读。
 - **故障时明确失败，并设有明确的发布门槛。** UI 变化或能力缺失会产生明确错误，而不是静默
@@ -92,7 +98,8 @@ irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-l
 2. 选择浏览器后端。内置浏览器最省事；如果希望固定外部 Profile、自动启动和 Live Preview，推荐 RoxyBrowser。
 3. 安装模型前先运行一次 **设置 → 运行诊断**。
 4. 点击 **安装模型**，重启一次 Codex，先用简单 `WEB_OK` 回合证明 Browser-only 链路。
-5. 只有 Browser-only 已经成功后，再进入可选的 **MCP** 页面配置完整 Harness。
+5. 只有 Browser-only 已经成功后，再进入可选的 **MCP** 页面配置完整 Harness。只有确实需要更大
+   任务上下文时再启用 **Bigger Context**，日常任务保持标准模式即可。
 
 ### 复制给 AI：自动安装并跑通 AsterBridge
 

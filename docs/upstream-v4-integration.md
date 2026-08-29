@@ -139,6 +139,12 @@ passthrough and `chatgpt-web/*` routed models.
 
 ## Promotion gate
 
-Do not merge this integration branch into `main` until all P0 and P0.5 items selected for the release
-are checked, live Full Harness E2E succeeds, and the working tree contains no debug probes or local
-runtime secrets.
+Current status: **satisfied on the integration branch as of 2026-08-30**. All selected P0/P0.5,
+retained-session, native-compaction, Subagent/Nested, Bigger Context, Native3, image generation, and
+Windows packaged-launcher gates have passed; the working tree was clean after the validated fixes,
+and test-only runtime/tunnel resources were removed. Promotion still requires the normal Git/release
+step: merge this branch into `main`, bump the release version rather than reusing the existing
+`v3.0.2` tag, then run the release workflow for that new version.
+
+Do not merge future integration work into `main` until its selected gates are checked, live Full
+Harness E2E succeeds, and the working tree contains no debug probes or local runtime secrets.

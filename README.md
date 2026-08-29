@@ -40,8 +40,9 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──browser runtim
 ```
 
 Codex keeps the native task, context lifecycle, UI, and tool harness. The local Responses bridge
-routes only the selected model turn through a fresh ChatGPT Temporary Chat; in full mode, MCP
-connects ChatGPT back to the tools of that same Codex task.
+opens a ChatGPT Temporary Chat for the selected task and retains that task-bound surface across
+compatible follow-up turns; in full mode, MCP connects ChatGPT back to the tools of that same Codex
+task.
 
 ## Highlights
 
@@ -54,15 +55,22 @@ connects ChatGPT back to the tools of that same Codex task.
 - **ChatGPT is the selected model.** It runs as a native Codex model, not as a tool called by
   another host model. The original model picker, task lifecycle, streaming, tracing, and tool UI
   remain intact.
-- **Local-first task sessions.** Codex remains the source of truth for task history on your
-  computer. Every browser turn starts in a fresh ChatGPT Temporary Chat and receives the current
-  compiled context. Measured browser ceilings trigger compaction, while Luna carries completed
-  state through an adaptive rolling checkpoint. Browser chats are never reused across tasks or
-  added to normal ChatGPT history.
+- **Local-first retained task sessions.** Codex remains the source of truth for task history on your
+  computer. The first browser turn opens a fresh ChatGPT Temporary Chat; compatible follow-up turns
+  in the same Codex task reuse that retained surface without re-mentioning the connector. Native
+  compaction closes the old epoch only after a checkpoint is proven and starts a fresh epoch when
+  needed. Browser chats are never reused across different tasks or added to normal ChatGPT history.
 - **The full Codex harness over MCP.** In Full mode, every effort available to the signed-in account—
   Luna, Instant, Medium, High, Extra High, and Pro—can use the active Codex task's filesystem,
   shell, images, approvals, and configured tools/apps through the same turn-bound MCP capability.
   Calls and real results stay inside the same browser response; nothing is simulated as text.
+- **Subagents stay native to Codex.** Full mode carries deferred Multi-agent tools through the
+  existing `Codex Native3` contract. Compatibility V1 remains the safe default, while Native mode
+  can preserve current Codex agent-version metadata; parent waits use bounded polling so one child
+  cannot monopolize the MCP channel.
+- **Optional Bigger Context.** Settings can enable a reversible transactional 2/3-part context
+  transport for large non-Luna tasks. Earlier parts are inert and SHA-256 acknowledged; only the
+  final commit starts execution. Standard single-message transport remains the default.
 - **No Pro exception.** Pro follows exactly the same MCP, context, image, tracing, tool-round,
   browser-ceiling, and compaction contracts as every other effort. There are no effort-specific MCP
   exclusions. Browser-only mode remains read-only for every route.
@@ -103,7 +111,8 @@ Then follow the [10-minute quick start](docs/quick-start.md). In short:
    want a fixed external profile with automatic startup and Live Preview.
 3. Run **Settings → Run diagnostics** once before installing models.
 4. Press **Install models**, restart Codex once, and prove a simple `WEB_OK` turn before configuring MCP.
-5. Configure the optional **MCP** page only after Browser-only mode works.
+5. Configure the optional **MCP** page only after Browser-only mode works. Enable **Bigger Context**
+   only when you need larger task transport; keep the standard mode for ordinary work.
 
 ### Copy this into an AI agent: install and prove AsterBridge end to end
 
