@@ -143,8 +143,10 @@ Current status: **promoted to `main` for AsterBridge 3.0.3 on 2026-08-30**. All 
 retained-session, native-compaction, Subagent/Nested, Bigger Context, Native3, image generation, and
 Windows packaged-launcher gates passed before promotion; the working tree was clean after the
 validated fixes, and test-only runtime/tunnel resources were removed. The release version is now
-`3.0.3`. The 3.0.3 version/doc/typecheck/test gates and Windows packaged smoke have also passed;
-the remaining release step is the release commit, `v3.0.3` tag, and GitHub release workflow.
+`3.0.3`. The 3.0.3 version/doc/typecheck/test gates and Windows packaged smoke also passed. The
+release commit `24e7ebf` and AsterBridge `v3.0.3` tag were pushed to `origin` on 2026-08-30; the
+repository's tag-triggered GitHub Release workflow is responsible for the final cross-platform
+artifact publication.
 
 Do not merge future integration work into `main` until its selected gates are checked, live Full
 Harness E2E succeeds, and the working tree contains no debug probes or local runtime secrets.
