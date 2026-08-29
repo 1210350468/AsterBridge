@@ -25,6 +25,17 @@ if (target !== nativeTarget) {
   );
 }
 
+if (target === "--win") {
+  const iconResult = spawnSync(executable, [path.join(root, "scripts", "prepare-win-icon.cjs")], {
+    cwd: root,
+    env: { ...process.env },
+    stdio: "inherit",
+    shell: false,
+  });
+  if (iconResult.error) throw iconResult.error;
+  if (iconResult.status !== 0) process.exit(iconResult.status ?? 1);
+}
+
 const env = { ...process.env };
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
 const builderArgs = [

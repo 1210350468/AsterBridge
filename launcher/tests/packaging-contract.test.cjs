@@ -19,10 +19,11 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.deepEqual(manifest.build.mac.target, ["dmg", "zip"]);
   assert.deepEqual(manifest.build.win.target, ["nsis"]);
   assert.equal(manifest.build.productName, "AsterBridge");
-  assert.equal(manifest.build.win.icon, "assets/icon.svg");
+  assert.equal(manifest.build.win.icon, "build/icons/icon.ico");
   assert.deepEqual(manifest.build.linux.target, ["AppImage"]);
   assert.ok(manifest.build.files.includes("assets/icon.svg"));
   assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.svg")));
+  assert.ok(manifest.build.extraResources.some((entry) => entry.from === "build/icons/icon.ico" && entry.to === "icon.ico"));
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
   assert.equal(manifest.build.nsis.include, "scripts/installer.nsh");
@@ -51,6 +52,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   const windowsInstaller = fs.readFileSync(path.join(repositoryRoot, "scripts", "install-launcher.ps1"), "utf8");
   const devProfile = fs.readFileSync(path.join(repositoryRoot, "src", "dev-chat", "profile.ts"), "utf8");
   const packager = fs.readFileSync(path.join(launcherRoot, "scripts", "package.cjs"), "utf8");
+  const iconBuilder = fs.readFileSync(path.join(launcherRoot, "scripts", "prepare-win-icon.cjs"), "utf8");
   for (const installer of [shellInstaller, windowsInstaller]) {
     assert.match(installer, /checksums\.txt/);
     assert.match(installer, /SHA-?256/i);
@@ -67,6 +69,10 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(packager, /target === "--mac" && !env\.CSC_LINK && !env\.CSC_NAME/);
   assert.match(packager, /--config\.mac\.identity=-/);
   assert.doesNotMatch(packager, /electron-builder\.cmd/);
+  assert.match(packager, /prepare-win-icon\.cjs/);
+  assert.match(iconBuilder, /path\.join\(root, "assets", "icon\.svg"\)/);
+  assert.match(iconBuilder, /format:\s*"ico"/);
+  assert.match(iconBuilder, /path\.join\(root, "build", "icons"\)/);
   assert.match(shellInstaller, /shell_quote\(\)/);
   assert.match(shellInstaller, /exec %s "\$@"/);
   assert.ok(

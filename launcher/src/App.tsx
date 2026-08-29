@@ -23,6 +23,7 @@ import type {
 } from "./types";
 
 const api = window.codexWebLauncher;
+const BRAND_ICON_URL = new URL("../assets/icon.svg", import.meta.url).href;
 const PANEL_TRANSITION = { duration: 0.3, ease: [0.16, 1, 0.3, 1] } as const;
 const COMPACT_SIDEBAR_QUERY = "(max-width: 820px)";
 const MCP_GUIDE_MEDIA = [
@@ -2121,14 +2122,7 @@ function ActionDot({ pulse = false, tone }: { pulse?: boolean; tone: "required" 
 function BrandMark({ small = false }: { small?: boolean }) {
   return (
     <span className={`brand-mark${small ? " is-small" : ""}`}>
-      <svg aria-hidden="true" viewBox="0 0 24 24">
-        <path d="M4.2 15.2c2.4-5.9 7.2-9.2 15.6-10.2" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-        <path d="M4.4 8.9c4.2 1.2 8.1 4.4 11.1 10.1" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-        <circle cx="4.1" cy="15.4" fill="#7ee7f2" r="1.55" />
-        <circle cx="19.6" cy="4.9" fill="#f7f8ff" r="1.35" />
-        <path d="m12 8.2 3.8 3.8-3.8 3.8L8.2 12 12 8.2Z" fill="currentColor" />
-        <circle cx="12" cy="12" fill="#111520" r="1.25" />
-      </svg>
+      <img alt="" aria-hidden="true" src={BRAND_ICON_URL} />
     </span>
   );
 }

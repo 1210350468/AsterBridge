@@ -46,9 +46,14 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
 
-test("Windows tray uses a native executable or ICO image instead of rasterizing SVG at tray size", () => {
-  assert.match(electronMain, /await app\.getFileIcon\(process\.execPath, \{ size: "small" \}\)/);
-  assert.match(electronMain, /nativeImage\.createFromPath\(DEV_TRAY_ICON_PATH\)/);
+test("Windows tray, window, and renderer brand consume one canonical AsterBridge icon design", () => {
+  assert.match(electronMain, /const PACKAGED_WINDOWS_ICON_PATH = path\.join\(process\.resourcesPath, "icon\.ico"\)/);
+  assert.match(electronMain, /nativeImage\.createFromPath\(PACKAGED_WINDOWS_ICON_PATH\)/);
+  assert.doesNotMatch(electronMain, /app\.getFileIcon\(process\.execPath/);
+  assert.doesNotMatch(electronMain, /DEV_TRAY_ICON_PATH/);
+  assert.match(appSource, /const BRAND_ICON_URL = new URL\("\.\.\/assets\/icon\.svg", import\.meta\.url\)\.href/);
+  assert.match(appSource, /<img alt="" aria-hidden="true" src=\{BRAND_ICON_URL\} \/>/);
+  assert.doesNotMatch(appSource, /M4\.2 15\.2c2\.4-5\.9/);
   assert.match(electronMain, /if \(!image \|\| image\.isEmpty\(\)\) throw new Error\("tray image is empty"\)/);
   assert.match(electronMain, /const trayAvailable = await createTray\(logger\)/);
   assert.match(electronMain, /logger\.info\("launcher\.tray_ready"/);

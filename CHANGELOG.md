@@ -12,9 +12,10 @@ All notable AsterBridge changes are documented here.
 
 ### Windows packaging reliability
 
+- Unified Launcher branding on one canonical AsterBridge SVG. Windows packaging now regenerates a multi-resolution ICO from that SVG before each package, embeds it in the executable, ships it as `resources/icon.ico`, uses it directly for packaged tray/window branding, and the renderer sidebar/onboarding mark now uses the same SVG instead of the old hard-coded orbit icon.
 - Added NSIS recovery for a half-uninstalled AsterBridge registration when the recorded current/legacy launcher and uninstaller files are all gone, avoiding upgrade failure on a stale missing uninstaller.
 - Fixed packaged smoke incorrectly killing a valid but slow Windows NSIS install after 120 seconds. Windows smoke now allows up to 10 minutes, verifies the packaged Bun/runtime files before launch, and requires the readiness marker to report tray availability.
-- Final Windows package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; the installed package contains all 5,986 runtime files, `runtime/bun.exe`, a verified durable runtime, and a ready tray.
+- Final Windows package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`; the installed package contains all 5,986 runtime files, `runtime/bun.exe`, a verified durable runtime, a ready tray, and a generated **67,863-byte / 7-frame** `resources/icon.ico`.
 
 ### Validation notes
 

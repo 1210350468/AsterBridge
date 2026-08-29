@@ -53,6 +53,10 @@
       {
         "from": "build/runtime",
         "to": "runtime"
+      },
+      {
+        "from": "build/icons/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "mac": {
@@ -63,7 +67,7 @@
       "target": ["dmg", "zip"]
     },
     "win": {
-      "icon": "assets/icon.svg",
+      "icon": "build/icons/icon.ico",
       "target": ["nsis"]
     },
     "linux": {

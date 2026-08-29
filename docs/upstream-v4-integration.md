@@ -17,9 +17,9 @@ current Windows-first release behavior.
 ## Desktop shell side-fixes
 
 - [x] **AsterBridge application/tray icon refresh**
-  - Reworked the generated star/bridge/code concept into a small-size-safe AsterBridge vector icon.
-  - Windows tray now prefers the native icon embedded in the packaged `AsterBridge.exe`, with `.ico` fallback in development, instead of rasterizing the SVG directly at tray size.
-  - Validation: Launcher **196 pass, 0 fail, 1 Windows-inapplicable skip**; TypeScript and renderer production build passed; unpacked packaged smoke exited 0 with runtime `3.0.2`; `launcher.tray_ready` reported a non-empty **16×16** Windows native icon; extracted EXE icon was **32×32** with 880 non-transparent pixels and 544 colors.
+  - Reworked the star/bridge/code concept into the canonical `launcher/assets/icon.svg` AsterBridge icon and removed the renderer's separate hard-coded legacy orbit mark.
+  - Windows packaging now converts that canonical SVG into a fresh multi-resolution ICO before every Windows package, embeds the ICO into `AsterBridge.exe`, and ships the same ICO as `resources/icon.ico`. Packaged tray/window branding reads that file directly instead of asking the Windows shell for a potentially stale cached EXE icon or rasterizing SVG in the notification area.
+  - Validation after the correction: icon/packaging contracts **28 pass, 0 fail**; TypeScript and renderer production build passed; final Windows package smoke returned `PACKAGED_LAUNCHER_SMOKE_OK win32/x64` with `trayReady=true`. The installed `resources/icon.ico` is **67,863 bytes** with **7 ICO frames**.
 
 - [x] **Windows installer stale-registration recovery and packaged smoke completion gate**
   - Added an NSIS `customInit` recovery hook for the specific half-uninstalled state where electron-builder registry ownership remains but neither the current/legacy launcher nor uninstaller exists. Live installs are checked first and are never deleted by the recovery hook.
