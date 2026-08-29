@@ -26,7 +26,8 @@ test("Responses SSE completes through the Windows push stream", async () => {
   const body = await new Response(responseStream("win32")).text();
 
   expect(body).toContain("event: response.completed");
-  expect(body).toEndWith("data: [DONE]\n\n");
+  expect(body).not.toContain("data: [DONE]");
+  expect(body).toEndWith("\n\n");
 });
 
 test("Darwin SSE remains decodable through Bun.serve under sustained chunking", async () => {
@@ -51,7 +52,8 @@ test("Darwin SSE remains decodable through Bun.serve under sustained chunking", 
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     expect(body).toContain("chunk-63:");
     expect(body).toContain("event: response.completed");
-    expect(body).toEndWith("data: [DONE]\n\n");
+    expect(body).not.toContain("data: [DONE]");
+    expect(body).toEndWith("\n\n");
   } finally {
     await server.stop(true);
   }

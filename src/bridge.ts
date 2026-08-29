@@ -163,16 +163,6 @@ export function bridgeToResponsesSSE(
           closed = true;
         }
       };
-      const emitDone = () => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          emittedFrames++;
-        } catch {
-          closed = true;
-        }
-      };
-
       const createdAt = Math.floor(Date.now() / 1000);
       let outputIndex = 0;
       const finishedItems: OutputItem[] = [];
@@ -694,7 +684,10 @@ export function bridgeToResponsesSSE(
         terminated = true;
       }
 
-      emitDone();
+      // Responses streams have an explicit terminal event (`response.completed`,
+      // `response.incomplete`, or `response.failed`). Codex 0.150.1 treats a legacy
+      // Chat-Completions-style `data: [DONE]` marker as JSON and rejects the stream, so close
+      // immediately after the terminal Responses event instead of appending that sentinel.
       try {
         controller.close();
       } catch {
@@ -727,7 +720,6 @@ export function bridgeToResponsesSSE(
             onCancel?.();
             terminated = true;
             returnIterator();
-            emitDone();
             if (beat) clearInterval(beat);
             beat = undefined;
             try { controller.close(); } catch { /* already closed */ }

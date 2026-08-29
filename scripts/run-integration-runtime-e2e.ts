@@ -1,0 +1,106 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { ChatGptBrowserWorker, closeChatGptBrowserWorkers } from "../src/adapters/chatgpt-web/browser-worker";
+import { providerConfig, type AppConfig } from "../src/config";
+import { startServer } from "../src/server";
+import { connectTunnel, stopTunnel, waitForTunnelReady } from "../src/tunnel";
+
+function requiredPath(value: string | undefined, label: string): string {
+  const path = value?.trim();
+  if (!path || !isAbsolute(path) || !existsSync(path)) throw new Error(`${label} is missing or invalid`);
+  return path;
+}
+
+function productionConfigPath(): string {
+  const configured = process.env.ASTERBRIDGE_E2E_CONFIG?.trim();
+  if (configured) return requiredPath(resolve(configured), "ASTERBRIDGE_E2E_CONFIG");
+  return requiredPath(join(homedir(), ".codex-chatgpt-web", "config.json"), "production config");
+}
+
+function integrationRuntimeRoot(): string {
+  const configured = process.env.ASTERBRIDGE_E2E_RUNTIME_ROOT?.trim();
+  if (!configured) throw new Error("ASTERBRIDGE_E2E_RUNTIME_ROOT is required");
+  return requiredPath(resolve(configured), "ASTERBRIDGE_E2E_RUNTIME_ROOT");
+}
+
+function loadIntegrationConfig(): AppConfig {
+  const source = JSON.parse(readFileSync(productionConfigPath(), "utf8")) as AppConfig;
+  if (source.mode !== "full" || !source.tunnel) throw new Error("Production config must already be Full mode");
+  if (!source.roxyBrowserProfileId || !source.roxyBrowserDataDir) {
+    throw new Error("Production config does not contain a reusable RoxyBrowser profile");
+  }
+  const root = integrationRuntimeRoot();
+  const runtimeBun = requiredPath(join(root, "runtime", process.platform === "win32" ? "bun.exe" : "bun"), "integration Bun");
+  const runtimeEntrypoint = requiredPath(join(root, "app", "cli.js"), "integration runtime entrypoint");
+  const { browserHostDescriptorPath: _launcherDescriptor, ...withoutLauncherDescriptor } = source;
+  return {
+    ...withoutLauncherDescriptor,
+    browserHost: "managed-chrome",
+    turnBrowserHost: "roxybrowser",
+    runtimeCommand: [runtimeBun, runtimeEntrypoint],
+  };
+}
+
+const config = loadIntegrationConfig();
+if (process.env.ASTERBRIDGE_E2E_BROWSER_CHECK_ONLY === "1" || process.env.ASTERBRIDGE_E2E_BROWSER_SMOKE_ONLY === "1") {
+  try {
+    const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
+    if (process.env.ASTERBRIDGE_E2E_BROWSER_SMOKE_ONLY === "1") {
+      const smoke = await worker.smokeTest();
+      process.stdout.write(`${JSON.stringify({
+        event: "ASTERBRIDGE_BROWSER_SMOKE_OK",
+        effort: smoke.effort,
+        response: smoke.response,
+      })}\n`);
+    } else {
+      const inspected = await worker.inspectSession(true);
+      process.stdout.write(`${JSON.stringify({
+        event: "ASTERBRIDGE_BROWSER_PREFLIGHT_OK",
+        sol: inspected.solAvailable === true,
+        pro: inspected.proAvailable === true,
+      })}\n`);
+    }
+  } finally {
+    await closeChatGptBrowserWorkers();
+  }
+  process.exit(0);
+}
+const server = startServer(config);
+let tunnelConnected = false;
+let stopping = false;
+
+async function shutdown(exitCode = 0): Promise<never> {
+  if (stopping) process.exit(exitCode);
+  stopping = true;
+  try {
+    if (tunnelConnected) stopTunnel(config);
+  } finally {
+    server.stop(true);
+  }
+  process.exit(exitCode);
+}
+
+process.once("SIGINT", () => { void shutdown(130); });
+process.once("SIGTERM", () => { void shutdown(143); });
+
+try {
+  connectTunnel(config);
+  tunnelConnected = true;
+  const status = await waitForTunnelReady(config);
+  if (!status.ok || !status.healthy || !status.ready) {
+    throw new Error(`Integration tunnel did not become healthy/ready: ${status.detail}`);
+  }
+  process.stdout.write(`${JSON.stringify({
+    event: "ASTERBRIDGE_INTEGRATION_READY",
+    port: server.port,
+    mode: config.mode,
+    browserHost: config.turnBrowserHost ?? config.browserHost,
+    tunnelHealthy: status.healthy,
+    tunnelReady: status.ready,
+  })}\n`);
+  await new Promise<void>(() => {});
+} catch (error) {
+  process.stderr.write(`integration runtime failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  await shutdown(1);
+}

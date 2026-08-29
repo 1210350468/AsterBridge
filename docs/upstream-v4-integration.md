@@ -56,11 +56,17 @@ current Windows-first release behavior.
   - TypeScript check passed.
   - Live Roxy checks from this branch still report `sol=true, pro=false` and exact `Codex Native3` availability.
 
-- [ ] **P0-3 Live Full Harness E2E**
-  - `browser check` -> Sol capability correct.
-  - exact `Codex Native3` connector verification.
-  - Full-mode Doctor -> Tunnel healthy/ready.
-  - Real native tool round -> `ASTERBRIDGE_FULL_OK`.
+- [x] **P0-3 Live Full Harness E2E**
+  - Direct Roxy preflight reported `sol=true, pro=false`; browser smoke returned `CODEX WEB GPT READY`.
+  - Isolated integration runtime bound 17841 with the existing managed Tunnel reporting `ok=true`, `healthy=true`, `ready=true`.
+  - Real Full-mode Codex round traversed `ChatGPT Web -> Codex Native3 -> outer Codex command_execution` and returned `ASTERBRIDGE_FULL_OK` from PowerShell.
+  - The test runtime uses an in-memory direct-Roxy config and never rewrites the production AsterBridge config.
+
+- [x] **P0-4 Codex 0.150.x Responses SSE compatibility**
+  - Removed the legacy Chat-Completions-style `data: [DONE]` sentinel after terminal `response.completed` / `response.incomplete` events.
+  - Codex 0.150.x treated the six-byte `[DONE]` payload as JSON and failed with an SSE syntax error that its CLI misleadingly surfaced as model capacity.
+  - Responses streams now terminate by closing after their typed terminal event; the existing 426 WebSocket negotiation followed by HTTP/SSE fallback remains expected.
+  - Validation: bridge/harness/server regression **68 pass, 0 fail** plus live Codex SSE trace reaching `response.completed` with no parser error.
 
 ## P0.5 — Codex native capability compatibility
 
@@ -102,10 +108,13 @@ passthrough and `chatgpt-web/*` routed models.
   - Live Roxy validation caught and fixed two lifecycle bugs: a retained page was initially closed by `finally`, and the transient composer plugin pill was incorrectly treated as the durable conversation binding.
   - Validation: retained/browser/harness regression **124 pass, 0 fail** plus focused **76 pass, 0 fail** after the lifecycle fixes; TypeScript passed. Live Roxy two-message E2E showed first turn `retained=false`, second turn `browser-page-retained` / `retained=true`, returned `RETAIN_SECOND_OK`, skipped Temporary Chat preparation and connector re-mention, then released the test page successfully.
 
-- [ ] **P1-2 Native compaction and retained-page recovery**
-  - One-shot compaction control capability bound to the retained source task.
-  - Close the old retained surface only after checkpoint and helper/broker cleanup are complete.
-  - If the retained page is gone, rebuild the checkpoint from canonical Codex history in a fresh read-only turn.
+- [x] **P1-2 Native compaction and retained-page recovery**
+  - One-shot compaction control capability is bound to the retained source task and cannot execute ordinary Codex tools.
+  - Active MCP-boundary compaction converts the current response into the checkpoint instead of opening a competing visible message.
+  - Close the old retained surface only after structured checkpoint submission and helper/broker cleanup are complete.
+  - If the retained page is gone, rebuild exactly one checkpoint from canonical Codex history in a fresh read-only turn.
+  - Automated affected-area regression: **164 pass, 0 fail / 807 assertions**, plus focused compaction-control and recovery coverage.
+  - Live Codex app-server E2E used the native `thread/compact/start` method on a fixed `chatgpt-web/light` thread. The second pre-compaction turn produced `01-browser-page-retained.json`; compaction completed as a native `contextCompaction` item and its own browser diagnostic again began with `01-browser-page-retained.json` (no `_fallback`). The next post-compaction turn returned `POST_COMPACTION_OK` and began with `01-browser-page-acquired.json`, proving old-epoch release and fresh-epoch creation.
 
 - [ ] **P1-3 Subagent protocol compatibility**
   - Add explicit Compatibility V1 / Native selection only if it remains reversible.
