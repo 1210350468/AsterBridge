@@ -13,6 +13,8 @@ capture cookies, tunnel IDs, API keys, bearer tokens, or prompt contents.
 
 The native package smoke is a separate prerequisite. On Windows it must use the completed NSIS process rather than a partial installation, verify `resources/runtime/runtime/bun.exe`, the runtime launcher and manifest before app startup, execute the durable installed runtime, and require the Launcher readiness marker to report tray availability. A valid Windows installation may exceed two minutes on slower storage; the smoke uses a bounded ten-minute installer budget so its own timeout cannot manufacture a half-installed package failure.
 
+The root core suite must run through `bun run test`, which intentionally executes every `tests/*.test.ts` file in its own deterministic short-lived Bun process. Do not replace this with one giant `bun test tests/*.test.ts` process in CI or Release workflows: Bun 1.4.0 can crash at the runtime level before test assertions finish. The runner must enumerate the complete test directory. It may retry only explicit Bun runtime-crash exit codes, at most twice by default; assertion/test failures such as exit code 1 must fail immediately and are never retried.
+
 ## Windows 11 gate
 
 Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account. Treat it as a first-user journey, not just an internal feature checklist:

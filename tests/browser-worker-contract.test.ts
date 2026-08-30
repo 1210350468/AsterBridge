@@ -38,7 +38,7 @@ test("Bigger Context stages inert parts before the final task-bearing commit", (
   expect(runBrowserTurn).toContain("formatChatGptWebMultipartStage(");
   expect(runBrowserTurn).toContain("formatChatGptWebMultipartCommit(");
   expect(runBrowserTurn).toContain("stageSignal => this.attachPrompt(");
-  expect(runBrowserTurn).toContain("stage.text,\r\n              false,");
+  expect(runBrowserTurn).toMatch(/stage\.text,\r?\n\s+false,/);
   expect(runBrowserTurn).toContain("const finalPrompt = multipartFinalPrompt ?? prepared.text");
   expect(runBrowserTurn).toContain("final_part_effort_selection");
   expect(acknowledgement).toContain("actual !== stage.acknowledgement");

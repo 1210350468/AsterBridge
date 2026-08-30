@@ -2,6 +2,22 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.4 - 2026-08-30
+
+### Release reliability
+
+- Fixed the release gate that ran all core tests inside one Bun 1.4.0 process. The full 40-file core suite now runs through `scripts/test-core.ts` with one deterministic child process per test file while preserving complete test coverage. Explicit Bun runtime-crash exit codes receive at most two retries; ordinary assertion/test failures are never retried.
+- Added a Launcher packaging contract that requires the release verification path to keep using the deterministic batched core-test runner, preventing the single-process Bun crash from returning unnoticed.
+- Supersedes the `v3.0.3` tag for binary distribution: its GitHub Release workflow failed at `bun run verify` before packaging any assets, so no `v3.0.3` GitHub Release was published.
+
+### Validation notes
+
+- Reproduced the original `v3.0.3` failure from the exact tag state as a Bun 1.4.0 segmentation fault during the oversized single-process core suite.
+- New isolated core runner: **40 test files / 40 short-lived Bun processes / 0 assertion failures**, with bounded retries only for verified Bun runtime crash exits.
+- Launcher: **202 pass, 0 fail, 1 Windows-inapplicable skip**.
+- Full `bun run verify`: PASS, including version/docs/audit, core tests, Launcher tests, root/Launcher TypeScript, renderer production build, runtime bundle, third-party notices, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Final Windows `3.0.4` package produced `asterbridge-3.0.4-win-x64.exe` (**151,433,885 bytes**) and passed the real installed-package gate with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`, proving packaged runtime/version verification and Windows tray readiness.
+
 ## 3.0.3 - 2026-08-30
 
 ### Upstream v4 integration

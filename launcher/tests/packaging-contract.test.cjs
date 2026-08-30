@@ -13,6 +13,17 @@ test("the public launcher command uses the Electron bootstrap", () => {
   assert.equal(repositoryManifest.scripts.launcher, repositoryManifest.scripts.app);
 });
 
+test("release verification runs core tests in deterministic Bun batches", () => {
+  const coreRunner = fs.readFileSync(path.join(repositoryRoot, "scripts", "test-core.ts"), "utf8");
+  assert.equal(repositoryManifest.scripts.test, "bun run scripts/test-core.ts");
+  assert.match(coreRunner, /ASTERBRIDGE_TEST_BATCH_SIZE/);
+  assert.match(coreRunner, /ASTERBRIDGE_BUN_CRASH_RETRIES/);
+  assert.match(coreRunner, /retryableRuntimeExitCodes = new Set\(\[3, 134, 139, 3221225477\]\)/);
+  assert.match(coreRunner, /if \(!retryableRuntimeCrash \|\| attempt === runtimeCrashRetries\)/);
+  assert.match(coreRunner, /Bun\.spawn\(\[process\.execPath, "test", \.\.\.batch\]/);
+  assert.match(coreRunner, /PASS \$\{testFiles\.length\} files in \$\{batchCount\} deterministic batches/);
+});
+
 test("launcher publishes native packages for all supported desktop operating systems", () => {
   assert.equal(manifest.build.appId, "dev.codexwebgpt.launcher");
   assert.equal(manifest.build.artifactName, "asterbridge-${version}-${os}-${arch}.${ext}");
