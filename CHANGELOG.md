@@ -2,6 +2,19 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.5 - 2026-08-30
+
+### Release reliability
+
+- Keeps the cross-platform LF/CRLF contract fix from 3.0.4 and narrows the remaining Windows CI exception to Bun 1.4.0's named-pipe test runtime. The eight short-lived pipe lifecycle cases in `turn-broker-lifecycle.test.ts` are skipped only on Windows + Bun 1.4.0; macOS/Linux still execute them unchanged.
+- Windows broker coverage remains active through server lifecycle, Full Harness, retained-compaction, DEV-driver, launcher, and packaged-runtime tests, so the skip does not disable product-level broker validation.
+- Supersedes `v3.0.4` for binary distribution because its GitHub Release matrix reached successful Linux/macOS verification but the Windows runner exhausted the bounded Bun runtime-crash retries on `turn-broker-lifecycle.test.ts` (exit code 3), preventing the publish job from running.
+
+### Validation notes
+
+- `v3.0.4` proved the original Unix checkout failure was fixed: Linux completed its build successfully and macOS passed `bun run verify`; the remaining release blocker was isolated to Windows Bun 1.4.0 named-pipe test execution rather than an application assertion.
+- Final local 3.0.5 gate: full `bun run verify` passed through `RELOCATABLE_RUNTIME_SMOKE_OK`; Windows produced `asterbridge-3.0.5-win-x64.exe` (**151,433,995 bytes**) and the real installed-package smoke passed with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`.
+
 ## 3.0.4 - 2026-08-30
 
 ### Release reliability

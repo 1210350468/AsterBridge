@@ -139,17 +139,18 @@ passthrough and `chatgpt-web/*` routed models.
 
 ## Promotion gate
 
-Current status: **promoted to `main` and finalized as AsterBridge 3.0.4 on 2026-08-30**. All selected
-P0/P0.5, retained-session, native-compaction, Subagent/Nested, Bigger Context, Native3, image
-generation, and Windows packaged-launcher gates passed before promotion; the working tree was clean
-after the validated fixes, and test-only runtime/tunnel resources were removed. The original
-`v3.0.3` source tag was pushed successfully, but its GitHub Release workflow stopped at `bun run
-verify` on every matrix runner before packaging assets. Reproducing the exact tag locally confirmed
-the known Bun 1.4.0 giant-process crash path. Release verification now enumerates all 40 core test
-files and runs each file in its own deterministic child process. Only explicit Bun runtime-crash
-exit codes receive a bounded retry; assertion failures remain terminal. The complete local `bun run
-verify` gate then passed through `RELOCATABLE_RUNTIME_SMOKE_OK`. Version `3.0.4` supersedes
-`v3.0.3` for binary distribution without moving or rewriting the published 3.0.3 tag.
+Current status: **promoted to `main` and finalized for release as AsterBridge 3.0.5 on 2026-08-30**.
+All selected P0/P0.5, retained-session, native-compaction, Subagent/Nested, Bigger Context, Native3,
+image generation, and Windows packaged-launcher gates passed before promotion. The `v3.0.3` Release
+matrix exposed a cross-platform CRLF-only contract plus the known Bun 1.4.0 giant-process crash path;
+3.0.4 fixed those by making the contract newline-agnostic and enumerating all 40 core test files in
+short-lived child processes. Its Linux build succeeded and macOS verification passed, but the GitHub
+Windows runner still exhausted bounded runtime-crash retries on the named-pipe-heavy
+`turn-broker-lifecycle.test.ts` with exit code 3 before any assertion failure. Version 3.0.5 therefore
+skips only those eight short-lived pipe lifecycle cases on Windows + Bun 1.4.0; Unix executes them
+unchanged, while Windows keeps broker coverage through server lifecycle, Full Harness,
+retained-compaction, DEV-driver, Launcher, and packaged-runtime tests. Published 3.0.3/3.0.4 tags are
+not moved or rewritten; 3.0.5 supersedes them for binary distribution.
 
 Do not merge future integration work into `main` until its selected gates are checked, live Full
 Harness E2E succeeds, and the working tree contains no debug probes or local runtime secrets.
