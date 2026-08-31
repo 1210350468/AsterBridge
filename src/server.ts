@@ -228,14 +228,42 @@ export async function nativeSearchRequest(
   }
 }
 
+export const RETRYABLE_IMAGE_UPSTREAM_STATUSES = new Set([502, 503, 504]);
+
+export function imageUpstreamRetryable(status: number): boolean {
+  return RETRYABLE_IMAGE_UPSTREAM_STATUSES.has(status);
+}
+
+function imageTransportErrorCode(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  const cause = error.cause;
+  if (cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string") {
+    return cause.code.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || error.name;
+  }
+  return error.name.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "Error";
+}
+
 export async function nativeImageRequest(
   req: Request,
   endpoint: "images/generations" | "images/edits",
   fetchUpstream?: NativeFetch,
 ): Promise<Response> {
+  const startedAt = Date.now();
   try {
-    return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
+    const response = await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
+    const durationMs = Date.now() - startedAt;
+    const retryable = imageUpstreamRetryable(response.status);
+    console.info(
+      `[asterbridge:image] endpoint=${endpoint} durationMs=${durationMs} status=${response.status} origin=upstream retryable=${String(retryable)}`,
+    );
+    return response;
   } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    const errorCode = imageTransportErrorCode(error);
+    const retryable = !(error instanceof DOMException && error.name === "AbortError");
+    console.error(
+      `[asterbridge:image] endpoint=${endpoint} durationMs=${durationMs} status=502 origin=transport retryable=${String(retryable)} error=${errorCode}`,
+    );
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
 }

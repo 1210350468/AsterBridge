@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -89,6 +89,79 @@ test("retained surface eviction selects the oldest idle conversation only", () =
   });
   expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a"], "d")).toBe("b");
   expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a", "b", "c"], "d")).toBeUndefined();
+});
+
+test("multi-image stages receive bounded adaptive upload and submission budgets", () => {
+  expect(chatGptFileAttachmentTimeoutMs(0, 0)).toBe(120_000);
+  expect(chatGptSendStageTimeoutMs(0, 0)).toBe(20_000);
+  expect(chatGptFileAttachmentTimeoutMs(8, 8_000_000)).toBe(190_000);
+  expect(chatGptSendStageTimeoutMs(8, 8_000_000)).toBe(94_000);
+  expect(chatGptFileAttachmentTimeoutMs(10, 50_000_000)).toBe(300_000);
+  expect(chatGptSendStageTimeoutMs(10, 50_000_000)).toBe(120_000);
+});
+
+test("external maintenance evicts an idle fifth retained page and always closes its ephemeral page", async () => {
+  const closed: string[] = [];
+  const retainedExternalPages = new Map(Array.from({ length: 5 }, (_unused, index) => {
+    const key = String.fromCharCode(97 + index);
+    let pageClosed = false;
+    return [key, {
+      isClosed: () => pageClosed,
+      close: async () => { pageClosed = true; closed.push(key); },
+    }];
+  }));
+  let maintenanceClosed = false;
+  const maintenancePage = {
+    isClosed: () => maintenanceClosed,
+    close: async () => { maintenanceClosed = true; closed.push("maintenance"); },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { browserHost: "roxybrowser" },
+    activeRuns: new Map(),
+    activeRunConversationKeys: new Map(),
+    retainedExternalPages,
+    maintenanceTail: Promise.resolve(),
+    page: undefined,
+  });
+  const enqueueMaintenance = (ChatGptBrowserWorker.prototype as unknown as {
+    enqueueMaintenance<T>(name: string, action: () => Promise<T>): Promise<T>;
+  }).enqueueMaintenance;
+
+  const result = await enqueueMaintenance.call(worker, "test", async () => {
+    worker.page = maintenancePage;
+    return "ok";
+  });
+
+  expect(result).toBe("ok");
+  expect(closed).toEqual(["a", "maintenance"]);
+  expect(retainedExternalPages.size).toBe(4);
+  expect(worker.page).toBeUndefined();
+});
+
+test("external maintenance closes its page even when the probe fails", async () => {
+  let maintenanceClosed = false;
+  const maintenancePage = {
+    isClosed: () => maintenanceClosed,
+    close: async () => { maintenanceClosed = true; },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { browserHost: "system-browser" },
+    activeRuns: new Map(),
+    activeRunConversationKeys: new Map(),
+    retainedExternalPages: new Map(),
+    maintenanceTail: Promise.resolve(),
+    page: undefined,
+  });
+  const enqueueMaintenance = (ChatGptBrowserWorker.prototype as unknown as {
+    enqueueMaintenance<T>(name: string, action: () => Promise<T>): Promise<T>;
+  }).enqueueMaintenance;
+
+  await expect(enqueueMaintenance.call(worker, "failing probe", async () => {
+    worker.page = maintenancePage;
+    throw new Error("probe failed");
+  })).rejects.toThrow("probe failed");
+  expect(maintenanceClosed).toBe(true);
+  expect(worker.page).toBeUndefined();
 });
 
 test("a sixth external conversation evicts the oldest idle retained surface without raising the safety limit", async () => {
@@ -283,11 +356,18 @@ test("prompt verification accepts Lexical NBSP preservation without weakening ot
   expect(promptTextEquivalent.call(worker, "a b", "a\u00A0b")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "a\u00A0b", "a b")).toBeFalse();
 
-  // Other whitespace and same-length text mutations must remain fail closed.
+  // Chromium/Lexical may remove presentation selectors or NFC-compose canonically equivalent
+  // Unicode while preserving the textual instruction. Those representation-only changes are safe.
+  expect(promptTextEquivalent.call(worker, "warn ⚠️ now", "warn ⚠ now")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "text ☀︎ now", "text ☀ now")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "Cafe\u0301", "Café")).toBeTrue();
+
+  // Other whitespace and ordinary text mutations must remain fail closed.
   expect(promptTextEquivalent.call(worker, "a b", "a\tb")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "a\nb", "a b")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "abc", "abd")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "abc", "ab")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "A‍B", "AB")).toBeFalse();
 
   const waitForPromptChunkAttached = (ChatGptBrowserWorker.prototype as unknown as {
     waitForPromptChunkAttached(
@@ -1138,12 +1218,14 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     },
   };
   const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
-    attachFiles(page: unknown, prompt: unknown): Promise<void>;
+    attachFiles(page: unknown, files: Array<{ name: string; mimeType: string; buffer: Buffer }>): Promise<void>;
   }).attachFiles;
 
-  await attachFiles.call({ activeComposer: async () => composer }, page, {
-    images: [{ ref: "codex-input-image-1", imageUrl }],
-  });
+  await attachFiles.call({ activeComposer: async () => composer }, page, [{
+    name: "codex-input-image-1.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(imageUrl.slice(imageUrl.indexOf(",") + 1), "base64"),
+  }]);
 
   expect(calls).toEqual([
     ["inputReady"],
@@ -1367,6 +1449,23 @@ test("a failed subscription fetch is retryable and does not falsely invalidate C
     errorType: "server_error",
     code: "chatgpt_subscription_unavailable",
     retryable: true,
+  });
+});
+
+test("a logged-out ChatGPT page is reported as an authentication failure even without an expiry alert", async () => {
+  const loginLink = {
+    filter() { return this; },
+    first() { return this; },
+    isVisible: async () => true,
+  };
+  const page = { locator: () => loginLink } as unknown as Page;
+
+  await expect(throwIfChatGptLoggedOutSurface(page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 401,
+    errorType: "authentication_error",
+    code: "chatgpt_session_expired",
+    retryable: false,
   });
 });
 

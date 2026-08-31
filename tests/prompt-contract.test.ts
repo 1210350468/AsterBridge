@@ -87,6 +87,9 @@ test("Full-mode prompts route image requests through outer Codex image_gen even 
   );
   expect(compiled.text).toContain("explicitly provides image generation through image_gen__imagegen");
   expect(compiled.text).toContain('call codex_tool_call with wire_name "image_gen__imagegen" before answering');
+  expect(compiled.text).toContain("Do not use ChatGPT's own first-party image-generation tool");
+  expect(compiled.text).toContain("The only valid image-generation path for this Codex turn is codex_tool_call -> image_gen__imagegen");
+  expect(compiled.text).toContain("do not treat either its success or its failure as fulfillment of the Codex task");
   expect(compiled.text).toContain('"prompt":{"type":"string"}');
   expect(compiled.text).toContain("This Codex context contains zero prior images");
   expect(compiled.text).toContain("omit referenced_image_paths and num_last_images_to_include entirely");

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 import {
+  annotateRetryableImageToolFailure,
   boundedCodexToolArguments,
   CODEX_IMAGE_GEN_WIRE_NAME,
   CODEX_SUBAGENT_WAIT_POLL_MS,
@@ -110,6 +111,30 @@ test("Web subagent waits are bounded to short polling without touching unrelated
   })).toEqual({ ids: ["agent-1"], timeout_ms: 4_000 });
   const unrelated = { session_id: "shell-1", timeout_ms: 60_000 };
   expect(boundedCodexToolArguments("functions__wait", unrelated)).toBe(unrelated);
+});
+
+test("image generation marks only transient gateway failures as retryable for the Web model", () => {
+  const transient = annotateRetryableImageToolFailure(CODEX_IMAGE_GEN_WIRE_NAME, {
+    content: [{ type: "text", text: "image generation failed with HTTP 502 Bad Gateway" }],
+    isError: true,
+  });
+  expect(transient.content[0]).toMatchObject({
+    type: "text",
+    text: expect.stringContaining("transient/retryable (HTTP 502)"),
+  });
+  expect(transient._meta).toMatchObject({
+    asterbridge: { category: "image_backend_transient", retryable: true, status: 502 },
+  });
+
+  const permanent = {
+    content: [{ type: "text", text: "invalid image prompt" }],
+    isError: true,
+  };
+  expect(annotateRetryableImageToolFailure(CODEX_IMAGE_GEN_WIRE_NAME, permanent)).toBe(permanent);
+  expect(annotateRetryableImageToolFailure("exec_command", {
+    content: [{ type: "text", text: "HTTP 503" }],
+    isError: true,
+  }).content).toEqual([{ type: "text", text: "HTTP 503" }]);
 });
 
 test("image generation drops impossible history-image arguments and bounds real ones", () => {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import type { AppConfig } from "./config";
 import { getConfigDir, getConfigPath, loadConfig } from "./config";
@@ -129,6 +129,66 @@ async function upstreamNetworkCheck(id: string, url: string, label: string): Pro
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function formatStorageBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+export function generatedImagesStorageCheck(
+  root = join(homedir(), ".codex", "generated_images"),
+  maxFiles = 20_000,
+): DoctorCheck {
+  if (!existsSync(root)) {
+    return { id: "generated-images", status: "ok", message: "Generated image storage is empty" };
+  }
+  const directories = [root];
+  let files = 0;
+  let bytes = 0;
+  let truncated = false;
+  try {
+    while (directories.length > 0 && !truncated) {
+      const directory = directories.pop()!;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          directories.push(path);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        files += 1;
+        bytes += statSync(path).size;
+        if (files >= maxFiles) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    return {
+      id: "generated-images",
+      status: "warning",
+      message: "Generated image storage could not be measured completely",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const measured = `${files.toLocaleString("en-US")} files / ${formatStorageBytes(bytes)}`;
+  return truncated
+    ? {
+        id: "generated-images",
+        status: "warning",
+        message: `Generated image storage exceeds the bounded diagnostic scan (${measured} measured)`,
+        detail: `Files remain under ${root}; AsterBridge never deletes generated image assets automatically.`,
+      }
+    : {
+        id: "generated-images",
+        status: "ok",
+        message: `Generated image storage: ${measured}`,
+        detail: `Assets remain under ${root}; AsterBridge does not delete them automatically.`,
+      };
 }
 
 async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
@@ -298,6 +358,12 @@ export async function runDoctor(): Promise<DoctorReport> {
     "https://chatgpt.com/backend-api/codex/models",
     "ChatGPT/Codex upstream",
   ));
+  checks.push(await upstreamNetworkCheck(
+    "network-image",
+    "https://chatgpt.com/backend-api/codex/images/generations",
+    "Codex image backend route",
+  ));
+  checks.push(generatedImagesStorageCheck());
 
   if (config.mode === "full") {
     checks.push(await upstreamNetworkCheck(

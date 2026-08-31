@@ -432,6 +432,23 @@ class RuntimeHost {
       });
       return;
     }
+    const launcherVersion = typeof this.app?.getVersion === "function" ? this.app.getVersion() : undefined;
+    const previousReleaseVersion = snapshot.config?.releaseVersion;
+    if (snapshot.configured
+      && typeof launcherVersion === "string"
+      && typeof previousReleaseVersion === "string"
+      && previousReleaseVersion !== launcherVersion) {
+      // A newly installed launcher intentionally owns only its own durable runtime bundle. After a
+      // failed cross-version setup transaction, the old config/checkpoint is restored so the Codex
+      // route can be returned to its pre-bridge target, but starting that old runtime under the new
+      // launcher would immediately fail the version-ownership contract. Treat checkpoint rollback as
+      // the safe recovery boundary instead of manufacturing a secondary `needs-setup` failure.
+      this.logger.info("runtime.previous_config_restored_cross_version", {
+        previousReleaseVersion,
+        launcherVersion,
+      });
+      return;
+    }
     const runtime = await this.supervisor.startIfConfigured();
     const expected = snapshot.configured ? "ready" : "not-configured";
     if (runtime.status !== expected) {

@@ -377,10 +377,12 @@ export function compileChatGptWebPrompt(
     ? [
       `The current outer Codex turn explicitly provides image generation through ${namespacedToolName(imageGenerationTool.namespace, imageGenerationTool.name)}. This outer capability remains available even when Temporary Chat itself has no first-party image generation control.`,
       `When the latest user asks to generate, draw, render, create, edit, transform, or otherwise produce an image, call codex_tool_call with wire_name ${JSON.stringify(namespacedToolName(imageGenerationTool.namespace, imageGenerationTool.name))} before answering. Pass arguments that match this exact outer tool schema: ${JSON.stringify(imageGenerationTool.parameters)}.`,
+      `Do not use ChatGPT's own first-party image-generation tool or image-creation UI while this outer Codex image tool is present. The only valid image-generation path for this Codex turn is codex_tool_call -> ${namespacedToolName(imageGenerationTool.namespace, imageGenerationTool.name)}; a first-party ChatGPT image result bypasses Codex artifact delivery and AsterBridge reliability diagnostics.`,
+      "If a first-party ChatGPT image tool is invoked accidentally, do not treat either its success or its failure as fulfillment of the Codex task. Use the outer Codex image tool instead.",
       contextImageCount === 0
         ? "This Codex context contains zero prior images. For a fresh text-to-image request, pass the image prompt and omit referenced_image_paths and num_last_images_to_include entirely; do not invent a previous image."
         : `This Codex context currently contains ${contextImageCount} image part${contextImageCount === 1 ? "" : "s"}. Use referenced_image_paths or num_last_images_to_include only when the user's request actually depends on an existing image; otherwise omit them for fresh generation.`,
-      "Treat an image tool error as a failed generation, not as success. Correct recoverable arguments and retry when appropriate; never claim the image was generated unless the outer Codex image tool returned a successful result.",
+      "Treat an image tool error as a failed generation, not as success. Correct recoverable arguments and retry when appropriate; never claim the image was generated unless the outer Codex image tool returned a successful result. For transient HTTP 502/503/504 image-backend failures, retry the same semantic generation at most twice, then report a temporary backend failure instead of looping indefinitely.",
       "Do not tell the user to switch to a normal ChatGPT conversation merely because Temporary Chat lacks its own image generator. Only report image generation as unavailable after the outer Codex image tool itself is absent or returns an actual failure.",
     ]
     : [];

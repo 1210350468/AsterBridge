@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { launcherCapabilityProbeRequired, setupProxyIsReady } from "../src/setup";
+import {
+  externalBrowserCapabilityProbeRequired,
+  launcherCapabilityProbeRequired,
+  setupProxyIsReady,
+} from "../src/setup";
 
 const config = {
   mode: "browser-only" as const,
@@ -35,4 +39,31 @@ test("launcher setup refreshes account capabilities only when missing or explici
     proAvailable: false,
   } as never)).toBe(true);
   expect(launcherCapabilityProbeRequired(verifiedLauncher, true)).toBe(true);
+});
+
+test("external-browser upgrades reuse verified capabilities until the browser identity changes", () => {
+  const verifiedRoxy = {
+    browserHost: "launcher",
+    turnBrowserHost: "roxybrowser",
+    roxyBrowserProfileId: "profile-a",
+    roxyBrowserDataDir: "C:/Roxy/profiles",
+    solAvailable: true,
+    proAvailable: false,
+  };
+  const unchanged = { ...verifiedRoxy, releaseVersion: "0.2.0" };
+
+  expect(externalBrowserCapabilityProbeRequired(verifiedRoxy as never, unchanged as never)).toBe(false);
+  expect(externalBrowserCapabilityProbeRequired(verifiedRoxy as never, unchanged as never, true)).toBe(true);
+  expect(externalBrowserCapabilityProbeRequired(verifiedRoxy as never, {
+    ...verifiedRoxy,
+    roxyBrowserProfileId: "profile-b",
+  } as never)).toBe(true);
+  expect(externalBrowserCapabilityProbeRequired(verifiedRoxy as never, {
+    ...verifiedRoxy,
+    turnBrowserHost: "system-browser",
+  } as never)).toBe(true);
+  expect(externalBrowserCapabilityProbeRequired({
+    ...verifiedRoxy,
+    solAvailable: undefined,
+  } as never, unchanged as never)).toBe(true);
 });

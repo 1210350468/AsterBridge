@@ -1050,6 +1050,62 @@ test("failed launcher update restores every mutable setup file before restarting
   }
 });
 
+test("failed cross-version launcher upgrade restores the previous config without starting it under the new launcher", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-cross-version-rollback-"));
+  const coreHome = path.join(root, "core");
+  const configPath = path.join(coreHome, "config.json");
+  const oldConfig = {
+    mode: "browser-only",
+    browserHost: "launcher",
+    releaseVersion: "3.0.10",
+    solAvailable: true,
+    proAvailable: false,
+  };
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, `${JSON.stringify(oldConfig)}\n`, { mode: 0o600 });
+
+  let startAttempts = 0;
+  const readConfig = () => JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const supervisor = {
+    coreHome,
+    configPath,
+    readSetupConfig: readConfig,
+    readConfig,
+    stopForSetup: async () => ({ status: "stopped" }),
+    startIfConfigured: async () => {
+      startAttempts += 1;
+      return { status: "needs-setup", detail: "should not run old runtime under new launcher" };
+    },
+  };
+  const host = new RuntimeHost({
+    app: {
+      getPath: () => path.join(root, "launcher"),
+      getVersion: () => "3.0.11",
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(coreHome, "runtime", "launcher-browser.json"),
+    coreHome,
+    codexHome: path.join(root, "codex"),
+    supervisor,
+  });
+  host.run = async () => {
+    fs.writeFileSync(configPath, `${JSON.stringify({ ...oldConfig, releaseVersion: "3.0.11" })}\n`);
+    throw new Error("synthetic browser capability failure");
+  };
+
+  try {
+    await assert.rejects(
+      host.runSetup("runtime-upgrade", ["setup", "--browser-only"], {}),
+      /^Error: synthetic browser capability failure$/,
+    );
+    assert.equal(startAttempts, 0);
+    assert.deepEqual(readConfig(), oldConfig);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failed terminal migration restores removed launchd ownership before verifying the old runtime", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-terminal-checkpoint-"));
   const coreHome = path.join(root, "core");

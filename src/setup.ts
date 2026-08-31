@@ -98,6 +98,28 @@ export function launcherCapabilityProbeRequired(
     || typeof existing.proAvailable !== "boolean";
 }
 
+export function externalBrowserCapabilityProbeRequired(
+  existing: AppConfig | undefined,
+  next: AppConfig,
+  refreshAccountCapabilities = false,
+): boolean {
+  if (refreshAccountCapabilities
+    || typeof existing?.solAvailable !== "boolean"
+    || typeof existing?.proAvailable !== "boolean") return true;
+
+  const previousHost = existing.turnBrowserHost ?? existing.browserHost;
+  const nextHost = next.turnBrowserHost ?? next.browserHost;
+  if (previousHost !== nextHost) return true;
+  if (nextHost === "roxybrowser") {
+    return existing.roxyBrowserProfileId !== next.roxyBrowserProfileId
+      || existing.roxyBrowserDataDir !== next.roxyBrowserDataDir;
+  }
+  if (nextHost === "system-browser") {
+    return existing.systemBrowserChannel !== next.systemBrowserChannel;
+  }
+  return true;
+}
+
 export function existingFullSetupCredentials(existing: AppConfig | undefined): ExistingFullSetupCredentials {
   const tunnel = existing?.mode === "full" ? existing.tunnel : undefined;
   return {
@@ -388,9 +410,19 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (options.forceLogin) {
       throw new Error("External browser login is owned by that browser session; sign in there and retry setup");
     }
-    const capabilities = await inspectSystemBrowserCapabilities(config);
-    solAvailable = capabilities.solAvailable;
-    proAvailable = capabilities.proAvailable;
+    const detectCapabilities = externalBrowserCapabilityProbeRequired(
+      existing,
+      config,
+      options.refreshAccountCapabilities === true,
+    );
+    if (detectCapabilities) {
+      const capabilities = await inspectSystemBrowserCapabilities(config);
+      solAvailable = capabilities.solAvailable;
+      proAvailable = capabilities.proAvailable;
+    } else {
+      solAvailable = existing!.solAvailable;
+      proAvailable = existing!.proAvailable;
+    }
   } else if (config.browserHost === "launcher") {
     if (options.forceLogin) throw new Error("Launcher browser login is owned by the launcher UI; --login cannot replace it");
     const capabilities = await inspectLauncherCapabilities(

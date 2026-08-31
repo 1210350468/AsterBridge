@@ -15,12 +15,30 @@
 | ChatGPT 找不到 App / Connector | App 名称不一致或旧 App 缓存了旧 MCP schema | 新建精确名为 `Codex Native3` 的 App；不要复用 `Codex Native` / `Codex Native2` |
 | 工具调用被安全检查拒绝 | ChatGPT App 权限或外层 Codex sandbox/approval 拒绝 | 确认 App 权限；外层 Codex 仍然保留自己的审批与沙箱规则 |
 | `turn token is invalid, expired, or revoked` | ChatGPT 返回了不属于当前外层 Codex turn 的 token，或旧 App/旧会话残留 | 使用当前 `Codex Native3`，新开 Codex turn；不要手工复用 turn token |
+| `ChatGPT is signed out in the configured browser profile` / `chatgpt_session_expired` | 外部 Roxy/system-browser Profile 能打开 ChatGPT，但新页面已经不再带有效登录会话；旧 retained 页可能因为 SPA 已经加载过而看起来仍可用 | 在**同一个浏览器/Profile**里重新登录 `chatgpt.com`，再运行 Browser check/Doctor。AsterBridge 不会也不能自行重建账号凭据。 |
 | `missing YAML frontmatter delimited by ---` | 某个本地 Codex Skill 文件格式无效 | 与 Roxy/Bridge 无关；确保文件第一个字节就以 `---` 开始（前面不能有空行/BOM），不用的 Skill 也可直接禁用 |
+| 生图返回 `502` / `503` / `504` | Codex 原生生图请求可能遇到上游网关失败或本地代理传输失败；旧版本里 Temporary Chat 还可能绕过 AsterBridge，误用 ChatGPT 网页自己的第一方生图工具 | 3.0.11+ 查看 `[asterbridge:image]`：`origin=upstream` 表示 Codex image endpoint 返回该状态；`origin=transport` 表示本地代理/网络 fetch 失败。若旧版本明明提示生图 502，却既没有 broker `image_gen__imagegen` 调用、也没有 image telemetry，就说明走错了网页第一方生图路径。3.0.13+ 在 outer Codex 提供 image tool 时强制只走 Native3。 |
+| 多图上传完成后发送仍反复超时 | 图片 tile 已经上传完成，但图片较多时 ChatGPT 的提交确认可能超过旧版固定 20 秒 deadline | 3.0.13+ 按图片数量和总字节动态分配上传/提交预算：上传最多 300 秒、提交确认最多 120 秒；仍保持 10 张、20 MB/张、50 MB/turn 的硬上限。 |
+| RoxyBrowser 里 Temporary Chat 窗口越来越多 | 已完成 conversation 会短时 retained 以加速续聊；旧版本的 Browser check / connector verify / smoke 等维护探针还可能额外缓存一个页面 | retained conversation 最多 5 个，会 LRU 淘汰并随 session TTL 回收。3.0.13+ 的外部浏览器维护页改为临时页，成功或失败都会关闭，并且同样受 5 个物理页面上限约束。 |
 | `fatal: detected dubious ownership` | Git 仓库所有者 SID 与当前执行用户不同 | 与 Roxy/Native3 无关；根据自己的安全策略处理 Git safe.directory，不要为了测试全局放宽所有仓库 |
 | Tunnel health 一直失败 | tunnel-client、Runtime Key、Tunnel ID、网络或 ownership 有问题 | 在 Launcher MCP 页面重新验证；先看 Doctor 的 `tunnel-*` checks，不要先重建 ChatGPT App |
 | `ChatGPT/Codex upstream is not reachable` | Responses daemon 无法访问 ChatGPT/Codex 上游，常见原因是代理没有被 Bun 子进程继承 | 打开 **设置 → 网络代理**，优先选“自动”；仍失败时改成自定义 HTTP 代理并重新运行 Doctor |
 | `OpenAI API/tunnel control plane is not reachable` | Full Harness 的 tunnel-client 无法访问 OpenAI 控制面 | 检查代理是否对 tunnel-client 生效；确认代理允许 HTTPS CONNECT，并重新运行 Doctor |
 | GitHub 更新检查失败但 Web 模型正常 | GitHub Release 请求被网络/代理阻断 | AsterBridge Updater 会跟随同一套 HTTP/HTTPS 代理；确认代理可访问 `github.com`，再重试更新 |
+
+## 生图可靠性与图片上传上限
+
+AsterBridge 对图片传输有明确硬上限：单个 Web turn 最多 **10 张图片**，单张最多 **20 MB**，同一 turn 图片总量最多 **50 MB**。Codex 历史里真实图片超过 10 张时，只重新附加最新 10 张；更老图片只保留“旧图未附加”的文本占位。外层 Codex 生图工具的 `num_last_images_to_include` 另行限制为最多 **5 张**，不会凭空引用不存在的历史图。
+
+如果 Temporary Chat 页面仍处于 retained 状态，续聊只发送新的 canonical suffix，不会反复重传未变化的历史图片。页面被关闭、LRU 淘汰或 Launcher 重启后，AsterBridge 才会从 Codex canonical history 重建，并继续遵守 10 张 / 50 MB 上限。retained conversation 使用 30 分钟 session TTL，并受最多 5 个物理页面的硬安全上限约束；空闲页可以更早被 LRU 淘汰。compaction 完成 canonical handoff 后会退休并释放旧 retained 页；失败/取消的非 retained turn 会在 `finally` 中关闭自己的页面。
+
+3.0.13+ 中，Browser check、账号/能力探测、Connector verify、smoke 这类外部浏览器维护操作不再长期缓存页面：无论成功还是失败，维护页都会关闭。如果已有 5 个 retained 页，会先释放最久未使用的空闲 retained 页，再执行维护探针，不会打开第 6 个物理 ChatGPT 页面。
+
+实际生成的 PNG/JPEG 属于用户资产，保存在 `~/.codex/generated_images`。AsterBridge **不会自动删除**。Doctor 会显示该目录当前文件数量和磁盘占用，便于长期生图后主动清理，而不是静默丢失资产。
+
+3.0.11+ 的原生生图日志只记录脱敏诊断，例如 `endpoint=images/generations durationMs=59240 status=502 origin=upstream retryable=true`，不会记录 prompt、图片字节、Bearer token 或代理凭据。`origin=upstream` 表示真实 Codex image endpoint 状态；`origin=transport` 表示本地 fetch/代理传输失败。2026-08-31 的真实排查里，同一 Windows 代理链已经成功完成约 54.5 秒和 150.2 秒的 image edit，因此可以排除“本地代理固定 60 秒切断”这个假设；另一次成功复现的“连续 HTTP 502”则完全没有 broker image call 和 AsterBridge image telemetry，确认 Temporary Chat 当时误走了 ChatGPT 第一方生图。3.0.13+ 在 outer `image_gen__imagegen` 存在时明确禁止这条分流。
+
+3.0.13+ 对多图输入也改成了自适应阶段预算，并且图片只做一次 base64 解码。纯文本发送继续使用 20 秒提交确认；带图 turn 根据图片数和总字节获得 45–120 秒提交确认，以及 120–300 秒附件处理预算。这个修复直接针对真实的 8 图场景：file attachment 已在约 13–17 秒完成，但旧版随后固定 20 秒的 send stage 多次刚好超时并触发重试。
 
 ## 网络与代理
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig } from "../src/config";
-import { HttpTurnCounter, startServer } from "../src/server";
+import { HttpTurnCounter, imageUpstreamRetryable, startServer } from "../src/server";
 
 test("DEV harness configuration cannot bind a Responses listener", () => {
   const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
@@ -427,6 +427,14 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
   }
 });
 
+test("image upstream retry policy recognizes only transient gateway statuses", () => {
+  expect(imageUpstreamRetryable(502)).toBe(true);
+  expect(imageUpstreamRetryable(503)).toBe(true);
+  expect(imageUpstreamRetryable(504)).toBe(true);
+  expect(imageUpstreamRetryable(429)).toBe(false);
+  expect(imageUpstreamRetryable(400)).toBe(false);
+});
+
 test("server forwards native Codex image generation routes on the local v1 base URL", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const upstreamRequests: Request[] = [];
@@ -455,6 +463,32 @@ test("server forwards native Codex image generation routes on the local v1 base 
       expect(forwarded.headers.get("authorization")).toBe("Bearer test-codex-session");
       expect(await forwarded.text()).toBe(body);
     }
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("server preserves an upstream image 502 for Codex instead of retrying the POST", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  let attempts = 0;
+  const server = startServer(config, {
+    fetchUpstream: async () => {
+      attempts += 1;
+      return Response.json({ error: { message: "upstream image gateway timeout" } }, { status: 502 });
+    },
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/images/generations`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-codex-session",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ prompt: "one image only" }),
+    });
+    expect(response.status).toBe(502);
+    expect(attempts).toBe(1);
+    expect(await response.json()).toEqual({ error: { message: "upstream image gateway timeout" } });
   } finally {
     await server.stop(true);
   }

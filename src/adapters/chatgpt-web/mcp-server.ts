@@ -124,6 +124,44 @@ function invocationTimeout(environment: ChatGptTurnEnvironment & { expiresAt?: n
   return environment.expiresAt === undefined ? null : Math.max(1, environment.expiresAt - Date.now());
 }
 
+const RETRYABLE_IMAGE_GATEWAY_STATUS = /(?:\bHTTP\s*|\bstatus(?:\s+code)?\s*[:=]?\s*)?(502|503|504)\b/i;
+
+function retryableImageGatewayStatus(value: BrokerToolResult): number | undefined {
+  if (!value.isError) return undefined;
+  let evidence = "";
+  try {
+    evidence = JSON.stringify({ content: value.content, structuredContent: value.structuredContent });
+  } catch {
+    return undefined;
+  }
+  const match = evidence.match(RETRYABLE_IMAGE_GATEWAY_STATUS);
+  return match ? Number(match[1]) : undefined;
+}
+
+export function annotateRetryableImageToolFailure(
+  requestedWireName: string,
+  value: BrokerToolResult,
+): BrokerToolResult {
+  if (requestedWireName !== CODEX_IMAGE_GEN_WIRE_NAME) return value;
+  const status = retryableImageGatewayStatus(value);
+  if (!status) return value;
+  const note = {
+    type: "text",
+    text: `AsterBridge classified this image-generation failure as transient/retryable (HTTP ${status}). Retry the same generation at most twice before reporting a temporary image-backend failure; do not treat it as permanent image-generation unavailability.`,
+  };
+  const meta = value._meta !== null && typeof value._meta === "object" && !Array.isArray(value._meta)
+    ? value._meta as Record<string, unknown>
+    : {};
+  return {
+    ...value,
+    content: [note, ...value.content],
+    _meta: {
+      ...meta,
+      asterbridge: { category: "image_backend_transient", retryable: true, status },
+    },
+  };
+}
+
 function asMcpResult(value: BrokerToolResult) {
   return {
     content: value.content as never,
@@ -227,7 +265,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       freeform,
       ...(freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
     }, invocationTimeout(bound));
-    return asMcpResult(response);
+    return asMcpResult(annotateRetryableImageToolFailure(requestedWireName, response));
   };
 
   const invoke = async (

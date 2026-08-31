@@ -2,6 +2,66 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.14 - 2026-09-01
+
+### Lexical prompt-integrity compatibility
+
+- Fixed a live 3.0.13 Full Harness failure where ChatGPT's Lexical composer preserved the prompt semantics but canonicalized its Unicode representation, leaving the observed text two UTF-16 code units shorter and causing repeated `prompt_attachment` integrity failures before an outer image tool could run.
+- Prompt verification now accepts only two additional representation-level equivalences: Unicode NFC canonical composition and removal/addition of U+FE0E/U+FE0F text/emoji presentation selectors. ZWJ, whitespace, punctuation, ordinary characters, line breaks, and every non-canonical mutation remain exact and fail closed.
+- The regression suite covers dropped emoji/text presentation selectors, decomposed-to-NFC text, the existing repeated-space/NBSP case, and explicit rejection of ordinary character deletion and ZWJ removal.
+
+### Validation notes
+
+- Focused Browser Worker regression after the fix: **77 pass, 0 fail / 360 assertions**, plus root TypeScript PASS. Full core promotion remained **41/41 deterministic batches PASS**, Launcher **203 pass / 0 fail / 1 Windows-inapplicable skip**, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Packaged Windows 3.0.14 installed successfully, upgraded the managed runtime from 3.0.13 to 3.0.14, kept the Codex route active with `errors=[]`, returned Doctor `ready`, and verified `Codex Native3` in the configured external browser.
+- A fresh image turn that had failed under 3.0.13 at `expectedChars=31931, actualChars=31929` completed under 3.0.14, queued/delivered `image_gen__imagegen`, wrote an **835,896-byte PNG**, and emitted `[asterbridge:image] endpoint=images/generations durationMs=15793 status=200 origin=upstream retryable=false`.
+- A real eight-image turn completed file attachment in **12.124 s**, selected `uploadTimeoutMs=220000` / `sendTimeoutMs=104000`, accepted submission after **18.098 s**, and returned `MULTI8_OK` without the former fixed-20-second send retry loop. Final `/healthz` reported `active_http_turns=0` and `active_browser_turns=0`.
+
+## 3.0.13 - 2026-08-31
+
+### Browser-surface, multi-image, and image-route reliability
+
+- External-browser maintenance operations (`browser check`, account/session inspection, connector verification, and smoke probes) now use ephemeral task surfaces. Their page is closed after both success and failure, and maintenance honors the same five-physical-surface ceiling as normal turns by evicting the oldest idle retained conversation when necessary.
+- Clarified retained-page lifecycle through implementation and tests: successful conversations may remain for bounded continuation reuse, while failed/aborted turns, retired conversations, compaction retirement, LRU eviction, and worker shutdown close their owned browser surfaces. Maintenance probes no longer add an unbounded extra Roxy/system-browser page.
+- Multi-image attachment handling now decodes prompt images once and sizes upload/submission deadlines from the attached image count and aggregate bytes. Text-only sends keep the existing 20-second budget; image-heavy sends receive a bounded 45–120 second acknowledgement budget and file upload receives a bounded 120–300 second budget. This fixes the observed eight-image case where attachments completed in 13–17 seconds but a fixed 20-second send stage repeatedly timed out before ChatGPT acknowledged submission.
+- When outer Codex advertises `image_gen__imagegen`, Temporary Chat is now explicitly forbidden from using ChatGPT's separate first-party image-generation path. Image creation must travel through `Codex Native3 -> codex_tool_call -> image_gen__imagegen`, keeping artifact delivery, retry semantics, and `[asterbridge:image]` status/origin telemetry on one deterministic path.
+- Live investigation disproved a fixed 60-second local proxy limit: the same configured proxy successfully completed native image-edit requests in roughly 54.5 seconds and 150.2 seconds. A separately reproduced "consecutive HTTP 502" turn emitted no broker image call and no AsterBridge image telemetry, proving that failure had bypassed AsterBridge through ChatGPT's first-party image tool; the routing contract above closes that split-path failure mode.
+
+### Validation notes
+
+- Focused browser/image-route regression after the changes: browser-worker + prompt contracts **98 pass, 0 fail / 510 assertions**. Full 3.0.13 promotion and installed live E2E remain pending.
+
+## 3.0.12 - 2026-08-31
+
+### Upgrade recovery and external-browser session handling
+
+- Fixed managed Launcher upgrades unnecessarily hard-gating on a fresh RoxyBrowser/system-browser account capability probe. When the external browser host/profile is unchanged and the existing config already contains verified Sol/Pro capability flags, an upgrade now reuses those flags; first setup, browser/Profile changes, missing capability evidence, and explicit `--refresh-account-capabilities` still perform a live probe.
+- Fixed failed cross-version Launcher upgrades manufacturing a secondary `Previous runtime recovery returned needs-setup` error. After restoring the previous config/checkpoint, the new Launcher no longer tries to start that older versioned runtime under the new Launcher ownership contract; the safe fallback is the restored pre-bridge Codex route.
+- A logged-out ChatGPT page is now detected structurally through the visible `/auth/login` surface and reported as a non-retryable `chatgpt_session_expired` authentication error. The previous ambiguous `login is expired or the Temporary Chat surface is unavailable` fallback is reserved for genuinely composer-less pages without an explicit login surface.
+
+### Validation notes
+
+- Focused browser/setup/rollback regression: **118 pass, 0 fail / 356 assertions** before the full 3.0.12 gate.
+- The reported Windows failure was reproduced with a real RoxyBrowser profile: retained pages still showed an already-loaded composer, while every newly navigated Temporary Chat page displayed ChatGPT's logged-out surface. This confirmed that the primary failure was an expired browser session and the `needs-setup` text was a separate rollback bug.
+- Full 3.0.12 source gate passed: **41/41 core files**, Launcher **203 pass / 0 fail / 1 Windows-inapplicable skip**, TypeScript/renderer build PASS, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- After re-authenticating the same RoxyBrowser profile, a live capability probe returned `sol=true, pro=false`. The installed Windows 3.0.12 Launcher then upgraded the persisted managed runtime from 3.0.10 to 3.0.12 without another browser capability probe, without `chatgpt_session_expired`, and without the previous secondary `needs-setup` recovery error. It preserved the deliberately disconnected route during the upgrade.
+- After reconnecting the bridge, the installed 3.0.12 daemon reported healthy on `127.0.0.1:17841`, Doctor returned `ok=true` including the image-backend route and generated-image storage diagnostics, and the configured external browser verified `Codex Native3` successfully.
+- Installed `chatgpt-web/high` text E2E completed without a native tool call. A subsequent image E2E produced a real **959,359-byte PNG** and emitted `[asterbridge:image] endpoint=images/generations durationMs=20182 status=200 origin=upstream retryable=false`, proving the new image telemetry on the production path.
+
+## 3.0.11 - 2026-08-31
+
+### Image reliability and bounded image diagnostics
+
+- Added privacy-safe native image transport telemetry. Every `/v1/images/generations` / `/v1/images/edits` passthrough now records only endpoint, duration, HTTP status, failure origin (`upstream` versus local `transport`), retryability, and a bounded transport error code. Prompts, image bytes, bearer tokens, proxy credentials, and generated content are never logged.
+- Preserved image POST idempotency boundaries: AsterBridge still forwards each native image request exactly once and never retries a 502/503/504 in the HTTP transport layer, avoiding duplicate generations when an upstream request completed but its response failed in transit.
+- Full Harness now recognizes only `image_gen__imagegen` tool failures carrying HTTP 502/503/504 as transient/retryable. The Web model may retry the same semantic generation at most twice, then must report a temporary backend failure instead of treating image generation as permanently unavailable or looping indefinitely.
+- Doctor now separately probes the Codex image backend route through the active proxy/network path and reports local `~/.codex/generated_images` file count and disk usage without deleting user assets.
+- Documented the existing browser-image bounds explicitly: at most **10 images per Web turn**, **20 MB per image**, **50 MB aggregate per turn**, newest images win on overflow, and image-generation history references are separately capped at **5**.
+
+### Validation notes
+
+- Focused image reliability / Doctor / prompt regression: **49 pass, 0 fail / 274 assertions** before the full 3.0.11 gate.
+
 ## 3.0.10 - 2026-08-31
 
 ### Conversation and Full Harness usability

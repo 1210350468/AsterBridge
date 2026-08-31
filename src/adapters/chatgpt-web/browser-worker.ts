@@ -169,6 +169,18 @@ const chatGptExpiredSessionAlert = (page: Page): Locator => page
   .filter({ hasText: /Your session has expired|你的工作階段已過期|您的工作階段已過期|你的会话已过期|您的会话已过期/i })
   .last();
 
+export async function throwIfChatGptLoggedOutSurface(page: Page): Promise<void> {
+  const loginLink = page
+    .locator('a[href*="/auth/login"]')
+    .filter({ visible: true })
+    .first();
+  if (!await loginLink.isVisible().catch(() => false)) return;
+  throw new ChatGptWebAdapterError(
+    "ChatGPT is signed out in the configured browser profile. Sign in to ChatGPT in that same profile and retry.",
+    { status: 401, errorType: "authentication_error", code: "chatgpt_session_expired", retryable: false },
+  );
+}
+
 export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<void> {
   if (await chatGptExpiredSessionAlert(page).isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
@@ -415,6 +427,25 @@ const browserStageTimeouts = {
   fileAttachment: 120_000,
   send: 20_000,
 } as const;
+
+export function chatGptFileAttachmentTimeoutMs(imageCount: number, totalBytes: number): number {
+  if (imageCount <= 0 || totalBytes <= 0) return browserStageTimeouts.fileAttachment;
+  const boundedCount = Math.min(CHATGPT_MAX_INPUT_IMAGES, Math.max(1, Math.trunc(imageCount)));
+  const boundedBytes = Math.min(50_000_000, Math.max(1, Math.trunc(totalBytes)));
+  const byteSteps = Math.ceil(boundedBytes / 10_000_000);
+  return Math.min(300_000, browserStageTimeouts.fileAttachment + boundedCount * 5_000 + byteSteps * 30_000);
+}
+
+export function chatGptSendStageTimeoutMs(imageCount: number, totalBytes: number): number {
+  if (imageCount <= 0 || totalBytes <= 0) return browserStageTimeouts.send;
+  const boundedCount = Math.min(CHATGPT_MAX_INPUT_IMAGES, Math.max(1, Math.trunc(imageCount)));
+  const boundedBytes = Math.min(50_000_000, Math.max(1, Math.trunc(totalBytes)));
+  const byteSteps = Math.ceil(boundedBytes / 5_000_000);
+  return Math.min(120_000, Math.max(
+    45_000,
+    browserStageTimeouts.send + boundedCount * 8_000 + byteSteps * 5_000,
+  ));
+}
 
 /**
  * A six-figure Input.insertText can make current ChatGPT Lexical surfaces rewrite text inside the
@@ -1050,14 +1081,24 @@ export class ChatGptBrowserWorker {
     return expected[index - 1] === " " || expected[index + 1] === " ";
   }
 
+  private promptComparisonText(value: string): string {
+    // Chromium/Lexical may canonicalize decomposed Unicode and may drop the emoji/text presentation
+    // selectors U+FE0E/U+FE0F from contenteditable textContent. Both transformations preserve the
+    // textual instruction exactly; normalize only those presentation-level differences. Do not
+    // strip ZWJ, whitespace, punctuation, or any ordinary code point.
+    return value.normalize("NFC").replace(/[\uFE0E\uFE0F]/gu, "");
+  }
+
   private promptTextEquivalent(
     expected: string,
     observed: string,
   ): boolean {
-    if (expected.length !== observed.length) return false;
+    const comparableExpected = this.promptComparisonText(expected);
+    const comparableObserved = this.promptComparisonText(observed);
+    if (comparableExpected.length !== comparableObserved.length) return false;
 
-    for (let index = 0; index < expected.length; index += 1) {
-      if (!this.promptCodeUnitEquivalent(expected, observed, index)) {
+    for (let index = 0; index < comparableExpected.length; index += 1) {
+      if (!this.promptCodeUnitEquivalent(comparableExpected, comparableObserved, index)) {
         return false;
       }
     }
@@ -1069,12 +1110,14 @@ export class ChatGptBrowserWorker {
     expected: string,
     observed: string,
   ): number {
-    const length = Math.min(expected.length, observed.length);
+    const comparableExpected = this.promptComparisonText(expected);
+    const comparableObserved = this.promptComparisonText(observed);
+    const length = Math.min(comparableExpected.length, comparableObserved.length);
 
     let index = 0;
     while (
       index < length
-      && this.promptCodeUnitEquivalent(expected, observed, index)
+      && this.promptCodeUnitEquivalent(comparableExpected, comparableObserved, index)
     ) {
       index += 1;
     }
@@ -1193,12 +1236,31 @@ export class ChatGptBrowserWorker {
     return this.enqueueMaintenance("smoke test", () => this.smokeTestExclusive(abortSignal));
   }
 
+  private async releaseExternalMaintenancePage(): Promise<void> {
+    if (this.config.browserHost !== "roxybrowser" && this.config.browserHost !== "system-browser") return;
+    const page = this.page;
+    this.page = undefined;
+    if (page && !page.isClosed()) await page.close().catch(() => {});
+  }
+
   private enqueueMaintenance<T>(name: string, action: () => Promise<T>): Promise<T> {
-    const operation = this.maintenanceTail.then(() => {
+    const operation = this.maintenanceTail.then(async () => {
       if (this.activeRuns.size > 0) {
         throw new Error(`ChatGPT ${name} requires all browser turns to finish`);
       }
-      return action();
+      const external = this.config.browserHost === "roxybrowser" || this.config.browserHost === "system-browser";
+      if (external) {
+        // Maintenance probes are intentionally ephemeral. Close any stale maintenance page from an
+        // interrupted older operation, then honor the same five-physical-surface ceiling as turns.
+        await this.releaseExternalMaintenancePage();
+        const slotPreparation = this.preparePhysicalTaskSurfaceSlot(undefined);
+        if (slotPreparation) await slotPreparation;
+      }
+      try {
+        return await action();
+      } finally {
+        if (external) await this.releaseExternalMaintenancePage();
+      }
     });
     this.maintenanceTail = operation.then(() => undefined, () => undefined);
     return operation;
@@ -1721,7 +1783,8 @@ export class ChatGptBrowserWorker {
     try {
       composer = await this.activeComposer(page);
     } catch {
-      throw new Error("ChatGPT web login is expired or the Temporary Chat surface is unavailable");
+      await throwIfChatGptLoggedOutSurface(page);
+      throw new Error("ChatGPT Temporary Chat did not expose a usable composer");
     }
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
@@ -2371,8 +2434,10 @@ export class ChatGptBrowserWorker {
     return { effort: mode.displayLabel, response: CHATGPT_SMOKE_EXPECTED };
   }
 
-  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
-    const files = chatGptPromptFilePayloads(prompt);
+  private async attachFiles(
+    page: Page,
+    files: Array<{ name: string; mimeType: string; buffer: Buffer }>,
+  ): Promise<void> {
     if (files.length === 0) return;
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
@@ -3007,12 +3072,22 @@ export class ChatGptBrowserWorker {
         }
       }
       await diagnostics.capture(page, "prompt-attachment-complete");
-      await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
-        this.attachFiles(page, prepared)
+      const promptFiles = chatGptPromptFilePayloads(prepared);
+      const promptFileBytes = promptFiles.reduce((total, file) => total + file.buffer.length, 0);
+      const fileAttachmentTimeoutMs = chatGptFileAttachmentTimeoutMs(promptFiles.length, promptFileBytes);
+      await this.runStage(turn.traceId, "file_attachment", fileAttachmentTimeoutMs, () => (
+        this.attachFiles(page, promptFiles)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
+      const sendTimeoutMs = chatGptSendStageTimeoutMs(promptFiles.length, promptFileBytes);
+      if (promptFiles.length > 0) {
+        console.info(
+          `[chatgpt-web] browser turn ${turn.traceId} attachment budget images=${promptFiles.length}`
+          + ` bytes=${promptFileBytes} uploadTimeoutMs=${fileAttachmentTimeoutMs} sendTimeoutMs=${sendTimeoutMs}`,
+        );
+      }
       const responseTurn = submissionBaseline.responseTurns.nth(submissionBaseline.initialResponseTurnCount);
-      const finalEvidence = await this.runStage(turn.traceId, "send", browserStageTimeouts.send, stageSignal => (
+      const finalEvidence = await this.runStage(turn.traceId, "send", sendTimeoutMs, stageSignal => (
         this.sendAttachedPrompt(page, submissionBaseline, checkpoint => diagnostics.capture(page, checkpoint), stageSignal)
       ));
       console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalEvidence}`);
