@@ -272,6 +272,22 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(configPath, "utf8")).toBe(original);
   });
 
+  test("v7 route ownership survives comment-only Codex rewrites", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+
+    installCodexIntegration(defaultConfig("browser-only"));
+    const rewritten = readFileSync(configPath, "utf8")
+      .replace(/^# Managed by codex-chatgpt-web;.*\r?\n/m, "");
+    writeFileSync(configPath, rewritten);
+
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+    expect(activateCodexIntegration()).toEqual({ changed: false, active: true });
+    expect(uninstallCodexIntegration()).toEqual({ changed: true });
+    expect(readFileSync(configPath, "utf8")).toBe('model = "gpt-5.6-sol"\n');
+  });
+
   test("owns only openai_base_url while active", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");

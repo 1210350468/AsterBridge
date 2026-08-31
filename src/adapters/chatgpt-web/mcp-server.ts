@@ -62,6 +62,7 @@ function result(value: Record<string, unknown>, isError = false) {
 
 export const CODEX_SUBAGENT_WAIT_WIRE_NAME = "multi_agent_v1__wait_agent";
 export const CODEX_SUBAGENT_WAIT_POLL_MS = 10_000;
+export const CODEX_IMAGE_GEN_WIRE_NAME = "image_gen__imagegen";
 export const CODEX_DEFERRED_SUBAGENT_WIRE_NAMES = new Set([
   "multi_agent_v1__spawn_agent",
   "multi_agent_v1__send_input",
@@ -77,13 +78,38 @@ export function isDeferredSubagentWireName(value: string): boolean {
 export function boundedCodexToolArguments(
   requestedWireName: string,
   args: Record<string, unknown>,
+  contextImageCount?: number,
 ): Record<string, unknown> {
-  if (requestedWireName !== CODEX_SUBAGENT_WAIT_WIRE_NAME) return args;
-  const requested = args.timeout_ms;
-  const timeoutMs = typeof requested === "number" && Number.isFinite(requested) && requested > 0
-    ? Math.min(Math.trunc(requested), CODEX_SUBAGENT_WAIT_POLL_MS)
-    : CODEX_SUBAGENT_WAIT_POLL_MS;
-  return { ...args, timeout_ms: timeoutMs };
+  if (requestedWireName === CODEX_SUBAGENT_WAIT_WIRE_NAME) {
+    const requested = args.timeout_ms;
+    const timeoutMs = typeof requested === "number" && Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.trunc(requested), CODEX_SUBAGENT_WAIT_POLL_MS)
+      : CODEX_SUBAGENT_WAIT_POLL_MS;
+    return { ...args, timeout_ms: timeoutMs };
+  }
+  if (requestedWireName !== CODEX_IMAGE_GEN_WIRE_NAME) return args;
+
+  const normalized = { ...args };
+  if (normalized.referenced_image_paths === null
+    || (Array.isArray(normalized.referenced_image_paths) && normalized.referenced_image_paths.length === 0)) {
+    delete normalized.referenced_image_paths;
+  }
+
+  const requestedImages = normalized.num_last_images_to_include;
+  const availableImages = typeof contextImageCount === "number" && Number.isFinite(contextImageCount)
+    ? Math.max(0, Math.trunc(contextImageCount))
+    : undefined;
+  if (requestedImages === null
+    || (typeof requestedImages === "number" && (!Number.isFinite(requestedImages) || requestedImages <= 0))
+    || availableImages === 0) {
+    delete normalized.num_last_images_to_include;
+  } else if (typeof requestedImages === "number" && availableImages !== undefined) {
+    normalized.num_last_images_to_include = Math.min(
+      Math.max(1, Math.trunc(requestedImages)),
+      Math.min(5, availableImages),
+    );
+  }
+  return normalized;
 }
 
 function wireName(tool: CodexTool): string {
@@ -429,7 +455,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
           throw new Error(`Deferred Codex tool ${wire_name} does not accept freeform input`);
         }
         return invokeWire(claimed.bindingId, bound, wire_name, false, {
-          arguments: boundedCodexToolArguments(wire_name, args ?? {}),
+          arguments: boundedCodexToolArguments(wire_name, args ?? {}, bound.contextImageCount),
         });
       }
       if (tool.freeform) {
@@ -439,7 +465,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       }
       if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
       return invoke(claimed.bindingId, bound, tool, {
-        arguments: boundedCodexToolArguments(wire_name, args ?? {}),
+        arguments: boundedCodexToolArguments(wire_name, args ?? {}, bound.contextImageCount),
       });
     },
   );

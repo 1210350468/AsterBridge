@@ -422,6 +422,47 @@ describe("ChatGPT outer-native harness v4", () => {
     });
   });
 
+  test("recovers a sparse native reconnect when the current server-owned user item omits its redundant turn id", () => {
+    const first = rawWireRequest(environmentXml);
+    const firstInput = (first._rawBody as { input: Array<Record<string, unknown>> }).input;
+    firstInput[0]!.id = "msg_historical_environment";
+    firstInput[1]!.id = "msg_historical_prompt";
+
+    const request = parsed();
+    request._rawBody = {
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({
+          thread_id: "thread_test_123",
+          turn_id: "turn_test_reconnect",
+          sandbox: "windows_sandbox",
+          sandbox_mode: "none",
+          workspaces: { [tempRoot]: { git: null } },
+        }),
+      },
+      input: [
+        ...structuredClone(firstInput),
+        {
+          type: "message",
+          id: "msg_current_prompt",
+          role: "user",
+          content: [{ type: "input_text", text: "Reconnect and continue the same repository" }],
+        },
+      ],
+    };
+
+    expect(extractChatGptTurnEnvironment(request)).toEqual({
+      cwd: tempRoot,
+      roots: [tempRoot],
+      writableRoots: [tempRoot],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools,
+    });
+
+    const raw = request._rawBody as { input: Array<Record<string, unknown>> };
+    delete raw.input.at(-1)!.id;
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
   test("rejects a sparse historical resume when current workspace metadata does not bind its roots", () => {
     const first = rawWireRequest(environmentXml);
     const firstInput = (first._rawBody as { input: Array<Record<string, unknown>> }).input;

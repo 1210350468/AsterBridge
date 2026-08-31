@@ -3,6 +3,7 @@ import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 import {
   boundedCodexToolArguments,
+  CODEX_IMAGE_GEN_WIRE_NAME,
   CODEX_SUBAGENT_WAIT_POLL_MS,
   CODEX_SUBAGENT_WAIT_WIRE_NAME,
 } from "../src/adapters/chatgpt-web/mcp-server";
@@ -109,4 +110,29 @@ test("Web subagent waits are bounded to short polling without touching unrelated
   })).toEqual({ ids: ["agent-1"], timeout_ms: 4_000 });
   const unrelated = { session_id: "shell-1", timeout_ms: 60_000 };
   expect(boundedCodexToolArguments("functions__wait", unrelated)).toBe(unrelated);
+});
+
+test("image generation drops impossible history-image arguments and bounds real ones", () => {
+  expect(boundedCodexToolArguments(CODEX_IMAGE_GEN_WIRE_NAME, {
+    prompt: "draw a bridge",
+    referenced_image_paths: [],
+    num_last_images_to_include: 1,
+  }, 0)).toEqual({ prompt: "draw a bridge" });
+
+  expect(boundedCodexToolArguments(CODEX_IMAGE_GEN_WIRE_NAME, {
+    prompt: "edit the latest image",
+    num_last_images_to_include: 9,
+  }, 2)).toEqual({
+    prompt: "edit the latest image",
+    num_last_images_to_include: 2,
+  });
+
+  expect(boundedCodexToolArguments(CODEX_IMAGE_GEN_WIRE_NAME, {
+    prompt: "edit local reference",
+    referenced_image_paths: ["C:/tmp/reference.png"],
+    num_last_images_to_include: 0,
+  }, 0)).toEqual({
+    prompt: "edit local reference",
+    referenced_image_paths: ["C:/tmp/reference.png"],
+  });
 });

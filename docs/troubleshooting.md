@@ -15,7 +15,7 @@ Start with **Launcher → Settings → Run diagnostics**. Do not delete app data
 | ChatGPT cannot find the App / Connector | Name mismatch or stale cached MCP schema | Create a fresh App named exactly `Codex Native3`; do not reuse `Codex Native` / `Codex Native2` |
 | Tool call is blocked by safety checks | App permission or outer Codex sandbox/approval rejected it | Check App permissions; outer Codex still enforces its own sandbox and approvals |
 | `turn token is invalid, expired, or revoked` | The token does not belong to the live outer Codex turn, or an old App/session was reused | Use the current `Codex Native3`, start a fresh Codex turn, and never reuse turn tokens manually |
-| `missing YAML frontmatter delimited by ---` | A local Codex Skill file is invalid | Unrelated to Roxy/Bridge; fix or disable that Skill only if you need it |
+| `missing YAML frontmatter delimited by ---` | A local Codex Skill file is invalid | Unrelated to Roxy/Bridge; ensure the file begins with `---` at byte 0 (no leading blank line/BOM), or disable that Skill if unused |
 | `fatal: detected dubious ownership` | Git repository ownership differs from the execution user | Unrelated to Roxy/Native3; handle Git `safe.directory` according to your security policy rather than globally weakening every repo |
 | Tunnel health never becomes ready | tunnel-client, Runtime Key, Tunnel ID, network, or ownership problem | Use Launcher MCP + Doctor `tunnel-*` checks before recreating the ChatGPT App |
 | `ChatGPT/Codex upstream is not reachable` | The Responses daemon cannot reach the ChatGPT/Codex upstream; a common cause is proxy settings not reaching the Bun child process | Open **Settings → Network proxy**, try Automatic first, then a custom HTTP proxy if needed, and rerun Doctor |

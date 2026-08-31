@@ -168,7 +168,7 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
     throw new Error("Codex openai_base_url changed after setup; refusing to overwrite the user's newer value");
   }
-  if (!lines.includes(MANAGED_COMMENT)) {
+  if (!lines.includes(MANAGED_COMMENT) && journal.version !== 7) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
   if (journal.version !== 7) {

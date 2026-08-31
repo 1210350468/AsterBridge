@@ -49,6 +49,8 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(tokenMatches).toHaveLength(1);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
+  expect(transportOnly).toContain("Do not call Codex Native tools for work that is fully answerable from the supplied context alone");
+  expect(transportOnly).toContain("Honor an explicit user request not to use tools unless a higher-priority instruction or the requested operation genuinely requires one.");
   expect(transportOnly).toContain("Use actual Codex Native results as evidence for local observations and effects, and keep calling tools until the requested work is complete and verified.");
   expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
@@ -56,6 +58,47 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
   expect(compiled.text).not.toContain("internally compacts this response");
+});
+
+test("Full-mode prompts route image requests through outer Codex image_gen even in Temporary Chat", () => {
+  const token = "turn_12345678901234567890123456789012";
+  const parsed = request("high");
+  parsed.context.messages[1]!.content = "Generate an image of a small blue robot.";
+  parsed.context.tools = [{
+    namespace: "image_gen",
+    name: "imagegen",
+    description: "Generate or edit an image",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string" },
+        referenced_image_paths: { type: ["array", "null"], items: { type: "string" } },
+        num_last_images_to_include: { type: ["integer", "null"] },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+  }];
+
+  const compiled = compileChatGptWebPrompt(
+    parsed,
+    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    token,
+  );
+  expect(compiled.text).toContain("explicitly provides image generation through image_gen__imagegen");
+  expect(compiled.text).toContain('call codex_tool_call with wire_name "image_gen__imagegen" before answering');
+  expect(compiled.text).toContain('"prompt":{"type":"string"}');
+  expect(compiled.text).toContain("This Codex context contains zero prior images");
+  expect(compiled.text).toContain("omit referenced_image_paths and num_last_images_to_include entirely");
+  expect(compiled.text).toContain("Treat an image tool error as a failed generation, not as success");
+  expect(compiled.text).toContain("Do not tell the user to switch to a normal ChatGPT conversation");
+
+  const readOnly = compileChatGptWebPrompt(
+    parsed,
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+  );
+  expect(readOnly.text).not.toContain("image_gen__imagegen");
+  expect(readOnly.text).not.toContain("Do not tell the user to switch to a normal ChatGPT conversation");
 });
 
 test("Pro executes directly without delegating while other Web modes keep their existing contract", () => {

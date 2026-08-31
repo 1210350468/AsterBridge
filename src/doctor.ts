@@ -28,6 +28,12 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+export function launcherBrowserRequiredForTurns(
+  config: Pick<AppConfig, "browserHost" | "turnBrowserHost">,
+): boolean {
+  return (config.turnBrowserHost ?? config.browserHost) === "launcher";
+}
+
 function secureFile(path: string): boolean {
   if (process.platform === "win32") return true;
   return (statSync(path).mode & 0o077) === 0;
@@ -172,22 +178,31 @@ export async function runDoctor(): Promise<DoctorReport> {
     return { ok: false, checks };
   }
 
+  const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
   if (config.browserHost === "launcher") {
-    try {
-      const descriptor = readLauncherBrowserHostDescriptor(config.browserHostDescriptorPath!);
-      await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, { timeoutMs: 30_000 });
+    if (!launcherBrowserRequiredForTurns(config)) {
       checks.push({
         id: "browser-host",
         status: "ok",
-        message: `Embedded launcher browser is authenticated and reachable (pid ${descriptor.pid})`,
+        message: `Embedded launcher browser is optional while ${turnBrowserHost} owns ChatGPT turns`,
       });
-    } catch (error) {
-      checks.push({
-        id: "browser-host",
-        status: "error",
-        message: "Embedded launcher browser is unavailable",
-        detail: error instanceof Error ? error.message : String(error),
-      });
+    } else {
+      try {
+        const descriptor = readLauncherBrowserHostDescriptor(config.browserHostDescriptorPath!);
+        await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, { timeoutMs: 30_000 });
+        checks.push({
+          id: "browser-host",
+          status: "ok",
+          message: `Embedded launcher browser is authenticated and reachable (pid ${descriptor.pid})`,
+        });
+      } catch (error) {
+        checks.push({
+          id: "browser-host",
+          status: "error",
+          message: "Embedded launcher browser is unavailable",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   } else {
     if (!existsSync(config.chromeExecutablePath)) {
@@ -206,7 +221,6 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
-  const turnBrowserHost = config.turnBrowserHost ?? config.browserHost;
   if (turnBrowserHost === "roxybrowser") {
     try {
       const endpoint = await discoverRoxyBrowserEndpoint(config.roxyBrowserProfileId!, config.roxyBrowserDataDir!);
@@ -229,8 +243,8 @@ export async function runDoctor(): Promise<DoctorReport> {
             await probeRoxyBrowserLocalApi(config.roxyBrowserApiHost, config.roxyBrowserApiKeyFile);
             checks.push({
               id: "roxy-browser",
-              status: "warning",
-              message: "RoxyBrowser profile is currently closed; Local API is healthy and will auto-open it on the next turn",
+              status: "ok",
+              message: "RoxyBrowser Local API is healthy; the configured profile will auto-open on the next turn",
             });
           } catch (apiError) {
             checks.push({

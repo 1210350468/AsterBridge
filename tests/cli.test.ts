@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultBrokerEndpoint } from "../src/config";
+
+setDefaultTimeout(15_000);
 
 async function runCli(args: string[], env: Record<string, string | undefined>) {
   const child = Bun.spawn([

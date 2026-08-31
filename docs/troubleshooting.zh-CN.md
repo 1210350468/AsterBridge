@@ -15,7 +15,7 @@
 | ChatGPT 找不到 App / Connector | App 名称不一致或旧 App 缓存了旧 MCP schema | 新建精确名为 `Codex Native3` 的 App；不要复用 `Codex Native` / `Codex Native2` |
 | 工具调用被安全检查拒绝 | ChatGPT App 权限或外层 Codex sandbox/approval 拒绝 | 确认 App 权限；外层 Codex 仍然保留自己的审批与沙箱规则 |
 | `turn token is invalid, expired, or revoked` | ChatGPT 返回了不属于当前外层 Codex turn 的 token，或旧 App/旧会话残留 | 使用当前 `Codex Native3`，新开 Codex turn；不要手工复用 turn token |
-| `missing YAML frontmatter delimited by ---` | 某个本地 Codex Skill 文件格式无效 | 与 Roxy/Bridge 无关；修复或禁用对应 Skill。只在该 Skill 本身需要使用时处理 |
+| `missing YAML frontmatter delimited by ---` | 某个本地 Codex Skill 文件格式无效 | 与 Roxy/Bridge 无关；确保文件第一个字节就以 `---` 开始（前面不能有空行/BOM），不用的 Skill 也可直接禁用 |
 | `fatal: detected dubious ownership` | Git 仓库所有者 SID 与当前执行用户不同 | 与 Roxy/Native3 无关；根据自己的安全策略处理 Git safe.directory，不要为了测试全局放宽所有仓库 |
 | Tunnel health 一直失败 | tunnel-client、Runtime Key、Tunnel ID、网络或 ownership 有问题 | 在 Launcher MCP 页面重新验证；先看 Doctor 的 `tunnel-*` checks，不要先重建 ChatGPT App |
 | `ChatGPT/Codex upstream is not reachable` | Responses daemon 无法访问 ChatGPT/Codex 上游，常见原因是代理没有被 Bun 子进程继承 | 打开 **设置 → 网络代理**，优先选“自动”；仍失败时改成自定义 HTTP 代理并重新运行 Doctor |

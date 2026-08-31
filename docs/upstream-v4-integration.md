@@ -139,18 +139,35 @@ passthrough and `chatgpt-web/*` routed models.
 
 ## Promotion gate
 
-Current status: **promoted to `main` and finalized for release as AsterBridge 3.0.5 on 2026-08-30**.
+Current status: **AsterBridge 3.0.10 local promotion gates passed on 2026-08-31; GitHub publication is still pending**.
 All selected P0/P0.5, retained-session, native-compaction, Subagent/Nested, Bigger Context, Native3,
-image generation, and Windows packaged-launcher gates passed before promotion. The `v3.0.3` Release
-matrix exposed a cross-platform CRLF-only contract plus the known Bun 1.4.0 giant-process crash path;
-3.0.4 fixed those by making the contract newline-agnostic and enumerating all 40 core test files in
-short-lived child processes. Its Linux build succeeded and macOS verification passed, but the GitHub
-Windows runner still exhausted bounded runtime-crash retries on the named-pipe-heavy
-`turn-broker-lifecycle.test.ts` with exit code 3 before any assertion failure. Version 3.0.5 therefore
-skips only those eight short-lived pipe lifecycle cases on Windows + Bun 1.4.0; Unix executes them
-unchanged, while Windows keeps broker coverage through server lifecycle, Full Harness,
-retained-compaction, DEV-driver, Launcher, and packaged-runtime tests. Published 3.0.3/3.0.4 tags are
-not moved or rewritten; 3.0.5 supersedes them for binary distribution.
+image generation, and Windows packaged-launcher gates passed before the 3.0.5 release. The 3.0.6
+work fixed the external-browser Doctor readiness policy; 3.0.9 additionally expands native Codex
+thread reconnect compatibility when the current server-owned user item omits a redundant per-item turn id, while
+preserving the top-level thread/turn, workspace, sandbox, and provenance trust boundaries. One previously created
+legacy thread that reconnects without any recoverable trusted environment authority still fails closed rather than
+inventing a cwd; fresh threads are unaffected and that legacy-only case is parked. It also
+makes v7 route ownership depend on the owned `openai_base_url` rather than a non-semantic comment,
+so Codex formatting rewrites do not suppress the Responses daemon. The latest fixes were moved to a
+new patch version instead of refreshing the same Windows runtime directory while an MCP/Bun process
+still had it open, avoiding the observed same-version `EPERM` handoff failure. 3.0.9 also fixes a
+Temporary Chat capability-routing regression: when the outer turn advertises `image_gen__imagegen`,
+the prompt now binds that exact wire name and schema to the existing `codex_tool_call` bridge and
+forbids falling back to the misleading "switch to a normal ChatGPT conversation" refusal. This does
+not change the `Codex Native3` MCP tools-list ABI. Focused reconnect/environment/route regression is
+**96 pass, 0 fail / 431 assertions**; focused image-generation / Full Harness regression after parameter normalization is
+**100 pass, 0 fail / 515 assertions**. The full source release gate passed with **41/41 core files**, Launcher
+**202 pass / 0 fail / 1 Windows-inapplicable skip**, TypeScript/build PASS, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+Installed Windows 3.0.9 runtime validation also passed: route active with `errors=[]`, Responses proxy healthy on
+`127.0.0.1:17841`, Doctor ready, RoxyBrowser reachable, `Codex Native3` verified in the configured external browser,
+and a fresh `chatgpt-web/high` Codex thread generated a real 1254×1254 PNG through outer `image_gen__imagegen`.
+A subsequent user-journey audit proved fresh-thread context continuity across normal turns, forced closure of every
+Roxy Temporary Chat page, and a full Launcher/daemon restart. Vision replay also survived forced Temporary Chat
+closure and recovered image details that had not been stated in prior assistant text. The 3.0.10 patch reduces
+unnecessary native-tool calls for context-only replies and converts the five-page retained-surface ceiling into safe
+LRU eviction of completed idle conversations while preserving the hard limit for genuinely active turns. Focused
+browser/prompt/retained regression is **100 pass, 0 fail / 511 assertions**. The complete 3.0.10 local gate also passed with **41/41 core files**, Launcher **202 pass / 0 fail / 1 Windows-inapplicable skip**, TypeScript/renderer build PASS, and `RELOCATABLE_RUNTIME_SMOKE_OK`. The packaged Windows 3.0.10 runtime is installed locally; route inspection reports active with `errors=[]`, `127.0.0.1:17841` is healthy, Doctor is ready, RoxyBrowser is reachable, and `Codex Native3` verifies through the configured external browser. Live `NO_TOOL_E2E_OK` emitted no command/tool item, while a multi-thread retained-surface run stayed at five Temporary Chat pages and logged idle LRU releases instead of the previous sixth-thread failure.
+A final installed-3.0.10 image-generation regression also passed after the no-tool bias fix: a fresh `chatgpt-web/high` turn still queued `image_gen__imagegen` and produced a real 1254×1254 PNG, confirming context-only requests avoid unnecessary tools without suppressing genuinely required native capabilities. Version 3.0.5 remains the current public binary until 3.0.10 completes its GitHub release gate.
 
 Do not merge future integration work into `main` until its selected gates are checked, live Full
 Harness E2E succeeds, and the working tree contains no debug probes or local runtime secrets.

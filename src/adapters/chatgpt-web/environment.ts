@@ -13,6 +13,8 @@ export interface ChatGptTurnEnvironment {
   writableRoots: string[];
   sandboxPolicy: ChatGptSandboxPolicy;
   tools: CodexTool[];
+  /** Number of image parts present in the authoritative Codex context for this turn. */
+  contextImageCount?: number;
 }
 
 export interface ChatGptTurnIdentity {
@@ -352,12 +354,16 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
     ? metadata.thread_id
     : undefined;
   const activeUser = record(input[activeUserIndex]);
-  const activeUserOwned = activeUser?.type === "message"
+  const activeUserTurnId = itemTurnId(activeUser);
+  const activeUserServerOwned = typeof activeUser?.id === "string" && activeUser.id.length > 0;
+  const activeUserCurrentTurnTrusted = activeUser?.type === "message"
     && activeUser.role === "user"
-    && typeof activeUser.id === "string"
-    && activeUser.id.length > 0
-    && itemTurnId(activeUser) === currentTurnId;
-  if (currentTurnId && itemTurnId(activeUser) === currentTurnId) {
+    && (activeUserTurnId === currentTurnId
+      || (activeUserTurnId === undefined && activeUserServerOwned));
+  const activeUserSparseTrusted = activeUserCurrentTurnTrusted
+    && activeUserServerOwned
+    && (activeUserTurnId === undefined || activeUserTurnId === currentTurnId);
+  if (currentTurnId && activeUserCurrentTurnTrusted) {
     for (let index = activeUserIndex - 1; index > 0; index -= 1) {
       const historicalUser = record(input[index]);
       const historicalTurnId = itemTurnId(historicalUser);
@@ -365,7 +371,7 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
       const historical = environmentBeforeUser(input, index);
       if (!historical) continue;
       if (hasAssistantOutputBetween(input, index + 1, activeUserIndex)) return historical;
-      if (!currentThreadId || !metadata || !activeUserOwned) continue;
+      if (!currentThreadId || !metadata || !activeUserSparseTrusted) continue;
       const bounded = canonicalMetadataEnvironmentBeforeUser(
         input,
         index,

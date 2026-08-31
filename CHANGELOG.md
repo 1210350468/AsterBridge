@@ -2,6 +2,48 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.10 - 2026-08-31
+
+### Conversation and Full Harness usability
+
+- Reduced Full Harness tool bias for context-only tasks. When a request can be answered entirely from the supplied Codex conversation context, AsterBridge now tells the Web model not to call native tools merely to echo/format text, perform trivial arithmetic, or recall prior messages; explicit user `no tools` requests are honored unless the requested operation genuinely requires a tool.
+- Kept the five-physical-page account safety limit while removing an avoidable sixth-thread failure. When all five slots include completed retained external-browser conversations, a new conversation now evicts the least-recently-used idle retained page and reconstructs that thread from Codex context if it is resumed later. Five genuinely active turns still fail closed rather than exceeding the safety limit.
+- Retained external pages now refresh their recency when reused, so idle eviction follows actual recent use instead of original creation order.
+
+### Validation notes
+
+- Live Windows context continuity passed on `chatgpt-web/high`: the same fresh Codex thread recalled exact prior facts across ordinary turns, after every Roxy Temporary Chat page was forcibly closed, and after a complete AsterBridge Launcher/daemon restart.
+- Live vision continuity passed with a real 1254×1254 PNG: the Web model correctly read the attached blue-robot image, then after every Temporary Chat page was closed it recovered the historical image from Codex context and matched independent native-vision details (two eyes, rounded rectangular head, circular blue chest feature) without a new attachment.
+- Browser/prompt/retained focused regression after the usability changes: **100 pass, 0 fail / 511 assertions**.
+- Full 3.0.10 local release gate passed: **41/41 core files**, Launcher **202 pass / 0 fail / 1 Windows-inapplicable skip**, TypeScript/renderer build PASS, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Installed Windows 3.0.10 live validation passed with route active and `errors=[]`, Responses proxy healthy on `127.0.0.1:17841`, Doctor ready, RoxyBrowser reachable, and `Codex Native3` verified in the configured external browser.
+- Installed 3.0.10 `NO_TOOL_E2E_OK` produced only the assistant reply and no `command_execution`/native tool item. A multi-thread Roxy run then held the Temporary Chat surface count at five while logging `released idle retained conversation ... to free a browser slot`; no `at most 5 simultaneous` failure occurred.
+- The no-tool bias fix did not suppress required tools: a fresh installed-3.0.10 `chatgpt-web/high` turn explicitly queued and delivered `image_gen__imagegen` and produced a real **1254×1254 RGB PNG (~1.1 MB)** under Codex `generated_images`.
+
+## 3.0.9 - 2026-08-31
+
+### Reconnect and Windows runtime handoff
+
+- Expanded native Codex long-thread reconnect support for requests that preserve trusted top-level `thread_id`, `turn_id`, workspace, and sandbox metadata while omitting the redundant per-item turn id on the current server-owned user message. Sparse resume accepts that canonical server-owned shape without weakening workspace, sandbox, provenance, or conflicting-turn checks. A previously created legacy thread that reconnects with no recoverable trusted environment authority can still fail closed with `trusted environment unavailable`; fresh threads are unaffected and this legacy-only case remains intentionally parked rather than guessing `cwd` from user text.
+- Fixed v7 Codex route verification treating loss of the non-semantic AsterBridge management comment as route corruption even when the owned `openai_base_url` still exactly matches the journal. Actual route URL changes remain fail-closed.
+- Moves the post-3.0.6 fixes to a new patch version instead of refreshing the same Windows runtime directory in place. This avoids `EPERM` startup failures when an older same-version MCP/Bun process still holds `versions/<version>-win32-x64` open.
+- Fixed Temporary Chat falsely refusing image-generation requests when the current outer Codex turn already advertises native `image_gen__imagegen`. Full-mode prompt compilation now binds that exact advertised wire name and schema to the existing `codex_tool_call` bridge, so the Web model must use the outer Codex image tool instead of telling the user to switch to a normal ChatGPT conversation. The connector ABI is unchanged, avoiding a `Codex Native3` tools-list migration solely for this fix.
+
+### Validation notes
+
+- Reconnect/environment/route focused regression: **96 pass, 0 fail / 431 assertions**.
+- Image-generation / Full Harness focused regression after parameter normalization: **100 pass, 0 fail / 515 assertions**. Pure text generation drops impossible `num_last_images_to_include` values when the Codex thread has no prior images and bounds valid history-image requests to the images actually available.
+- Live Windows 11 E2E on installed 3.0.9 passed through RoxyBrowser + `Codex Native3`: a fresh `chatgpt-web/high` Codex thread invoked outer `image_gen__imagegen` and produced a real **1254×1254 PNG (about 920 KB)** under Codex `generated_images`, rather than returning the previous Temporary Chat refusal or a false-success tool error.
+- Full release gate after both fixes: **41 core files PASS**, Launcher **202 pass / 0 fail / 1 Windows-inapplicable skip**, TypeScript and renderer production build PASS, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+
+## 3.0.6 - 2026-08-30
+
+### External-browser doctor fix
+
+- Fixed Doctor treating the embedded Launcher browser as a hard requirement even when `turnBrowserHost` is RoxyBrowser or the system browser. External turn hosts now own the runtime readiness gate, so Doctor no longer waits 30 seconds on an unused embedded ChatGPT surface.
+- A closed RoxyBrowser profile with healthy Local API + auto-open is now reported as ready instead of requiring user action; the next real turn remains responsible for opening the configured profile.
+- MCP verification can now proceed past local Doctor and perform the actual external-browser connector check. The reported production issue was reproduced on 3.0.5 and `Codex Native3` was successfully verified through the configured RoxyBrowser/tunnel after the policy fix.
+
 ## 3.0.5 - 2026-08-30
 
 ### Release reliability

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
+import { namespacedToolName, type CodexAssistantContentPart, type CodexContentPart, type CodexMessage, type CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
@@ -369,6 +369,21 @@ export function compileChatGptWebPrompt(
     throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
   }
   const system = parsed.context.systemPrompt ?? [];
+  const contextImageCount = countChatGptContextImages(parsed.context.messages);
+  const imageGenerationTool = mode.localTools
+    ? parsed.context.tools?.find(tool => tool.namespace === "image_gen" && tool.name === "imagegen")
+    : undefined;
+  const imageGenerationContract = imageGenerationTool
+    ? [
+      `The current outer Codex turn explicitly provides image generation through ${namespacedToolName(imageGenerationTool.namespace, imageGenerationTool.name)}. This outer capability remains available even when Temporary Chat itself has no first-party image generation control.`,
+      `When the latest user asks to generate, draw, render, create, edit, transform, or otherwise produce an image, call codex_tool_call with wire_name ${JSON.stringify(namespacedToolName(imageGenerationTool.namespace, imageGenerationTool.name))} before answering. Pass arguments that match this exact outer tool schema: ${JSON.stringify(imageGenerationTool.parameters)}.`,
+      contextImageCount === 0
+        ? "This Codex context contains zero prior images. For a fresh text-to-image request, pass the image prompt and omit referenced_image_paths and num_last_images_to_include entirely; do not invent a previous image."
+        : `This Codex context currently contains ${contextImageCount} image part${contextImageCount === 1 ? "" : "s"}. Use referenced_image_paths or num_last_images_to_include only when the user's request actually depends on an existing image; otherwise omit them for fresh generation.`,
+      "Treat an image tool error as a failed generation, not as success. Correct recoverable arguments and retry when appropriate; never claim the image was generated unless the outer Codex image tool returned a successful result.",
+      "Do not tell the user to switch to a normal ChatGPT conversation merely because Temporary Chat lacks its own image generator. Only report image generation as unavailable after the outer Codex image tool itself is absent or returns an actual failure.",
+    ]
+    : [];
   const sharedContract = [
     "Act as the model backend for the Codex task encoded below.",
     multipartEnabled
@@ -397,7 +412,9 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "Do not call Codex Native tools for work that is fully answerable from the supplied context alone, such as echoing or formatting text, trivial arithmetic, or recalling prior conversation content. Honor an explicit user request not to use tools unless a higher-priority instruction or the requested operation genuinely requires one.",
       "Use actual Codex Native results as evidence for local observations and effects, and keep calling tools until the requested work is complete and verified.",
+      ...imageGenerationContract,
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -80,6 +80,52 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
     releases.get(traceId)?.();
   }
   await Promise.all([...active.slice(1), sixth]);
+});
+
+test("retained surface eviction selects the oldest idle conversation only", () => {
+  expect(chatGptPhysicalTaskSurfacePlan(["a", "b", "c"], ["a"], "d")).toEqual({
+    occupied: 3,
+    needsNewPhysicalSlot: true,
+  });
+  expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a"], "d")).toBe("b");
+  expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a", "b", "c"], "d")).toBeUndefined();
+});
+
+test("a sixth external conversation evicts the oldest idle retained surface without raising the safety limit", async () => {
+  const closed: string[] = [];
+  const retainedExternalPages = new Map(Array.from({ length: 5 }, (_unused, index) => {
+    const key = String.fromCharCode(97 + index);
+    let pageClosed = false;
+    return [key, {
+      isClosed: () => pageClosed,
+      close: async () => {
+        pageClosed = true;
+        closed.push(key);
+      },
+    }];
+  }));
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { browserHost: "roxybrowser" },
+    activeRuns: new Map(),
+    activeRunConversationKeys: new Map(),
+    retainedExternalPages,
+    conversationTails: new Map(),
+    runExclusive: async (turn: { traceId: string }) => turn.traceId,
+  }) as ChatGptBrowserWorker;
+  const result = await worker.run({
+    traceId: "trace_f",
+    modelId: "chatgpt-web/high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    prepare: async () => ({ text: "new conversation", images: [], release() {} }),
+    onTextDelta() {},
+    retainConversation: true,
+    conversationKey: "f",
+  });
+
+  expect(result).toBe("trace_f");
+  expect(closed).toEqual(["a"]);
+  expect(retainedExternalPages.has("a")).toBe(false);
+  expect(retainedExternalPages.size).toBe(4);
 });
 
 test("browser turns have no absolute deadline unless one is explicitly configured", () => {

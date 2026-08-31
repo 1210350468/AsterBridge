@@ -9,8 +9,26 @@ const sourceRoot = resolve(import.meta.dir, "..");
 const root = join(homedir(), `.codex-chatgpt-web-release-smoke-${process.pid}-${Date.now()}`);
 const firstLocation = join(root, "first-location");
 const runtimeRoot = join(root, "relocated-runtime");
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 350, 500, 750] as const;
+
+async function relocateRuntime(source: string, destination: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transientWindowsLock = process.platform === "win32"
+        && (code === "EPERM" || code === "EACCES" || code === "EBUSY");
+      const delay = WINDOWS_RENAME_RETRY_DELAYS_MS[attempt];
+      if (!transientWindowsLock || delay === undefined) throw error;
+      await Bun.sleep(delay);
+    }
+  }
+}
+
 cpSync(sourceBundle, firstLocation, { recursive: true });
-renameSync(firstLocation, runtimeRoot);
+await relocateRuntime(firstLocation, runtimeRoot);
 
 const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "utf8")) as Record<string, unknown>;
 if (manifest.schemaVersion !== 1

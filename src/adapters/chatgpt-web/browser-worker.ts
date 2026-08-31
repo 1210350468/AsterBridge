@@ -480,6 +480,19 @@ export function chatGptPhysicalTaskSurfacePlan(
   };
 }
 
+export function chatGptRetainedSurfaceEvictionCandidate(
+  retainedConversationKeys: Iterable<string>,
+  activeConversationKeys: Iterable<string | undefined>,
+  requestedConversationKey?: string,
+): string | undefined {
+  const active = new Set([...activeConversationKeys].filter((key): key is string => Boolean(key)));
+  for (const key of retainedConversationKeys) {
+    if (key === requestedConversationKey || active.has(key)) continue;
+    return key;
+  }
+  return undefined;
+}
+
 export interface BrowserTurn {
   traceId: string;
   modelId: string;
@@ -1078,21 +1091,13 @@ export class ChatGptBrowserWorker {
       && (this.config.browserHost === "roxybrowser" || this.config.browserHost === "system-browser"),
     );
     const requestedConversationKey = retainedExternal ? turn.conversationKey! : undefined;
-    const surfacePlan = chatGptPhysicalTaskSurfacePlan(
-      this.retainedExternalPages.keys(),
-      this.activeRunConversationKeys.values(),
-      requestedConversationKey,
-    );
-    if (surfacePlan.needsNewPhysicalSlot && surfacePlan.occupied >= MAX_CHATGPT_BROWSER_TABS) {
-      return Promise.reject(new Error(
-        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns or retained task surfaces; release, finish, or compact one before starting another`,
-      ));
-    }
+    const slotPreparation = this.preparePhysicalTaskSurfaceSlot(requestedConversationKey);
     const useHelper = this.config.browserHost === "launcher" && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const execute = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
+    const start = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
+    const execute = () => slotPreparation ? slotPreparation.then(start) : start();
     let run: Promise<string>;
     if (retainedExternal) {
       const key = turn.conversationKey!;
@@ -1113,6 +1118,47 @@ export class ChatGptBrowserWorker {
       this.activeRunConversationKeys.delete(turn.traceId);
     }).catch(() => {});
     return run;
+  }
+
+  private preparePhysicalTaskSurfaceSlot(requestedConversationKey?: string): Promise<void> | undefined {
+    for (const [key, page] of this.retainedExternalPages) {
+      if (page.isClosed()) this.retainedExternalPages.delete(key);
+    }
+    const surfacePlan = chatGptPhysicalTaskSurfacePlan(
+      this.retainedExternalPages.keys(),
+      this.activeRunConversationKeys.values(),
+      requestedConversationKey,
+    );
+    if (!surfacePlan.needsNewPhysicalSlot || surfacePlan.occupied < MAX_CHATGPT_BROWSER_TABS) return undefined;
+
+    const evictionKey = chatGptRetainedSurfaceEvictionCandidate(
+      this.retainedExternalPages.keys(),
+      this.activeRunConversationKeys.values(),
+      requestedConversationKey,
+    );
+    if (evictionKey) {
+      const page = this.retainedExternalPages.get(evictionKey);
+      this.retainedExternalPages.delete(evictionKey);
+      if (!page || page.isClosed()) {
+        console.info(`[chatgpt-web] released idle retained conversation ${evictionKey.slice(0, 17)} to free a browser slot`);
+        return undefined;
+      }
+      return page.close().then(
+        () => {
+          console.info(`[chatgpt-web] released idle retained conversation ${evictionKey.slice(0, 17)} to free a browser slot`);
+        },
+        error => {
+          if (!page.isClosed()) this.retainedExternalPages.set(evictionKey, page);
+          throw new Error(
+            `Could not release an idle retained ChatGPT surface before opening another: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        },
+      );
+    }
+
+    return Promise.reject(new Error(
+      `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns or retained task surfaces; all available slots are active`,
+    ));
   }
 
   async releaseRetainedConversation(conversationKey: string): Promise<boolean> {
@@ -2707,6 +2753,9 @@ export class ChatGptBrowserWorker {
     if (retainedPage?.isClosed()) {
       this.retainedExternalPages.delete(turn.conversationKey!);
       retainedPage = undefined;
+    } else if (retainedPage && turn.conversationKey) {
+      this.retainedExternalPages.delete(turn.conversationKey);
+      this.retainedExternalPages.set(turn.conversationKey, retainedPage);
     }
     const reuseConversation = Boolean(retainedPage);
     if (turn.requireRetainedConversation && !reuseConversation) {
