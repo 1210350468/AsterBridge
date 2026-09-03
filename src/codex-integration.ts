@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
-import { buildManagedCodexModelCatalog } from "./codex-managed-model-catalog";
+import {
+  buildManagedCodexModelCatalog,
+  type TrustedManagedCatalogSource,
+} from "./codex-managed-model-catalog";
 import { atomicWriteFile } from "./config";
 import {
   getCodexConfigPath,
@@ -64,6 +67,12 @@ export type {
   UninstallCodexIntegrationResult,
 } from "./codex-integration-shared";
 
+function trustedManagedCatalogSource(journal: AnyCodexIntegrationJournal | undefined): TrustedManagedCatalogSource | undefined {
+  return journal && (journal.version === 8 || journal.version === 9)
+    ? { path: journal.catalogPath, sha256: journal.catalogSha256 }
+    : undefined;
+}
+
 export function preflightCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
@@ -82,7 +91,12 @@ export function preflightCodexIntegration(
       },
       replaceExistingRoute,
     );
-    const catalog = buildManagedCodexModelCatalog(config, baseline, readCodexModelContextOverride());
+    const catalog = buildManagedCodexModelCatalog(
+      config,
+      baseline,
+      readCodexModelContextOverride(),
+      trustedManagedCatalogSource(existing),
+    );
     if (catalog.path !== getCodexManagedCatalogPath()) {
       throw new Error("Managed Codex model catalog resolved to an unexpected path");
     }
@@ -161,7 +175,12 @@ export function installCodexIntegration(
     installed,
     existing && existing.version !== 2 ? true : options.replaceExistingRoute === true,
   );
-  const catalog = buildManagedCodexModelCatalog(config, baseline, readCodexModelContextOverride());
+  const catalog = buildManagedCodexModelCatalog(
+    config,
+    baseline,
+    readCodexModelContextOverride(),
+    trustedManagedCatalogSource(existing),
+  );
   if (catalog.path !== installed.model_catalog_json) {
     throw new Error("Managed Codex model catalog resolved to an unexpected path");
   }

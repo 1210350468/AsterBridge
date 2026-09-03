@@ -17,6 +17,7 @@ import {
   uninstallCodexIntegration,
 } from "../src/codex-integration";
 import { defaultConfig } from "../src/config";
+import { buildManagedCodexModelCatalog } from "../src/codex-managed-model-catalog";
 
 const roots: string[] = [];
 
@@ -465,7 +466,16 @@ describe("reversible native Codex route integration", () => {
     const configPath = join(codexHome, "config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     const first = defaultConfig("browser-only");
-    installCodexIntegration(first);
+    const firstJournal = installCodexIntegration(first);
+    expect(existsSync(getCodexModelsCachePath())).toBe(false);
+    const installed = readFileSync(configPath, "utf8");
+    expect(buildManagedCodexModelCatalog(first, installed, undefined, {
+      path: firstJournal.catalogPath,
+      sha256: firstJournal.catalogSha256,
+    })).toMatchObject({
+      source: "managed",
+      sourcePath: getCodexManagedCatalogPath(),
+    });
     const second = defaultConfig("browser-only");
     second.port = 17842;
     installCodexIntegration(second);
@@ -573,6 +583,9 @@ describe("reversible native Codex route integration", () => {
         .replace(/^model_catalog_json\s*=.*\n/gm, "")
         .replace(/^(?:remote_compaction_v2 = false|multi_agent = true|multi_agent_v2 = false).*\n/gm, ""),
     );
+    // Legacy v4 journals did not authenticate an AsterBridge-managed catalog. Recreate the native
+    // provider cache fixture so this migration test does not depend on an installed system Codex CLI.
+    writeFileSync(getCodexModelsCachePath(), readFileSync(getCodexManagedCatalogPath(), "utf8"));
 
     const upgraded = installCodexIntegration(defaultConfig("browser-only"));
     expect(upgraded.version).toBe(9);

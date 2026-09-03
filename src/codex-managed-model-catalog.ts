@@ -8,6 +8,7 @@ import type { CodexModelContextOverride } from "./codex-integration-shared";
 import {
   getCodexManagedCatalogPath,
   getCodexModelsCachePath,
+  sha256,
 } from "./codex-integration-shared";
 import { findTopLevelAssignment, splitLines } from "./codex-integration-document";
 
@@ -18,8 +19,13 @@ interface CatalogObject extends Record<string, unknown> {
 export interface ManagedCodexModelCatalog {
   path: string;
   data: string;
-  source: "configured" | "cache" | "bundled";
+  source: "configured" | "cache" | "managed" | "bundled";
   sourcePath?: string;
+}
+
+export interface TrustedManagedCatalogSource {
+  path: string;
+  sha256: string;
 }
 
 function parseCatalog(text: string, label: string): CatalogObject {
@@ -70,7 +76,7 @@ function bundledCatalog(): CatalogObject {
   return parseCatalog(result.stdout, "Codex bundled model catalog");
 }
 
-function sourceCatalog(configText: string): {
+function sourceCatalog(configText: string, trustedManaged?: TrustedManagedCatalogSource): {
   catalog: CatalogObject;
   source: ManagedCodexModelCatalog["source"];
   sourcePath?: string;
@@ -96,9 +102,22 @@ function sourceCatalog(configText: string): {
         sourcePath: cachePath,
       };
     } catch {
-      // A stale or partially-written provider-agnostic cache must not block setup when the bundled
-      // catalog from the installed Codex binary is still available.
+      // A stale or partially-written provider-agnostic cache must not block setup when another
+      // previously validated Codex catalog source is still available.
     }
+  }
+
+  const managedPath = getCodexManagedCatalogPath();
+  if (trustedManaged && resolve(trustedManaged.path) === resolve(managedPath) && existsSync(managedPath)) {
+    const data = readFileSync(managedPath, "utf8");
+    if (sha256(data) !== trustedManaged.sha256) {
+      throw new Error(`Managed Codex model catalog changed after setup: ${managedPath}`);
+    }
+    return {
+      catalog: parseCatalog(data, `Managed Codex model catalog ${managedPath}`),
+      source: "managed",
+      sourcePath: managedPath,
+    };
   }
 
   return { catalog: bundledCatalog(), source: "bundled" };
@@ -108,8 +127,9 @@ export function buildManagedCodexModelCatalog(
   config: AppConfig,
   configText: string,
   contextOverride?: CodexModelContextOverride,
+  trustedManaged?: TrustedManagedCatalogSource,
 ): ManagedCodexModelCatalog {
-  const source = sourceCatalog(configText);
+  const source = sourceCatalog(configText, trustedManaged);
   const augmented = augmentNativeModelCatalog(source.catalog, config, contextOverride);
   const models = augmented.models;
   if (!Array.isArray(models) || models.length === 0) {
