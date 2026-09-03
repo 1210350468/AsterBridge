@@ -170,6 +170,7 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
     });
     expect(cancelled).toBe(1);
     expect(chatGptTurnSessions.activeCount()).toBe(0);
+    expect(chatGptTurnSessions.wasExplicitlyCancelled("orphan")).toBe(true);
   } finally {
     chatGptTurnSessions.clear();
     await server.stop(true);

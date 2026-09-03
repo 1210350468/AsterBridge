@@ -16,6 +16,7 @@ import {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
   isChatGptWebModelSlug,
   requireChatGptWebModelRoute,
+  resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
@@ -24,6 +25,7 @@ import {
   COMPACT_PROMPT,
   decodeCompactionSummary,
   extractCompactUserMessages,
+  planCompactV1Budget,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
@@ -520,7 +522,16 @@ export async function compactRequest(
   if (!summary?.trim()) {
     return formatErrorResponse(502, "invalid_response_error", "Compaction turn produced an empty summary");
   }
-  return Response.json({ output: buildCompactV1Output(extractCompactUserMessages(input), summary) });
+  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
+  const budget = planCompactV1Budget(limits.autoCompactTokenLimit, summary, raw);
+  console.error(
+    `[asterbridge:compaction] model=${route.slug} autoCompact=${budget.autoCompactTokenLimit} stableHarness=${budget.stableHarnessReserveTokens} summary=${budget.summaryTokens} headroom=${budget.postCompactHeadroomTokens} retained=${budget.retainedHistoryTokenBudget}`,
+  );
+  return Response.json({
+    output: buildCompactV1Output(extractCompactUserMessages(input), summary, {
+      retainedHistoryTokenBudget: budget.retainedHistoryTokenBudget,
+    }),
+  });
 }
 
 async function modelCatalogFailureMessage(response: Response): Promise<string | null> {
@@ -610,7 +621,7 @@ export function startServer(
       }
       if (req.method === "POST" && url.pathname === "/admin/cancel-turns") {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
-        const cancelledBrowserTurns = chatGptTurnSessions.clear() + (turnBroker?.revokeExternalOwners() ?? 0);
+        const cancelledBrowserTurns = chatGptTurnSessions.cancelAllExplicitly() + (turnBroker?.revokeExternalOwners() ?? 0);
         const cancelledHttpTurns = await httpTurns.cancelAll(new Error("Active turn cancelled by launcher"));
         return Response.json({
           status: "ok",

@@ -1,6 +1,6 @@
 # AsterBridge · 星桥：10 分钟快速开始
 
-这份指南面向第一次从 GitHub 安装 AsterBridge（内部兼容名仍为 `codex-chatgpt-web`）的用户。目标是先跑通一个 ChatGPT Web 模型回合，再按需启用 MCP 原生 Codex 工具。遇到异常时不要反复重装，先执行 **设置 → 运行诊断**，再对照 [故障排查](troubleshooting.zh-CN.md)。
+这份指南面向第一次从 GitHub 安装 AsterBridge（内部兼容名仍为 `codex-chatgpt-web`）的用户。目标是先跑通一个 ChatGPT Web 模型回合，再通过主路径 MCP Full Harness 启用原生 Codex 工具。Responses direct bridge 只保留为显式实验兜底，不会自动启用。遇到异常时不要反复重装，先执行 **设置 → 运行诊断**，再对照 [故障排查](troubleshooting.zh-CN.md)。
 
 ## 1. 安装 Launcher
 
@@ -71,34 +71,36 @@ Launcher 支持三种 ChatGPT Web 浏览器后端：
 Reply with exactly: WEB_OK
 ```
 
-收到 `WEB_OK` 后再继续 MCP。这样可以把“浏览器问题”和“MCP/Tunnel 问题”分开排查。
+先把这条 Browser-only 证明与工具传输问题分开，再继续启用原生工具。
 
-## 5. 可选：启用 MCP 原生 Codex 工具
+## 5. 启用 MCP Full Harness（主工具路径）
 
-只有需要 ChatGPT Web 模型调用当前 Codex Harness 的 shell、文件、补丁等工具时才需要这一步。
+1. 回到 Launcher → **MCP**。
+2. 创建或复用 OpenAI Tunnel 与 Runtime Key。密钥只放在 Launcher，本地聊天和 Issue 中都不要粘贴。
+3. 创建匹配的 ChatGPT 自定义 App：选择 **Tunnel**、**Authentication: None**，名称与 Launcher 完全一致（默认 `Codex Native3`）。
+4. 返回 Launcher 点击 **连接 Harness / Verify runtime**。
+5. 测试一个无副作用的真实工具调用，例如：
 
-1. 打开 Launcher → **MCP**。
-2. 创建 OpenAI Tunnel 和用于 Tunnel 的 Runtime Key。
-3. Launcher 会默认使用当前版本要求的全新 App/Connector 身份 **`Codex Native3`**。不要复用旧的 `Codex Native` 或 `Codex Native2` App；ChatGPT 会按 App 身份缓存 MCP schema。
-4. 在 ChatGPT 设置中启用开发者模式，新建 App：
-   - 类型：Tunnel
-   - Tunnel：选择刚创建的 Tunnel
-   - Authentication：None
-   - Name：与 Launcher 完全一致（默认 `Codex Native3`）
-   - Permissions：允许所有操作；低风险模式可能会在工具请求到达 Codex 之前拦截命令/补丁。
-5. 返回 Launcher 点击 **连接 Harness / Verify runtime**。
-6. 在 Codex 中测试一个无副作用工具调用，例如让 `Codex Native3` 执行 `Write-Output MCP_OK`。
+```text
+Use Codex Native3 to run exactly: Write-Output MCP_OK
+```
+
+只有真实 outer Codex 工具结果返回 `MCP_OK` 才算通过。MCP 作为主路径的原因是 ChatGPT 可以留在同一次 response 中连续请求多个工具；AsterBridge 负责传输，真正的审批、沙箱和执行仍归外层 Codex。
+
+### 实验兜底：Responses direct tool bridge
+
+如果当前 ChatGPT 账户根本没有自定义 MCP App 能力，这是账户侧 MCP 限制；Browser-only 仍可正常使用。AsterBridge 也保留 connectorless Responses 工具桥，但不会自动切换过去。依赖工具链可能需要更多 Web generation，私有文本 envelope 也比 MCP 更脆弱，因此只有明确接受这个权衡时才通过高级/CLI 显式启用。
 
 ## 6. 首次成功后的建议设置
 
 - Roxy 用户：开启自动启动；平时使用 Launcher 的 Live Preview，只有需要验证码/重新登录时点击 **人工接管**。
-- 开启 **关闭 Launcher 后保持后台运行**，避免每次使用都重新启动 Bridge/Tunnel。
+- 开启 **关闭 Launcher 后保持后台运行**，让本地 Responses 路由和主路径 MCP Tunnel 都保持就绪。
 - 遇到问题先运行 **设置 → 运行诊断**，不要先删除配置或重装。
 - 需要提交 GitHub Issue 时，只粘贴脱敏后的 Doctor/Activity 信息；不要上传 Cookie、API Key、Tunnel token、完整 turn token 或浏览器 Profile。
 
 ## 7. 你应该看到的健康状态
 
-一个可用的 Roxy + Full Harness 安装通常满足：
+一个可用的 Roxy + MCP Full Harness 安装通常满足：
 
 ```text
 Configuration       OK
@@ -107,10 +109,12 @@ RoxyBrowser         OK / auto-open ready
 Codex route         OK
 Responses proxy     OK (127.0.0.1:17841)
 ChatGPT upstream    OK
-OpenAI upstream     OK (Full Harness)
-Tunnel runtime      OK
-Connector           verified from Launcher
+OpenAI/Tunnel       OK
+Connector           Codex Native3 verified
+Tools               MCP Full Harness；outer Codex owns execution
 ```
+
+如果你显式选择实验性的 Responses transport，Doctor 会改为报告该 transport，并且不再要求 Tunnel/Connector。
 
 `/v1/responses` WebSocket 出现 `426 Upgrade Required` 后自动回退到 HTTP/SSE，在当前实现中不是故障；只有最终 turn 失败时才需要继续排查。
 

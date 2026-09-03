@@ -75,6 +75,7 @@ import {
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import { selectDirectToolBridgeTransportText } from "./direct-tool-bridge";
 import {
   ChatGptLunaCheckpointStream,
   type CapturedChatGptLunaCheckpoint,
@@ -1082,11 +1083,15 @@ export class ChatGptBrowserWorker {
   }
 
   private promptComparisonText(value: string): string {
-    // Chromium/Lexical may canonicalize decomposed Unicode and may drop the emoji/text presentation
-    // selectors U+FE0E/U+FE0F from contenteditable textContent. Both transformations preserve the
-    // textual instruction exactly; normalize only those presentation-level differences. Do not
-    // strip ZWJ, whitespace, punctuation, or any ordinary code point.
-    return value.normalize("NFC").replace(/[\uFE0E\uFE0F]/gu, "");
+    // Chromium/Lexical may canonicalize decomposed Unicode, drop the emoji/text presentation
+    // selectors U+FE0E/U+FE0F, and expose contenteditable line breaks as LF even when an inserted
+    // context fragment used CRLF/CR. These transformations preserve the textual instruction;
+    // normalize only those representation-level differences. Do not strip ZWJ, spaces, tabs,
+    // punctuation, line breaks themselves, or any ordinary code point.
+    return value
+      .replace(/\r\n?/gu, "\n")
+      .normalize("NFC")
+      .replace(/[\uFE0E\uFE0F]/gu, "");
   }
 
   private promptTextEquivalent(
@@ -1983,6 +1988,17 @@ export class ChatGptBrowserWorker {
     return exactMatches === 1;
   }
 
+  private connectorMentionRows(page: Page): Locator {
+    // ChatGPT's unified composer reuses `.__menu-item` across the sidebar, attachment menus,
+    // plugin search, and other navigation surfaces. Connector discovery must stay scoped to the
+    // currently visible composer popover or unrelated rows can be mistaken for app-catalog evidence.
+    return page
+      .locator(".popover")
+      .filter({ visible: true })
+      .last()
+      .locator('.__menu-item[tabindex="0"]');
+  }
+
   private async connectorMentionRowTitles(menuRows: Locator): Promise<string[]> {
     const texts = await menuRows.filter({ visible: true }).allInnerTexts().catch(() => [] as string[]);
     return texts
@@ -2022,7 +2038,7 @@ export class ChatGptBrowserWorker {
       return composer;
     }
 
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const menuRows = this.connectorMentionRows(page);
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -2035,7 +2051,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("");
       await composer.focus();
       await settleChatGptUi();
-      await composer.pressSequentially("@c", { delay: 25 });
+      await composer.pressSequentially(`@${this.config.appName}`, { delay: 25 });
       if (!firstMenuCaptured) {
         firstMenuCaptured = true;
         await captureDiagnostic?.("connector-mention-triggered");
@@ -2354,7 +2370,7 @@ export class ChatGptBrowserWorker {
     // the DOM used for the selected connector pill more than once, while the exact @-mention menu
     // remains the user-visible source of truth for whether the connector is available. Verify the
     // exact row there and avoid treating a cosmetic selected-pill change as a broken MCP runtime.
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const menuRows = this.connectorMentionRows(page);
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -2366,7 +2382,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("");
       await composer.focus();
       await settleChatGptUi();
-      await composer.pressSequentially("@c", { delay: 25 });
+      await composer.pressSequentially(`@${this.config.appName}`, { delay: 25 });
       try {
         await appResult.waitFor({
           state: "visible",
@@ -3032,7 +3048,7 @@ export class ChatGptBrowserWorker {
       const finalPrompt = multipartFinalPrompt ?? prepared.text;
       // A retained conversation already proved its connector binding. Multipart staging also
       // consumes the same conversation, so catalog refresh must not reload away acknowledged parts.
-      let catalogRefreshAvailable = requestedMode.localTools && !reuseConversation && !prepared.multipart;
+      let catalogRefreshAvailable = requestedMode.connectorTools && !reuseConversation && !prepared.multipart;
       for (;;) {
         try {
           await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, (stageSignal) => {
@@ -3042,7 +3058,7 @@ export class ChatGptBrowserWorker {
             return this.attachPromptWithCompactionRetry(
               page,
               finalPrompt,
-              mode.localTools,
+              mode.connectorTools,
               turn.compaction === true,
               submissionBaseline,
               checkpoint => diagnostics.capture(page, checkpoint),
@@ -3130,7 +3146,7 @@ export class ChatGptBrowserWorker {
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn);
 
-        if (mode.localTools && await resolveChatGptToolConfirmation(
+        if (mode.connectorTools && await resolveChatGptToolConfirmation(
           page,
           this.config.appName,
           this.config.autoApproveToolCalls,
@@ -3193,7 +3209,9 @@ export class ChatGptBrowserWorker {
               else console.warn(`[chatgpt-web] browser turn ${turn.traceId} completed without a Luna rolling checkpoint; preserving full native history`);
               finalText = completed.answer;
             } else {
-              finalText = final.markdown;
+              finalText = turn.capabilities.localToolTransport === "responses"
+                ? selectDirectToolBridgeTransportText(final.markdown, snapshot.visibleText)
+                : final.markdown;
             }
             break;
           }

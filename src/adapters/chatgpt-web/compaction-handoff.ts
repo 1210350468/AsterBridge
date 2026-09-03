@@ -1,5 +1,6 @@
 import type { CodexContentPart, CodexParsedRequest, CodexToolResultMessage } from "../../types";
 import { parseDataUrl } from "../image";
+import { estimateTokens } from "../../lib/token-estimate";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
@@ -13,6 +14,9 @@ import type { ChatGptTurnSession, ChatGptTurnSessions } from "./turn-execution";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
+export const COMPACTION_STRUCTURED_HANDOFF_GRACE_MS = 1_500;
+export const MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS = 1_024;
+const COMPACTION_LATEST_USER_OMISSION = "\n...[AsterBridge omitted the middle of an oversized latest user prompt during compaction]...\n";
 
 function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -91,6 +95,60 @@ function userPromptText(content: unknown): string | undefined {
   return text || undefined;
 }
 
+function prefixWithinTokenBudget(text: string, tokenBudget: number): string {
+  if (tokenBudget <= 0 || text.length === 0) return "";
+  if (estimateTokens(text) <= tokenBudget) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    let mid = Math.ceil((low + high) / 2);
+    if (mid < text.length) {
+      const previous = text.charCodeAt(mid - 1);
+      const next = text.charCodeAt(mid);
+      if (previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) mid -= 1;
+    }
+    if (estimateTokens(text.slice(0, mid)) <= tokenBudget) low = Math.max(mid, low + 1);
+    else high = mid - 1;
+  }
+  let end = Math.min(low, text.length);
+  while (end > 0 && estimateTokens(text.slice(0, end)) > tokenBudget) end -= 1;
+  return text.slice(0, end);
+}
+
+function suffixWithinTokenBudget(text: string, tokenBudget: number): string {
+  if (tokenBudget <= 0 || text.length === 0) return "";
+  if (estimateTokens(text) <= tokenBudget) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    let mid = Math.floor((low + high) / 2);
+    if (mid > 0) {
+      const code = text.charCodeAt(mid);
+      if (code >= 0xDC00 && code <= 0xDFFF) mid -= 1;
+    }
+    if (estimateTokens(text.slice(mid)) > tokenBudget) low = Math.max(mid + 1, low + 1);
+    else high = mid;
+  }
+  return text.slice(Math.min(low, text.length));
+}
+
+export function boundedCompactionLatestUserPrompt(latestUserPrompt: string): string {
+  if (estimateTokens(latestUserPrompt) <= MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS) {
+    return latestUserPrompt;
+  }
+  const omissionTokens = estimateTokens(COMPACTION_LATEST_USER_OMISSION);
+  const remaining = Math.max(0, MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS - omissionTokens);
+  let prefixBudget = Math.ceil(remaining / 2);
+  let suffixBudget = Math.floor(remaining / 2);
+  for (;;) {
+    const bounded = `${prefixWithinTokenBudget(latestUserPrompt, prefixBudget)}${COMPACTION_LATEST_USER_OMISSION}${suffixWithinTokenBudget(latestUserPrompt, suffixBudget)}`;
+    if (estimateTokens(bounded) <= MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS) return bounded;
+    if (prefixBudget >= suffixBudget && prefixBudget > 0) prefixBudget -= 1;
+    else if (suffixBudget > 0) suffixBudget -= 1;
+    else return COMPACTION_LATEST_USER_OMISSION;
+  }
+}
+
 export function canonicalizeCompactionHandoff(
   parsed: CodexParsedRequest,
   summary: string,
@@ -101,7 +159,8 @@ export function canonicalizeCompactionHandoff(
   if (latestUserPrompt === undefined) {
     throw new Error("ChatGPT compaction source has no canonical latest user prompt");
   }
-  const appendix = `${LATEST_USER_PROMPT_MARKER}\n${JSON.stringify(latestUserPrompt)}`;
+  const boundedLatestUserPrompt = boundedCompactionLatestUserPrompt(latestUserPrompt);
+  const appendix = `${LATEST_USER_PROMPT_MARKER}\n${JSON.stringify(boundedLatestUserPrompt)}`;
   const markerOffset = normalized.lastIndexOf(`\n${LATEST_USER_PROMPT_MARKER}\n`);
   if (markerOffset < 0) return `${normalized}\n\n${appendix}`;
   if (normalized.slice(markerOffset + 1).trimEnd() !== appendix) {
@@ -174,6 +233,7 @@ export async function requestRetainedCompactionHandoff(
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  structuredHandoffGraceMs = COMPACTION_STRUCTURED_HANDOFF_GRACE_MS,
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
@@ -204,11 +264,26 @@ export async function requestRetainedCompactionHandoff(
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
-    const [summary] = await Promise.all([
-      broker.waitForCompactionHandoff(transaction.token, signal),
-      browser,
+    const structuredHandoff = broker.waitForCompactionHandoff(transaction.token, signal).then(
+      summary => ({ type: "summary" as const, summary }),
+      error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+    );
+    const visibleSummary = (await browser).trim();
+    if (!visibleSummary) throw new Error("The retained compaction response returned an empty checkpoint");
+    const handoff = await Promise.race([
+      structuredHandoff,
+      new Promise<{ type: "grace_elapsed" }>(resolve => {
+        const timer = setTimeout(() => resolve({ type: "grace_elapsed" }), structuredHandoffGraceMs);
+        timer.unref?.();
+      }),
     ]);
-    return summary;
+    if (handoff.type === "summary") return handoff.summary;
+    if (handoff.type === "error") throw handoff.error;
+    broker.abortCompactionTransaction(transaction.token);
+    console.warn(
+      `[chatgpt-web] browser turn ${traceId} completed compaction without structured MCP handoff; using the dedicated retained-turn checkpoint`,
+    );
+    return visibleSummary;
   } finally {
     browserAbort.abort();
     broker.abortCompactionTransaction(transaction.token);

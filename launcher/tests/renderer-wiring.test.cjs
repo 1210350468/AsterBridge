@@ -95,12 +95,28 @@ test("Bigger Context setting uses the setup transaction and persists runtime sta
   assert.match(electronMain, /experimentalBiggerContext:\s*result\.enabled/);
 });
 
+test("MCP remains the primary Full Harness path while Responses stays backend-optional", () => {
+  assert.match(appSource, /await api!\.setupCore\(\);/);
+  assert.doesNotMatch(appSource, /setupCore\(\{ fullResponses: true \}\)/);
+  assert.match(appSource, /<SectionHeading label=\{devProfile \? "MCP" : copy\.mcpTitle\} meta=\{devProfile \? copy\.optional : copy\.recommended\}/);
+  assert.match(electronMain, /fullResponses:\s*input\?\.fullResponses === true/);
+  assert.match(preloadSource, /setupCore:\s*\(input\) => ipcRenderer\.invoke\("launcher:setup-core", input\)/);
+});
+
 test("MCP connection remains unavailable until the model catalog is verified", () => {
   assert.match(
     appSource,
     /snapshot\.state\.codexCatalogVerified \? copy\.mcpStepTwoHint : copy\.mcpCatalogRequired/,
   );
   assert.match(appSource, /\|\| !snapshot\.state\.codexCatalogVerified/);
+});
+
+test("catalog verification accepts an intact managed route when Codex uses the static model catalog", () => {
+  assert.match(electronMain, /const liveCatalogVerified = Number\.isInteger\(health\?\.successful_model_catalog_requests\)/);
+  assert.match(electronMain, /await runtimeHost\.bridgeStatus\("catalog-verification"\)/);
+  assert.match(electronMain, /route\.installed === true[\s\S]*?route\.active === true[\s\S]*?route\.errors\.length === 0/);
+  assert.match(electronMain, /source: liveCatalogVerified \? "codex-request" : "managed-route"/);
+  assert.match(electronMain, /liveCatalogVerified \? \{ codexRestartRequired: false \} : \{\}/);
 });
 
 test("MCP navigation remains locked while an operation is active", () => {

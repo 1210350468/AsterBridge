@@ -129,6 +129,7 @@ interface ChatGptTurnRuntimeBase {
 
 export type ChatGptTurnRuntime =
   | (ChatGptTurnRuntimeBase & { mode: "tools"; token: Promise<string> })
+  | (ChatGptTurnRuntimeBase & { mode: "direct-tools"; binding: string })
   | (ChatGptTurnRuntimeBase & { mode: "read-only" });
 
 function executionKey(parsed: CodexParsedRequest, payload: unknown): string {
@@ -164,6 +165,26 @@ export function chatGptTurnExecutionKey(parsed: CodexParsedRequest): string {
   });
 }
 
+/**
+ * Connectorless tool rounds complete one ChatGPT response before outer Codex executes the tool.
+ * Include the canonical input in the session revision so the follow-up tool_result starts a new
+ * browser response while retaining the same physical ChatGPT conversation.
+ */
+export function chatGptDirectTurnExecutionKey(parsed: CodexParsedRequest): string {
+  const identity = extractChatGptTurnIdentity(parsed);
+  if (!identity.turnId) throw new Error("ChatGPT direct tool bridge requires native Codex turn_id metadata");
+  const body = parsed._rawBody;
+  if (!body || typeof body !== "object" || Array.isArray(body) || !Array.isArray((body as { input?: unknown }).input)) {
+    throw new Error("ChatGPT direct tool bridge requires the complete native Codex input history");
+  }
+  return executionKey(parsed, {
+    threadId: identity.threadId,
+    turnId: identity.turnId,
+    purpose: "direct-tool-response",
+    input: (body as { input: unknown[] }).input,
+  });
+}
+
 /** Stable identity for limiting automatic retries of one native Codex turn. */
 export function chatGptTurnRetryKey(parsed: CodexParsedRequest): string {
   const identity = extractChatGptTurnIdentity(parsed);
@@ -186,6 +207,13 @@ export function chatGptCompactionSourceExecutionKey(parsed: CodexParsedRequest):
     purpose: "response",
     revision: source.content,
   });
+}
+
+export class ChatGptTurnExplicitlyCancelledError extends Error {
+  constructor() {
+    super("ChatGPT web turn was explicitly cancelled by the launcher");
+    this.name = "ChatGptTurnExplicitlyCancelledError";
+  }
 }
 
 export class ChatGptTurnSession {
@@ -306,6 +334,7 @@ export class ChatGptTurnSessions {
   private readonly retirements = new Map<string, Promise<void>>();
   private readonly conversationRetirements = new Map<string, Promise<void>>();
   private readonly threadHeads = new Map<string, ChatGptTurnSession>();
+  private readonly explicitCancellationTombstones = new Map<string, number>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
@@ -314,6 +343,7 @@ export class ChatGptTurnSessions {
 
   getOrCreate(key: string, start: () => ChatGptTurnRuntime): ChatGptTurnSession {
     this.prune();
+    if (this.explicitCancellationTombstones.has(key)) throw new ChatGptTurnExplicitlyCancelledError();
     const existing = this.entries.get(key);
     if (existing) {
       existing.touch();
@@ -333,6 +363,37 @@ export class ChatGptTurnSessions {
     const threadId = session.threadId();
     if (threadId) this.threadHeads.set(threadId, session);
     return session;
+  }
+
+  wasExplicitlyCancelled(key: string): boolean {
+    this.prune();
+    return this.explicitCancellationTombstones.has(key);
+  }
+
+  cancelAllExplicitly(): number {
+    this.prune();
+    const cancelledAt = Date.now();
+    for (const key of this.entries.keys()) this.explicitCancellationTombstones.set(key, cancelledAt);
+    const maxTombstones = Math.max(this.maxEntries * 4, 256);
+    while (this.explicitCancellationTombstones.size > maxTombstones) {
+      const oldest = this.explicitCancellationTombstones.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.explicitCancellationTombstones.delete(oldest);
+    }
+    const cancelled = this.entries.size;
+    const heads = [...this.conversationHeads.values()];
+    for (const session of this.entries.values()) session.cancel();
+    this.entries.clear();
+    this.conversationHeads.clear();
+    this.threadHeads.clear();
+    for (const session of heads) {
+      const release = session.runtime.releaseRetainedConversation;
+      if (!release) continue;
+      void session.browserOutcome.then(() => release()).catch(error => {
+        console.error(`[chatgpt-web] failed to release explicitly cancelled retained conversation: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+    return cancelled;
   }
 
   findConversationHead(conversationKey: string): ChatGptTurnSession | undefined {
@@ -435,6 +496,7 @@ export class ChatGptTurnSessions {
     this.entries.clear();
     this.conversationHeads.clear();
     this.threadHeads.clear();
+    this.explicitCancellationTombstones.clear();
     for (const session of heads) {
       const release = session.runtime.releaseRetainedConversation;
       if (!release) continue;

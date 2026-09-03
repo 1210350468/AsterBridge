@@ -10,14 +10,15 @@ import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-erro
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
-import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
+import { createChatGptWebAdapter, validateBatchTools } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
-import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
-import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
+import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { callTurnBroker, TurnBroker, type BrokerToolRequest, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
+import { DIRECT_TOOL_BRIDGE_PREFIX, DIRECT_TOOL_BRIDGE_SUFFIX } from "../src/adapters/chatgpt-web/direct-tool-bridge";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { parseRequest } from "../src/responses/parser";
@@ -95,6 +96,27 @@ function parsed(developerText?: string): CodexParsedRequest {
     options: { reasoning: "high" },
   };
 }
+
+test("deferred subagent tool batches share the MCP allowlist while arbitrary unadvertised tools fail closed", () => {
+  const request = parsed();
+  const deferred: BrokerToolRequest = {
+    callId: "call_deferred_spawn",
+    wireName: "multi_agent_v1__spawn_agent",
+    freeform: false,
+    arguments: { message: "Return CHILD_OK only." },
+  };
+  expect(() => validateBatchTools(request, [deferred])).not.toThrow();
+
+  const unadvertised: BrokerToolRequest = {
+    callId: "call_unadvertised",
+    wireName: "unadvertised__dangerous_tool",
+    freeform: false,
+    arguments: {},
+  };
+  expect(() => validateBatchTools(request, [unadvertised])).toThrow(
+    "ChatGPT requested a tool that the active Codex round did not advertise",
+  );
+});
 
 function rawWireRequest(environmentText: string): CodexParsedRequest {
   const request = parsed();
@@ -292,6 +314,154 @@ describe("ChatGPT outer-native harness v4", () => {
       await createChatGptWebAdapter(provider).runTurn!(request, { headers: new Headers() }, event => events.push(event));
       expect(browserStarts).toBe(1);
       expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("connectorless Responses transport emits only current-turn outer Codex tool calls", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-direct-tools-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-direct-tools-test",
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        localToolTransport: "responses",
+        solAvailable: true,
+        proAvailable: true,
+        browserHost: "system-browser",
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      expect(turn.capabilities).toMatchObject({ localToolsEnabled: true, localToolTransport: "responses" });
+      expect(turn.retainConversation).toBe(true);
+      const prepared = await turn.prepare();
+      expect(prepared.text).toContain("native Responses tool bridge");
+      expect(prepared.text).toContain('"wire_name":"exec_command"');
+      expect(prepared.text).not.toContain("Pass turn_token");
+      const match = prepared.text.match(/private Responses tool-bridge binding for this response is (dtb_[a-f0-9]{24})/);
+      expect(match).not.toBeNull();
+      const answer = `${DIRECT_TOOL_BRIDGE_PREFIX}${JSON.stringify({
+        binding: match![1],
+        calls: [{ wire_name: "exec_command", arguments: { cmd: "Write-Output DIRECT_OK" } }],
+      })}${DIRECT_TOOL_BRIDGE_SUFFIX}`;
+      turn.onTextDelta(answer);
+      return answer;
+    };
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        canonicalCurrentWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(events.some(event => event.type === "text_delta" && event.text.includes(DIRECT_TOOL_BRIDGE_PREFIX))).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_start", name: "exec_command" }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_delta", arguments: JSON.stringify({ cmd: "Write-Output DIRECT_OK" }) }));
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("connectorless Responses transport continues from a real outer Codex tool result on the same retained conversation", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-direct-tools-continuation-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-direct-tools-continuation-test",
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        localToolTransport: "responses",
+        solAvailable: true,
+        proAvailable: true,
+        browserHost: "system-browser",
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    let retainedConversationKey = "";
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      expect(turn.retainConversation).toBe(true);
+      expect(turn.conversationKey).toBeTruthy();
+      if (browserStarts === 1) {
+        retainedConversationKey = turn.conversationKey!;
+        const prepared = await turn.prepare();
+        const binding = prepared.text.match(/private Responses tool-bridge binding for this response is (dtb_[a-f0-9]{24})/)?.[1];
+        expect(binding).toBeTruthy();
+        const answer = `${DIRECT_TOOL_BRIDGE_PREFIX}${JSON.stringify({
+          binding,
+          calls: [{ wire_name: "exec_command", arguments: { cmd: "Write-Output DIRECT_TOOL_RESULT_OK" } }],
+        })}${DIRECT_TOOL_BRIDGE_SUFFIX}`;
+        turn.onTextDelta(answer);
+        return answer;
+      }
+      expect(turn.conversationKey).toBe(retainedConversationKey);
+      expect(turn.prepareResume).toBeDefined();
+      const resume = await turn.prepareResume!();
+      expect(resume.text).toContain("DIRECT_TOOL_RESULT_OK");
+      expect(resume.text).toContain("tool_result");
+      const answer = "DIRECT_FINAL_OK";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      const initial = canonicalCurrentWireRequest(environmentXml);
+      const firstEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
+      const call = firstEvents.find(
+        (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
+      );
+      expect(call).toBeDefined();
+      expect(firstEvents.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
+
+      const continuation = structuredClone(initial);
+      const callArguments = { cmd: "Write-Output DIRECT_TOOL_RESULT_OK" };
+      continuation.context.messages.push(
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: call!.id, name: "exec_command", arguments: callArguments }],
+          timestamp: 3,
+        },
+        {
+          role: "toolResult",
+          toolCallId: call!.id,
+          toolName: "exec_command",
+          content: "DIRECT_TOOL_RESULT_OK",
+          isError: false,
+          timestamp: 4,
+        },
+      );
+      ((continuation._rawBody as { input: unknown[] }).input).push(
+        {
+          type: "function_call",
+          call_id: call!.id,
+          name: "exec_command",
+          arguments: JSON.stringify(callArguments),
+        },
+        {
+          type: "function_call_output",
+          call_id: call!.id,
+          output: "DIRECT_TOOL_RESULT_OK",
+        },
+      );
+
+      const finalEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
+      expect(browserStarts).toBe(2);
+      expect(finalEvents.some(event => event.type === "tool_call_start")).toBe(false);
+      expect(finalEvents.some(event => event.type === "text_delta" && event.text.includes(DIRECT_TOOL_BRIDGE_PREFIX))).toBe(false);
+      expect(finalEvents).toContainEqual(expect.objectContaining({ type: "text_delta", text: "DIRECT_FINAL_OK", phase: "final_answer" }));
+      expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();
@@ -737,6 +907,53 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(browserStarts).toBe(2);
       expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("an explicit launcher cancellation tombstones the native turn and blocks browser replay", async () => {
+    chatGptTurnSessions.clear();
+    const socketPath = brokerTestEndpoint(`cgw-h4-explicit-cancel-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-explicit-cancel-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    chatGptTurnSessions.clear();
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
+      browserStarts += 1;
+      return new Promise<string>((_resolve, reject) => {
+        turn.abortSignal?.addEventListener("abort", () => {
+          reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+        }, { once: true });
+      });
+    };
+    try {
+      const request = rawWireRequest(environmentXml);
+      const first = createChatGptWebAdapter(provider).runTurn!(
+        request,
+        { headers: new Headers() },
+        () => {},
+      );
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+      expect(chatGptTurnSessions.cancelAllExplicitly()).toBe(1);
+      await expect(first).rejects.toThrow("ChatGPT web turn aborted");
+
+      await expect(createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers() },
+        () => {},
+      )).rejects.toMatchObject({
+        code: "turn_cancelled",
+        retryable: false,
+      });
+      expect(browserStarts).toBe(1);
+    } finally {
+      chatGptTurnSessions.clear();
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();
     }

@@ -7,13 +7,10 @@ Codex app / CLI
 launcher-owned codex-chatgpt-web daemon
   ├─ official /models passthrough + fixed ChatGPT Web models
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
-  ├─ ChatGPT browser worker (up to five task-bound Electron tabs)
-  ├─ capability broker (full mode only)
-  └─ stdio MCP server
-            ▲
-            │ outbound OpenAI Tunnel
-            ▼
-      ChatGPT custom connector
+  ├─ ChatGPT browser worker (up to five task-bound browser surfaces)
+  └─ full-mode tool transport
+       ├─ MCP (primary): broker + stdio MCP server → outbound Tunnel → custom ChatGPT App
+       └─ Responses bridge (experimental opt-in): validated tool intent → outer Codex
 ```
 
 ## Modes
@@ -29,12 +26,11 @@ launcher-owned codex-chatgpt-web daemon
 
 ### `full`
 
-- Exposes the same fixed models and attaches the turn-bound connector capability to every available
-  effort, from Luna through Pro. There are no effort-specific MCP exclusions.
-- ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
-- Every connector call presents one outer Codex turn capability; the MCP server keeps the derived
-  binding private and dispatches the requested action immediately.
-- Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
+Full mode has two transports with the same authority boundary: ChatGPT proposes tool use; outer Codex remains the only approval, sandbox, and execution authority.
+
+- **MCP (primary)** uses a custom MCP connector backed by `openai/tunnel-client`. The broker keeps its derived binding private and the stdio MCP server accepts only tools advertised by the active outer Codex turn. MCP is the stable Full Harness path because ChatGPT can remain inside one response while performing a multi-step tool loop.
+- **Responses (experimental opt-in)** requires no Tunnel or custom ChatGPT App, but each dependent tool step can require an additional Web generation. It exists only as a connectorless fallback and is never selected automatically. The prompt contains only the current turn's advertised tool metadata plus a private turn binding; AsterBridge validates the request before returning a normal Responses tool call to outer Codex.
+- Renderer compatibility for the experimental Responses path is fail-closed: raw DOM text is preferred for private envelopes; fallback Markdown repair touches only protocol-owned markers, binding, tool names, and structural brackets outside JSON strings. Arbitrary tool argument values are never unescaped or rewritten.
 
 ### Repository DEV driver
 
@@ -82,7 +78,7 @@ The Responses adapter has three browser hosts behind one Browser Worker contract
 - **RoxyBrowser** connects only to the configured Profile's own Chromium `DevToolsActivePort`. A closed Profile can be opened through the loopback Roxy Local API when auto-start is configured; cookies/profile data are never copied into Electron.
 - **System Chrome/Edge** is an experimental external host discovered from an already enabled main-browser remote-debugging endpoint.
 
-Every model turn opens a fresh Temporary Chat page. At most five browser turns may run concurrently; a sixth fails explicitly to avoid excessive parallel account traffic. Terminal turn pages are released immediately rather than retained as history—the durable result already belongs to Codex—so completed/failed turns cannot leak slots until the five-turn cap is exhausted.
+A new Codex conversation/compaction epoch opens a fresh Temporary Chat page. Compatible sequential turns in the same thread/model/effort/epoch may retain and reuse that task page, sending only the canonical suffix after the last assistant reply. Retained pages expire, can be LRU-evicted when idle, and are retired exactly once when compaction hands the thread to a new epoch. Failed/aborted non-retained turns and maintenance probes close their owned surfaces. At most five physical ChatGPT task surfaces exist at once; a sixth genuinely active turn fails explicitly, while a new idle conversation may evict the least-recently-used retained page instead of exceeding the account-safety ceiling.
 
 Embedded turns expose their native `WebContentsView` directly in Launcher. Roxy turns remain owned by the Browser Worker and publish a bounded low-rate JPEG/status preview over the authenticated loopback launcher control channel. **Take control** is queued to the exact turn owner; that Worker restores/activates the matching Roxy task window instead of Launcher establishing a second CDP controller. This preserves one automation owner per page even with concurrent turns.
 
@@ -93,17 +89,27 @@ out of the JSON and are attached natively with stable references. The runtime do
 context JSONL file, upload a synthetic context document, include prompt hashes, or silently truncate
 the envelope. Attachment acceptance and send readiness are verified before the turn begins.
 
-The appended models advertise the authenticated account's context window and a ten-percent
-auto-compaction reserve. Usage is counted with the GPT-5 tokenizer plus fixed platform/image
+The appended models advertise the authenticated account's measured context window and explicit
+`auto_compact_token_limit`. Usage is counted with the GPT-5 tokenizer plus fixed platform/image
 reserves, rather than inferred from character length. The ChatGPT composer also has an independent
 inline-size boundary: usage accounting asks Codex to compact before that boundary, and a prompt
 that still exceeds the proven hard ceiling fails explicitly before any browser turn opens.
 
 Routed compaction v1/v2 runs as a dedicated read-only browser summarization turn with no broker or
-local tools, then returns the native replacement-history shape expected by Codex. A prompt-level
-checkpoint marker is translated into a visible Codex trace item; every later tool action in the
-same turn continues to present the current turn capability. Visible ChatGPT status rows become
-reasoning summaries, while stable prose between rows becomes native Codex commentary.
+local tools. AsterBridge wraps Web-generated summaries in its transparent `ocx1:` envelope for the
+v2 contract and returns Codex's expected replacement-history shape for v1. The v1 retained-history
+budget is model-aware: it starts from the routed model's real automatic-compaction gate, reserves
+the stable Codex/system/skills/plugins/tool overhead, the actual summary, structure allowance, and
+post-compaction headroom, then permits only the remaining recent user text/images up to Codex's
+20k historical ceiling. This prevents a successful compact from immediately exceeding the same
+window after Codex re-injects its stable harness. When a thread later switches back to a native
+OpenAI model, AsterBridge decodes only its own `ocx1:` / `ocxr1:` envelopes to readable context;
+genuine provider-owned OpenAI encrypted reasoning/compaction items retain their original ids and
+`encrypted_content` unchanged.
+
+A prompt-level checkpoint marker is translated into a visible Codex trace item; every later tool
+action in the same turn continues to present the current turn capability. Visible ChatGPT status
+rows become reasoning summaries, while stable prose between rows becomes native Codex commentary.
 
 ## Installation and service lifecycle
 
@@ -127,13 +133,21 @@ launcher runtime from a stale or external process. Legacy macOS launchd services
 removed during an explicit launcher migration; launchd remains only for the advanced terminal-only
 mode.
 
-Setup keeps Codex's built-in `openai` provider and switches only `openai_base_url`. The daemon
-forwards the authenticated official model catalog and appends only the routed models owned by the
-`chatgpt-web/` namespace; no static catalog is installed. While the integration is active, native
-models that support delegation and routed Web models share Codex's readable V1 collaboration
-surface so an explicitly selected Web subagent receives plaintext task content. An explicit native
-`disabled` delegation capability is preserved. Model choice, effort, context, and service tiers are
-otherwise unchanged.
+Setup keeps Codex's built-in `openai` provider and transactionally owns both `openai_base_url` and
+an AsterBridge-generated `model_catalog_json` while the bridge is active. The managed catalog is
+built from the user's existing catalog, Codex model cache, or bundled Codex catalog, preserves every
+native model, and appends only the account-available `chatgpt-web/` routes with their exact context,
+auto-compaction, reasoning, and compatibility metadata. The user's original catalog assignment is
+never modified in place and is restored byte-for-byte on disconnect/uninstall; the managed copy is
+hash-verified and fails closed if externally changed. While the integration is active, native models
+that support delegation and routed Web models share Codex's readable V1 collaboration surface so an
+explicitly selected Web subagent receives plaintext task content. An explicit native `disabled`
+delegation capability is preserved. For Codex 0.150 automatic compaction, the active v9 route also
+transactionally owns `[features].remote_compaction_v2 = false`: remote compaction remains enabled
+but uses `/responses/compact` v1, where AsterBridge can bound replacement history to the selected
+Web model's window. Disconnect/uninstall restores the user's prior feature assignment and table
+placement byte-for-byte; an external edit while the route is active fails closed. Model choice,
+effort, context, and service tiers are otherwise unchanged.
 
 The built-in provider attempts a Responses WebSocket prewarm. The local route explicitly returns
 HTTP `426`, which is Codex's native capability-negotiation signal for an immediate, session-sticky

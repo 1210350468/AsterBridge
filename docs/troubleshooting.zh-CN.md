@@ -11,10 +11,10 @@
 | `stream disconnected before completion` 且前面有浏览器错误 | 上游浏览器任务中断 | 先解决最早出现的浏览器错误；不要把最后的 stream 错误当根因 |
 | `HTTP 426 Upgrade Required` on `/v1/responses` | WebSocket 不可用，客户端会回退 HTTP/SSE | 如果最终 turn 正常完成则忽略；只有回退也失败才需要排查 |
 | `127.0.0.1:17841` / `EADDRINUSE` | Bridge 端口被另一个进程或旧 Launcher 占用 | 退出所有旧 Launcher，确认只有一个实例；再重启 Launcher。不要随意改 Codex route 指向未知端口 |
-| 模型存在但 MCP 工具不可用 | Browser-only 模式，或 Full Harness/Tunnel/Connector 未完成 | 先确认普通 `WEB_OK` 成功，再进入 MCP 页面验证 runtime |
+| 模型存在但原生工具不可用 | 仍处于 Browser-only，或 MCP Full Harness 尚未配置/验证 | 先确认 `WEB_OK`，再配置 **MCP Full Harness** 并运行 Doctor；只有你明确选择实验性 Responses fallback 时才排查 direct bridge |
 | ChatGPT 找不到 App / Connector | App 名称不一致或旧 App 缓存了旧 MCP schema | 新建精确名为 `Codex Native3` 的 App；不要复用 `Codex Native` / `Codex Native2` |
-| 工具调用被安全检查拒绝 | ChatGPT App 权限或外层 Codex sandbox/approval 拒绝 | 确认 App 权限；外层 Codex 仍然保留自己的审批与沙箱规则 |
-| `turn token is invalid, expired, or revoked` | ChatGPT 返回了不属于当前外层 Codex turn 的 token，或旧 App/旧会话残留 | 使用当前 `Codex Native3`，新开 Codex turn；不要手工复用 turn token |
+| 工具调用被安全检查拒绝 | ChatGPT App 权限先行阻止，或外层 Codex sandbox/approval 拒绝 | 先检查 MCP App 权限，再检查 Codex 沙箱/审批；最终执行权仍属于外层 Codex |
+| `turn token is invalid, expired, or revoked` | MCP capability 不属于当前外层 Codex turn，或旧 App/旧会话残留 | 使用当前 `Codex Native3`，新开 Codex turn，不要手工复用 turn token |
 | `ChatGPT is signed out in the configured browser profile` / `chatgpt_session_expired` | 外部 Roxy/system-browser Profile 能打开 ChatGPT，但新页面已经不再带有效登录会话；旧 retained 页可能因为 SPA 已经加载过而看起来仍可用 | 在**同一个浏览器/Profile**里重新登录 `chatgpt.com`，再运行 Browser check/Doctor。AsterBridge 不会也不能自行重建账号凭据。 |
 | `missing YAML frontmatter delimited by ---` | 某个本地 Codex Skill 文件格式无效 | 与 Roxy/Bridge 无关；确保文件第一个字节就以 `---` 开始（前面不能有空行/BOM），不用的 Skill 也可直接禁用 |
 | 生图返回 `502` / `503` / `504` | Codex 原生生图请求可能遇到上游网关失败或本地代理传输失败；旧版本里 Temporary Chat 还可能绕过 AsterBridge，误用 ChatGPT 网页自己的第一方生图工具 | 3.0.11+ 查看 `[asterbridge:image]`：`origin=upstream` 表示 Codex image endpoint 返回该状态；`origin=transport` 表示本地代理/网络 fetch 失败。若旧版本明明提示生图 502，却既没有 broker `image_gen__imagegen` 调用、也没有 image telemetry，就说明走错了网页第一方生图路径。3.0.13+ 在 outer Codex 提供 image tool 时强制只走 Native3。 |
@@ -23,7 +23,7 @@
 | `fatal: detected dubious ownership` | Git 仓库所有者 SID 与当前执行用户不同 | 与 Roxy/Native3 无关；根据自己的安全策略处理 Git safe.directory，不要为了测试全局放宽所有仓库 |
 | Tunnel health 一直失败 | tunnel-client、Runtime Key、Tunnel ID、网络或 ownership 有问题 | 在 Launcher MCP 页面重新验证；先看 Doctor 的 `tunnel-*` checks，不要先重建 ChatGPT App |
 | `ChatGPT/Codex upstream is not reachable` | Responses daemon 无法访问 ChatGPT/Codex 上游，常见原因是代理没有被 Bun 子进程继承 | 打开 **设置 → 网络代理**，优先选“自动”；仍失败时改成自定义 HTTP 代理并重新运行 Doctor |
-| `OpenAI API/tunnel control plane is not reachable` | Full Harness 的 tunnel-client 无法访问 OpenAI 控制面 | 检查代理是否对 tunnel-client 生效；确认代理允许 HTTPS CONNECT，并重新运行 Doctor |
+| `OpenAI API/tunnel control plane is not reachable` | MCP tunnel-client 无法访问 OpenAI 控制面 | 确认代理对 tunnel-client 生效并允许 HTTPS CONNECT；只有显式选择实验性 Responses fallback 时才无需该检查 |
 | GitHub 更新检查失败但 Web 模型正常 | GitHub Release 请求被网络/代理阻断 | AsterBridge Updater 会跟随同一套 HTTP/HTTPS 代理；确认代理可访问 `github.com`，再重试更新 |
 
 ## 生图可靠性与图片上传上限
@@ -89,8 +89,8 @@ HTTPS_PROXY / https_proxy
 保存后运行 **设置 → 运行诊断**。重点看：
 
 - `network-chatgpt`：验证 Responses daemon 到 ChatGPT/Codex 上游的真实 HTTPS 连通性；
-- `network-openai`：Full Harness 下验证 OpenAI API / tunnel control plane 连通性；
-- `tunnel-runtime`：验证 tunnel-client 自身是否已经 ready；
+- `network-openai`：验证 MCP 到 OpenAI API / tunnel control plane 的连通性；
+- `tunnel-runtime`：验证 MCP tunnel-client 是否真正 ready；
 - `proxy`：这里只表示本地 `127.0.0.1:17841` Bridge 是否健康，不代表公网网络一定正常。
 
 因此“`proxy` 绿色、`network-chatgpt` 红色”通常就是外网/代理问题，而不是 Bridge 本身坏了。
@@ -123,18 +123,23 @@ Doctor 在 Profile 关闭时会主动探测 Local API：如果 Local API 健康�
 - 不要把 Cookie/localStorage 导出后复制到其他浏览器来“迁移指纹”。
 - 不要把 API Key、Profile 压缩包或完整 `DevToolsActivePort` websocket 路径上传到 Issue。
 
-## MCP / Codex Native3
+## 原生工具 / MCP Full Harness
 
-### 推荐排查顺序
+主路径 MCP / `Codex Native3`：
 
-1. Browser-only 模式先验证 `WEB_OK`。
-2. Doctor 确认 `Responses proxy`、Codex route 正常。
-3. MCP 页面确认 Tunnel runtime healthy。
-4. ChatGPT 中确认新 App 名称与 Launcher 完全一致：默认 `Codex Native3`。
-5. Launcher **Verify runtime**。
-6. 最后再测试 `Write-Output MCP_OK` 这类无副作用工具。
+1. Browser-only 先验证 `WEB_OK`。
+2. MCP 页面确认 Tunnel runtime healthy。
+3. ChatGPT 中确认新 App 名称与 Launcher 完全一致（默认 `Codex Native3`）。
+4. Launcher 运行 **Verify runtime**。
+5. 测试无副作用命令，例如 `Write-Output MCP_OK`，并要求真实 outer Codex tool result。
 
-不要把这六步一次性混在一起，否则无法判断是浏览器、Tunnel、Connector 还是 Codex Harness 出错。
+实验性 Responses fallback：
+
+1. 只在 Browser-only 已健康且你明确 opt-in 时使用。
+2. Doctor 应明确报告 Responses tool bridge；此模式不要求 Tunnel/Connector。
+3. 一旦出现 `ChatGPT direct tool bridge returned invalid JSON`，应停止该 fallback 并回到 Browser-only/MCP，不要反复重试 malformed Web generation。
+
+把两套 transport 分开验证，才能判断问题来自 browser/MCP，还是实验性 connectorless bridge 本身。
 
 ## Launcher / Runtime
 

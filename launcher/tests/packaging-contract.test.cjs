@@ -27,6 +27,8 @@ test("release verification runs core tests in deterministic Bun batches", () => 
 test("launcher publishes native packages for all supported desktop operating systems", () => {
   assert.equal(manifest.build.appId, "dev.codexwebgpt.launcher");
   assert.equal(manifest.build.artifactName, "asterbridge-${version}-${os}-${arch}.${ext}");
+  assert.equal(manifest.build.electronDist, "node_modules/electron/dist");
+  assert.ok(fs.existsSync(path.join(launcherRoot, manifest.build.electronDist, "electron.exe")));
   assert.deepEqual(manifest.build.mac.target, ["dmg", "zip"]);
   assert.deepEqual(manifest.build.win.target, ["nsis"]);
   assert.equal(manifest.build.productName, "AsterBridge");
@@ -99,12 +101,21 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /Get-ItemPropertyValue[\s\S]*InstallLocation/);
   assert.ok(windowsInstaller.includes(`Join-Path $InstallLocation "${manifest.build.productName}.exe"`));
   assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
+  assert.match(windowsInstaller, /Wait-AsterBridgeInstallerCompletion/);
+  assert.match(windowsInstaller, /Get-AsterBridgeInstallerProcessCount/);
+  assert.match(windowsInstaller, /Test-AsterBridgeInstalledRuntime/);
+  assert.match(windowsInstaller, /Installer process exited without completing/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
   assert.match(packageSmoke, /WINDOWS_INSTALL_TIMEOUT_MS = 10 \* 60_000/);
-  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\], \{ timeout: WINDOWS_INSTALL_TIMEOUT_MS \}\)/);
+  assert.match(packageSmoke, /PACKAGED_LAUNCHER_SMOKE_TIMEOUT_MS = 5 \* 60_000/);
+  assert.match(packageSmoke, /installWindowsPackage\(installer\)/);
+  assert.match(packageSmoke, /windowsInstallerProcessCount/);
+  assert.match(packageSmoke, /detachedInstallerObserved/);
+  assert.match(packageSmoke, /Windows installer process exited without completing/);
   assert.match(packageSmoke, /resources[\s\S]*runtime[\s\S]*bun\.exe/);
   assert.match(packageSmoke, /codex-chatgpt-web\.cmd/);
   assert.match(packageSmoke, /marker\.trayReady !== true/);
+  assert.match(packageSmoke, /run\(command, args, \{ env, timeout: PACKAGED_LAUNCHER_SMOKE_TIMEOUT_MS \}\)/);
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 

@@ -26,6 +26,15 @@ test("the browser adapter maps fixed routed efforts to the visible ChatGPT modes
   });
 });
 
+test("responses tool transport keeps outer tools enabled without requiring a ChatGPT connector", () => {
+  expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "high", {
+    localToolsEnabled: true,
+    localToolTransport: "responses",
+    solAvailable: true,
+    proAvailable: true,
+  })).toMatchObject({ localTools: true, connectorTools: false });
+});
+
 test("capabilities gate tools and Pro-only efforts explicitly without changing the selected model", () => {
   expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "high", {
     localToolsEnabled: false,
@@ -65,6 +74,7 @@ test("Luna-only capability binds the default model without a UI effort selector"
     displayLabel: "Luna",
     uiEffortIndex: null,
     localTools: true,
+    connectorTools: true,
   });
   expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "low", {
     localToolsEnabled: false,

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import type { AppConfig } from "./config";
-import { getConfigDir, getConfigPath, loadConfig } from "./config";
+import { getConfigDir, getConfigPath, loadConfig, usesMcpToolTransport } from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
@@ -365,7 +365,7 @@ export async function runDoctor(): Promise<DoctorReport> {
   ));
   checks.push(generatedImagesStorageCheck());
 
-  if (config.mode === "full") {
+  if (usesMcpToolTransport(config)) {
     checks.push(await upstreamNetworkCheck(
       "network-openai",
       "https://api.openai.com/v1/models",
@@ -405,6 +405,12 @@ export async function runDoctor(): Promise<DoctorReport> {
       status: "warning",
       message: `Local checks cannot prove that ChatGPT connector ${JSON.stringify(config.appName)} is attached to this tunnel`,
       detail: "Verify it once at https://chatgpt.com/#settings/Plugins while the tunnel is ready.",
+    });
+  } else if (config.mode === "full") {
+    checks.push({
+      id: "tools",
+      status: "ok",
+      message: "Responses tool bridge is enabled; outer Codex owns tool approval, sandboxing, and execution",
     });
   } else {
     checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });

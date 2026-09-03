@@ -4,8 +4,10 @@ import { join } from "node:path";
 import type { CodexParsedRequest } from "../src/types";
 import type { ChatGptBrowserWorker, BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import {
+  boundedCompactionLatestUserPrompt,
   canonicalizeCompactionHandoff,
   LATEST_USER_PROMPT_MARKER,
+  MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS,
   requestRetainedCompactionHandoff,
   runRetainedCompaction,
   settleActiveCompactionSource,
@@ -14,6 +16,7 @@ import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-erro
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSession, ChatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
+import { estimateTokens } from "../src/lib/token-estimate";
 
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
@@ -67,6 +70,23 @@ test("canonical compaction handoff preserves the latest human prompt exactly onc
   )).toThrow("conflicting latest-user marker");
 });
 
+test("oversized latest-user appendix is token-bounded instead of duplicating the full prompt", () => {
+  const huge = `important-prefix:${" filler".repeat(20_000)}:important-suffix`;
+  const bounded = boundedCompactionLatestUserPrompt(huge);
+  expect(bounded).toStartWith("important-prefix:");
+  expect(bounded).toEndWith(":important-suffix");
+  expect(bounded).toContain("AsterBridge omitted the middle");
+  expect(bounded.length).toBeLessThan(huge.length / 4);
+  expect(estimateTokens(bounded)).toBeLessThanOrEqual(MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS);
+
+  const parsed = compactionRequest();
+  parsed.context.messages = [{ role: "user", content: huge, timestamp: 1 }];
+  (parsed._rawBody as { input: Array<{ content: Array<{ text: string }> }> }).input[0]!.content[0]!.text = huge;
+  const canonical = canonicalizeCompactionHandoff(parsed, "bounded checkpoint");
+  expect(canonical).not.toContain(huge);
+  expect(estimateTokens(canonical)).toBeLessThan(1_200);
+});
+
 test("retained compaction uses the exact conversation and waits for structured handoff plus browser completion", async () => {
   const socketPath = brokerTestEndpoint(`cgw-retained-compaction-${process.pid}-${Date.now()}`);
   const broker = TurnBroker.forSocket(socketPath);
@@ -115,6 +135,50 @@ test("retained compaction uses the exact conversation and waits for structured h
       requireRetainedConversation: true,
     });
     expect(observedTurn?.prepareResume).toBeFunction();
+  } finally {
+    await broker.close();
+  }
+}, 30_000);
+
+test("retained compaction falls back to the dedicated browser checkpoint when ChatGPT skips the structured MCP handoff", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-retained-compaction-text-${process.pid}-${Date.now()}`);
+  const broker = TurnBroker.forSocket(socketPath);
+  await broker.listen();
+  const parsed = compactionRequest();
+  const source = sourceSession("conversation-text-fallback");
+  let token = "";
+  let handoffId = "";
+  const worker = {
+    run(turn: BrowserTurn) {
+      return (async () => {
+        const prepared = await turn.prepareResume!();
+        token = /turn_token (control_[0-9a-f]+)/.exec(prepared.text)?.[1] ?? "";
+        handoffId = /handoff_id (handoff_[0-9a-f]+)/.exec(prepared.text)?.[1] ?? "";
+        if (!token || !handoffId) throw new Error("compaction prompt did not expose its one-shot binding");
+        return "browser-only retained checkpoint";
+      })();
+    },
+  } as unknown as ChatGptBrowserWorker;
+
+  try {
+    const summary = await requestRetainedCompactionHandoff(
+      worker,
+      parsed,
+      source,
+      broker,
+      { localToolsEnabled: true, solAvailable: true, proAvailable: false },
+      "trace-retained-compaction-text",
+      undefined,
+      30_000,
+      10,
+    );
+    expect(summary).toBe("browser-only retained checkpoint");
+    await expect(callTurnBroker(socketPath, {
+      method: "submit_compaction_handoff",
+      token,
+      handoffId,
+      summary: "late stale checkpoint",
+    })).rejects.toThrow("invalid, expired, or consumed");
   } finally {
     await broker.close();
   }

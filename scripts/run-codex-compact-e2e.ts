@@ -78,10 +78,11 @@ async function runTextTurn(text: string): Promise<any> {
   return Promise.race([waitForTurnCompletion(threadId, startIndex), exited]);
 }
 
-async function waitForCompaction(timeoutMs = 180_000): Promise<any> {
+async function waitForCompaction(afterIndex: number, timeoutMs = 180_000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const message of notifications as any[]) {
+    for (let index = afterIndex; index < notifications.length; index += 1) {
+      const message = notifications[index] as any;
       const method = message?.method;
       const params = message?.params;
       if (method === "item/completed" && params?.threadId === threadId && params?.item?.type === "contextCompaction") {
@@ -122,8 +123,12 @@ try {
   } else {
     await Promise.race([send("thread/resume", { threadId }), exited]);
   }
+  const compactStartIndex = notifications.length;
   await Promise.race([send("thread/compact/start", { threadId }), exited]);
-  const completed = await Promise.race([waitForCompaction(), exited]);
+  const completed = await Promise.race([waitForCompaction(compactStartIndex), exited]);
+  // Codex 0.150 can emit the compaction item before the Compact turn itself becomes terminal.
+  // Wait for the matching post-request turn/completed notification before sending any new input.
+  await Promise.race([waitForTurnCompletion(threadId, compactStartIndex), exited]);
   if (createThread) await runTextTurn("Reply exactly SAME_OWNER_POST_COMPACTION_OK. Do not use tools.");
   process.stdout.write(`${JSON.stringify({
     event: "ASTERBRIDGE_CODEX_COMPACTION_OK",

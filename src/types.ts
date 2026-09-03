@@ -272,8 +272,10 @@ export interface CodexProviderConfig {
     turnTimeoutMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
-    /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */
+    /** Allow the Web model to request tools from the current outer Codex turn. */
     localToolsEnabled?: boolean;
+    /** Transport used to carry Web-model tool intent back to outer Codex. MCP remains preferred when available. */
+    localToolTransport?: "mcp" | "responses";
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */

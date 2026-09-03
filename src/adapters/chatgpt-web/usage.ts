@@ -17,6 +17,7 @@ import type { BrokerToolRequest } from "./turn-broker";
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
 const ESTIMATE_TURN_TOKEN = "turn_00000000000000000000000000000000";
+const ESTIMATE_DIRECT_TOOL_BINDING = "dtb_000000000000000000000000";
 
 export interface ChatGptWebRoundEvidence {
   answer?: string;
@@ -37,11 +38,14 @@ export function estimateChatGptWebInputTokens(
   const compiled = compileChatGptWebPrompt(
     parsed,
     capabilities,
-    mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
+    mode.localTools && capabilities.localToolTransport !== "responses" ? ESTIMATE_TURN_TOKEN : undefined,
     {
       captureLunaCheckpoint: parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
         && !parsed._compactionRequest
         && Boolean(identity.threadId && identity.turnId),
+      ...(mode.localTools && capabilities.localToolTransport === "responses"
+        ? { directToolBinding: ESTIMATE_DIRECT_TOOL_BINDING }
+        : {}),
     },
   );
   return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);

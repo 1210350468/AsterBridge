@@ -13,6 +13,7 @@ import {
   resolveDevSetupConnectorName,
   resolveSetupConnectorName,
   saveConfig,
+  usesMcpToolTransport,
 } from "./config";
 import {
   browserLoginStateExists,
@@ -56,6 +57,7 @@ export interface SetupOptions {
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
+  localToolTransport?: "mcp" | "responses";
   experimentalBiggerContext?: boolean;
   subagentProtocol?: SubagentProtocol;
   replaceCodexRoute?: boolean;
@@ -136,6 +138,7 @@ function loadExistingConfig(): AppConfig | undefined {
 function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
   return JSON.stringify({
     mode: before.mode,
+    localToolTransport: before.localToolTransport,
     releaseVersion: before.releaseVersion,
     host: before.host,
     port: before.port,
@@ -164,6 +167,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     tunnel: before.tunnel,
   }) !== JSON.stringify({
     mode: after.mode,
+    localToolTransport: after.localToolTransport,
     releaseVersion: after.releaseVersion,
     host: after.host,
     port: after.port,
@@ -194,7 +198,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
 }
 
 export function tunnelWorkerRuntimeChanged(before: AppConfig | undefined, after: AppConfig): boolean {
-  if (!before || before.mode !== "full" || after.mode !== "full") return false;
+  if (!before || !usesMcpToolTransport(before) || !usesMcpToolTransport(after)) return false;
   return before.releaseVersion !== after.releaseVersion
     || JSON.stringify(before.runtimeCommand) !== JSON.stringify(after.runtimeCommand)
     || before.brokerSocketPath !== after.brokerSocketPath;
@@ -274,6 +278,7 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   }
   config.appName = resolveSetupConnectorName(existing?.appName, options.appName);
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
+  if (options.localToolTransport !== undefined) config.localToolTransport = options.localToolTransport;
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
   }
@@ -317,6 +322,17 @@ async function inspectSystemBrowserCapabilities(config: AppConfig): Promise<{ so
 
 async function configureTunnel(config: AppConfig, existing: AppConfig | undefined, options: SetupOptions): Promise<void> {
   if (config.mode === "browser-only") {
+    // Browser-only owns no local-tool transport. Reset the dormant selector to MCP so a later
+    // Full setup cannot inherit an old experimental Responses choice when a caller omits an
+    // explicit transport flag.
+    config.localToolTransport = "mcp";
+    delete config.tunnel;
+    return;
+  }
+  if (!usesMcpToolTransport(config)) {
+    if (options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue) {
+      throw new Error("Responses tool transport does not use Tunnel credentials; remove tunnel options or select --mcp-tool-bridge");
+    }
     delete config.tunnel;
     return;
   }
@@ -491,12 +507,14 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   }
 
   let tunnelReady: boolean | null = null;
-  if (config.mode === "browser-only" && existing?.mode === "full") {
+  if (!usesMcpToolTransport(config) && existing && usesMcpToolTransport(existing)) {
     const previousTunnelService = getTunnelServiceStatus();
     if (previousTunnelService.installed || previousTunnelService.loaded) await uninstallTunnelService();
-    stopTunnel(existing);
+    // Launcher-owned setup drains/stops its managed Tunnel before invoking this transaction.
+    // Terminal-owned installs still need setup itself to stop the old managed runtime.
+    if (!launcherOwned) stopTunnel(existing);
   }
-  if (config.mode === "full") {
+  if (usesMcpToolTransport(config)) {
     const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
     const tunnelService = getTunnelServiceStatus();
     const needsProfile = !existsSync(profilePath);
@@ -542,7 +560,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
     tunnelReady,
     codexRestartRequired: true,
-    connectorSetupRequired: config.mode === "full",
+    connectorSetupRequired: config.mode === "full" && (config.localToolTransport ?? "mcp") === "mcp",
   };
 }
 
@@ -567,6 +585,9 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     throw new Error("DEV profile setup requires the desktop launcher browser host");
   }
   config.purpose = DEV_CONFIG_PURPOSE;
+  if (config.mode === "full" && !usesMcpToolTransport(config)) {
+    throw new Error("DEV Full harness currently uses the isolated MCP transport; Responses tool transport is production-only");
+  }
   const capabilities = await inspectLauncherCapabilities(
     config,
     existing,
@@ -579,7 +600,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
   await configureTunnel(config, existing, options);
   let tunnelReady: boolean | null = null;
-  if (config.mode === "full") {
+  if (usesMcpToolTransport(config)) {
     config.tunnel!.alias = DEV_TUNNEL_BASE_NAME;
     config.tunnel!.profileName = DEV_TUNNEL_BASE_NAME;
     const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
@@ -594,6 +615,6 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     mode: config.mode,
     configPath: getConfigPath(),
     tunnelReady,
-    connectorSetupRequired: config.mode === "full",
+    connectorSetupRequired: config.mode === "full" && (config.localToolTransport ?? "mcp") === "mcp",
   };
 }

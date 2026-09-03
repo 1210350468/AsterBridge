@@ -114,6 +114,7 @@ export interface LauncherSnapshot {
   browser: BrowserState | null;
   roxyPreview: RoxyPreviewState | null;
   connectorName: string;
+  toolTransport: "browser-only" | "responses" | "mcp";
   mcpCredentialsConfigured: boolean;
   roxyApiKeyConfigured: boolean;
   networkProxy: { source: string; display: string };
@@ -157,7 +158,7 @@ export interface LauncherApi {
   cancelTurns(): Promise<{ stdout: string }>;
   setBridgeEnabled(enabled: boolean): Promise<LauncherState>;
   uninstallIntegration(): Promise<{ cancelled: true } | { cancelled: false; state: LauncherState }>;
-  setupCore(): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;
+  setupCore(input?: { fullResponses?: boolean }): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;
   setupMcp(input: {
     tunnelId?: string;
     runtimeKey?: string;

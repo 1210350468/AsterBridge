@@ -206,6 +206,51 @@ test("DEV runtime supervision starts only the isolated MCP tunnel", async () => 
   }
 });
 
+test("Responses Full runtime starts only the local daemon and requires no Tunnel config", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-responses-full-supervisor-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  const config = launcherConfig(descriptorPath, {
+    mode: "full",
+    localToolTransport: "responses",
+    solAvailable: true,
+  });
+  assert.equal(validateConfig(config, descriptorPath), config);
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
+  let daemonStarts = 0;
+  let tunnelStarts = 0;
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+  });
+  let daemonHealthy = false;
+  supervisor.proxyHealth = async () => daemonHealthy;
+  const originalStartTunnel = supervisor.startTunnel.bind(supervisor);
+  supervisor.startTunnel = async current => {
+    tunnelStarts += 1;
+    return await originalStartTunnel(current);
+  };
+  supervisor.startDaemon = async () => {
+    daemonStarts += 1;
+    supervisor.daemon = { pid: 123_456_788, exitCode: null, signalCode: null };
+    daemonHealthy = true;
+  };
+  try {
+    const runtime = await supervisor.startConfigured();
+    assert.equal(runtime.status, "ready");
+    assert.equal(daemonStarts, 1);
+    assert.equal(tunnelStarts, 1);
+    assert.equal(supervisor.tunnel, null);
+    assert.equal(await supervisor.ownedRuntimeReady(config), true);
+  } finally {
+    supervisor.daemon = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher runtime validation rejects a relative full-mode executable before spawn", () => {
   const descriptorPath = path.join(os.tmpdir(), "launcher.json");
   assert.throws(() => validateConfig(launcherConfig(descriptorPath, {

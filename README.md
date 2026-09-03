@@ -110,9 +110,8 @@ Then follow the [10-minute quick start](docs/quick-start.md). In short:
 2. Choose the browser backend. The embedded browser is simplest; RoxyBrowser is recommended when you
    want a fixed external profile with automatic startup and Live Preview.
 3. Run **Settings → Run diagnostics** once before installing models.
-4. Press **Install models**, restart Codex once, and prove a simple `WEB_OK` turn before configuring MCP.
-5. Configure the optional **MCP** page only after Browser-only mode works. Enable **Bigger Context**
-   only when you need larger task transport; keep the standard mode for ordinary work.
+4. Press **Install models**, restart Codex once, and prove a simple `WEB_OK` turn.
+5. Configure **MCP Full Harness**. MCP is AsterBridge's primary native-tool transport because one ChatGPT Web response can remain in a continuous tool loop while outer Codex performs the real approvals, sandboxing, and execution. The Responses direct-tool bridge remains an explicit experimental fallback for accounts that cannot use a custom MCP App; it is not enabled automatically. Enable **Bigger Context** only when you need larger task transport.
 
 ### Copy this into an AI agent: install and prove AsterBridge end to end
 
@@ -127,10 +126,11 @@ Requirements:
 3. Start AsterBridge and run Doctor first. For network failures, check AsterBridge > Launcher settings > Network proxy. On Windows, prefer Automatic so it can inherit the system proxy. Do not randomly modify the global proxy or wipe configuration.
 4. If RoxyBrowser is selected, verify that the RoxyBrowser application is running, Local API is enabled, and AsterBridge can reach 127.0.0.1:50000. A closed Profile should be opened by AsterBridge. Do not copy browser cookies.
 5. Install models from Model setup, restart Codex, then run an actual chatgpt-web/high turn (or another available ChatGPT Web model) that must reply exactly WEB_OK. Do not continue until WEB_OK succeeds.
-6. Configure MCP only after Browser-only works. Reuse safely stored Tunnel/profile/key material when present. For a first-time setup, guide me through creating an OpenAI Tunnel and a Tunnels Read + Use key, but have me enter them only in the local AsterBridge UI.
-7. Confirm the ChatGPT Connector/App name exactly matches AsterBridge (default: Codex Native3). Then use chatgpt-web/high to call Codex Native3 and execute the harmless command Write-Output ASTERBRIDGE_FULL_OK. Full Harness is proven only when the real tool result returns ASTERBRIDGE_FULL_OK.
-8. If any step fails, inspect AsterBridge Doctor, Activity logs, and docs/troubleshooting.md. Diagnose the earliest relevant warning/error instead of repeatedly reinstalling, deleting ~/.codex-chatgpt-web, or resetting Codex.
-9. Finish with a concise status report: AsterBridge version, Codex version, browser backend, proxy source, Browser-only WEB_OK result, MCP/Native3 FULL_OK result, and any remaining manual action.
+6. Configure MCP only after Browser-only works. Reuse safely stored Tunnel/profile/key material when present. If first-time credentials are needed, have me enter them only in the local AsterBridge UI; never paste them into chat. Confirm the ChatGPT App name exactly matches Launcher (default `Codex Native3`).
+7. Use chatgpt-web/high through MCP to execute the harmless command `Write-Output ASTERBRIDGE_FULL_OK`. Full Harness is proven only when the real outer-Codex tool result returns `ASTERBRIDGE_FULL_OK`; do not accept a model claim as proof.
+8. If the current ChatGPT account cannot expose a custom MCP App, report that account-side limitation. Do not silently switch the installation to the experimental Responses direct-tool bridge. Use that fallback only when I explicitly request it.
+9. If any step fails, inspect AsterBridge Doctor, Activity logs, and docs/troubleshooting.md. Diagnose the earliest relevant warning/error instead of repeatedly reinstalling, deleting ~/.codex-chatgpt-web, or resetting Codex.
+10. Finish with a concise status report: AsterBridge version, Codex version, browser backend, proxy source, Browser-only WEB_OK result, MCP/Native3 FULL_OK result, and any remaining manual action.
 ```
 
 The launcher detects the current account's ChatGPT controls during setup: Free/Go accounts expose
@@ -152,49 +152,26 @@ This source path requires Bun 1.4.0. The command installs locked dependencies an
 
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
-| **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No; Codex shows a warning | None |
-| **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI tunnel + ChatGPT connector |
+| **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No | None |
+| **Full · MCP (primary)** | Same account-available Web models | Yes | OpenAI Tunnel + custom ChatGPT App |
+| **Full · Responses (experimental fallback)** | Same account-available Web models | Yes | Explicit CLI opt-in; no Tunnel/custom App, but tool-dependent work may require additional Web generations |
 
-Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
-rows, but changing them cannot silently change the selected browser model. In Full mode every
-available effort receives the same turn-bound MCP capability. Pro has no separate restriction or
-reduced tool contract.
+Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed rows, but changing them cannot silently change the selected browser model. In either Full transport, ChatGPT only proposes tool calls; outer Codex remains the execution, approval, and sandbox authority. AsterBridge never migrates an MCP installation to Responses without explicit opt-in.
 
-## Full harness
+## Full Harness: MCP / Codex Native3
 
-Full mode connects ChatGPT's tool calls back to the current Codex task through the official
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client). The tunnel is outbound: it does
-not expose a public IP, open an inbound port, or require router forwarding.
+MCP is the primary Full Harness transport. It uses the official [OpenAI tunnel-client](https://github.com/openai/tunnel-client); the tunnel is outbound and does not require router port forwarding. The main reason to prefer MCP is lifecycle efficiency: ChatGPT can stay inside one response while requesting multiple tool calls, rather than completing one Web generation for every dependent local-tool step.
 
 > [!WARNING]
-> The default connector/App name is **Codex Native3**. The retired **Codex Native** and
-> **Codex Native2** identities are intentionally not reused because ChatGPT caches MCP schemas by
-> App identity. Leave old Apps untouched and create the fresh `Codex Native3` identity instead.
-> **Allow low-risk actions** blocks commands and patches before they reach the Codex harness.
+> The default connector/App name is **Codex Native3**. The retired **Codex Native** and **Codex Native2** identities are intentionally not reused because ChatGPT can cache MCP schemas by App identity. Leave old Apps untouched and create the fresh identity instead.
 
-1. Finish the required launcher setup.
-2. Open **MCP** in the launcher. Create the Tunnel and a regular API key on the same OpenAI account
-   that will use the ChatGPT connector; creating the key is free and does not consume model API
-   credits.
-3. Enter the exact **Connector / App name** you want, paste the Tunnel ID and API key when needed,
-   then press **Connect harness**. Changing only the App name can reuse already saved Tunnel
-   credentials.
-4. Enable **Developer Mode** in ChatGPT settings. Create a **new** App/connector using **Tunnel**,
-   select that exact Tunnel, set **Authentication** to **None**, and give it exactly the same name
-   configured in the launcher.
-5. Leave older connector identities untouched. ChatGPT caches the public MCP contract by App
-   identity, so a new name is the safest way to force a fresh tool scan after incompatible tool/schema
-   changes. Under **Permissions** on the newly created App, choose **Allow all actions**; **Allow
-   low-risk actions** blocks commands and patches before they reach this runtime. The outer Codex
-   harness still enforces its sandbox and approvals.
-6. Run **Verify runtime**. It selects the currently configured App name exactly; a stale or differently
-   named connector is not accepted as a substitute.
+1. Finish Browser-only setup first.
+2. Open **MCP** in the launcher and create/reuse a Tunnel plus its runtime key.
+3. Create the matching custom ChatGPT App/connector; use **Tunnel**, **Authentication: None**, and the exact name shown by Launcher.
+4. Run **Verify runtime**. A differently named or stale connector is not accepted as a substitute.
+5. Prove a harmless real outer-Codex tool call before treating Full Harness as ready.
 
-Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
-them. See
-[developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
-Unexpected approval prompts fail closed unless `--auto-approve-tool-calls` is explicitly enabled;
-that option clicks **Allow once**, never a permanent grant.
+MCP availability and permissions are controlled by the ChatGPT account/workspace and can change independently of AsterBridge. If the account cannot expose a custom MCP App, Browser-only remains supported and the connectorless Responses bridge can be enabled explicitly as an experimental fallback. It is never selected silently because dependent tool chains can require extra Web generations and its text-envelope transport is less robust than native MCP. See [developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt). Outer Codex still enforces its sandbox and approvals.
 
 ## Operations
 

@@ -88,7 +88,10 @@ jobs:
       - name: Verify release tag matches package version
         run: |
           expected="v$(jq -r .version package.json)"
-          test "$GITHUB_REF_NAME" = "$expected"
+          if [[ "$GITHUB_REF_NAME" != "$expected" && "$GITHUB_REF_NAME" != "$expected"-rc.* ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match $expected or an allowed RC tag." >&2
+            exit 1
+          fi
       - name: Add licenses, installers, and demo
         run: |
           cp LICENSE release-assets/LICENSE
@@ -141,8 +144,10 @@ jobs:
           mapfile -d '' release_files < <(find release-assets -type f -print0)
           test "${#release_files[@]}" -gt 0
           release_flags=(--latest)
+          release_notes=(--generate-notes)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags=(--prerelease --latest=false)
+            release_notes=(--notes "Release candidate. Windows 11 x64 has completed interactive Full MCP validation; macOS and Linux assets have CI/package smoke coverage only and remain interactive-unvalidated.")
           fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${release_files[@]}" \
@@ -157,5 +162,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               "${release_flags[@]}" \
-              --generate-notes
+              "${release_notes[@]}"
           fi

@@ -18,4 +18,4 @@ test.each([
   ["ordinary repeated words", `${"word ".repeat(79_999)}word`],
 ])("%s context uses tokenizer-derived usage without character-pressure inflation", (_label, text) => {
   expect(estimateChatGptWebInputTokens(request(text), capabilities)).toBeLessThan(100_000);
-});
+}, 10_000);

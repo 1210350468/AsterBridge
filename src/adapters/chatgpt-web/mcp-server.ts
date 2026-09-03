@@ -5,7 +5,18 @@ import * as z from "zod/v4";
 import { namespacedToolName, type CodexTool } from "../../types";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
+import {
+  CODEX_DEFERRED_SUBAGENT_WIRE_NAMES,
+  CODEX_SUBAGENT_WAIT_WIRE_NAME,
+  isDeferredSubagentWireName,
+} from "./deferred-subagent-tools";
 import { callTurnBroker, type BrokerToolResult } from "./turn-broker";
+
+export {
+  CODEX_DEFERRED_SUBAGENT_WIRE_NAMES,
+  CODEX_SUBAGENT_WAIT_WIRE_NAME,
+  isDeferredSubagentWireName,
+} from "./deferred-subagent-tools";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -60,20 +71,8 @@ function result(value: Record<string, unknown>, isError = false) {
   };
 }
 
-export const CODEX_SUBAGENT_WAIT_WIRE_NAME = "multi_agent_v1__wait_agent";
 export const CODEX_SUBAGENT_WAIT_POLL_MS = 10_000;
 export const CODEX_IMAGE_GEN_WIRE_NAME = "image_gen__imagegen";
-export const CODEX_DEFERRED_SUBAGENT_WIRE_NAMES = new Set([
-  "multi_agent_v1__spawn_agent",
-  "multi_agent_v1__send_input",
-  "multi_agent_v1__resume_agent",
-  CODEX_SUBAGENT_WAIT_WIRE_NAME,
-  "multi_agent_v1__close_agent",
-]);
-
-export function isDeferredSubagentWireName(value: string): boolean {
-  return CODEX_DEFERRED_SUBAGENT_WIRE_NAMES.has(value);
-}
 
 export function boundedCodexToolArguments(
   requestedWireName: string,

@@ -85,6 +85,10 @@ function windowsPipeEndpoint(value) {
   return /^\\\\\.\\pipe\\[A-Za-z0-9._-]+$/.test(value);
 }
 
+function usesMcpTunnel(config) {
+  return config?.mode === "full" && (config.localToolTransport ?? "mcp") === "mcp";
+}
+
 function tunnelRuntimeAbsent(value) {
   return /not found|not running|unknown alias|\balias\b[^\r\n]{0,160}\bis not known\b/i.test(
     String(value || ""),
@@ -241,9 +245,14 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     || config.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
     throw new Error("Runtime configuration has an invalid runtime command");
   }
-  if (config.mode === "full") {
+  if (config.localToolTransport !== undefined
+    && config.localToolTransport !== "mcp"
+    && config.localToolTransport !== "responses") {
+    throw new Error("Runtime configuration has an invalid localToolTransport");
+  }
+  if (usesMcpTunnel(config)) {
     if (!config.tunnel || typeof config.tunnel !== "object") {
-      throw new Error("Full mode is missing tunnel configuration");
+      throw new Error("MCP tool transport is missing tunnel configuration");
     }
     for (const key of ["binaryPath", "tunnelId", "runtimeKeyFile", "profileDir", "profileName", "alias"]) {
       if (typeof config.tunnel[key] !== "string" || !config.tunnel[key].trim()) {
@@ -801,7 +810,7 @@ class RuntimeSupervisor {
   }
 
   async startTunnel(config, operationName = "runtime-start") {
-    if (config.mode !== "full") return;
+    if (!usesMcpTunnel(config)) return;
     this.assertTunnelClientReady(config);
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
@@ -1148,11 +1157,11 @@ class RuntimeSupervisor {
     else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);
     if (!tunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
-    if (config.mode === "full" && !this.tunnel) {
+    if (usesMcpTunnel(config) && !this.tunnel) {
       throw new Error("Tunnel runtime is unavailable after runtime recovery");
     }
     if (!tunnelOnly) await this.waitForProxy(config);
-    if (config.mode === "full") {
+    if (usesMcpTunnel(config)) {
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
     }
     if (!this.tryWriteState("ready")) {
@@ -1227,7 +1236,7 @@ class RuntimeSupervisor {
 
   async ownedRuntimeReady(config) {
     if (this.launcherProfile === "development") {
-      return config.mode !== "full" || Boolean(this.tunnel && await this.tunnelHealth(config));
+      return !usesMcpTunnel(config) || Boolean(this.tunnel && await this.tunnelHealth(config));
     }
     const daemon = this.daemon;
     if (!daemon
@@ -1237,7 +1246,7 @@ class RuntimeSupervisor {
       || !await this.proxyHealth(config, 2_000, daemon.pid, true)) {
       return false;
     }
-    if (config.mode !== "full") return true;
+    if (!usesMcpTunnel(config)) return true;
     return Boolean(this.tunnel && await this.tunnelHealth(config));
   }
 
@@ -1366,7 +1375,7 @@ class RuntimeSupervisor {
   }
 
   async adoptConfiguredTunnelForStop(config) {
-    if (config.mode !== "full" || this.tunnel) return;
+    if (!usesMcpTunnel(config) || this.tunnel) return;
     const health = await this.waitForKnownTunnelStatus(config);
     if (tunnelRuntimeStopped(health)) {
       return;
@@ -1535,7 +1544,7 @@ class RuntimeSupervisor {
       );
     }
     let managedTunnelRunning = false;
-    if (config.mode === "full") {
+    if (usesMcpTunnel(config)) {
       const tunnelHealth = await this.waitForKnownTunnelStatus(config);
       managedTunnelRunning = !tunnelRuntimeStopped(tunnelHealth);
       if (managedTunnelRunning
@@ -1734,7 +1743,7 @@ class RuntimeSupervisor {
         ? await this.proxyHealth(config)
         : false;
       const runtimeMayBeLive = healthyRuntime || runtimeOwnershipMayBeLive(ownershipState);
-      if (config?.mode === "full"
+      if (usesMcpTunnel(config)
         && !this.tunnel
         && (runtimeMayBeLive || !ownershipState)) {
         await this.adoptConfiguredTunnelForStop(config);
@@ -1779,7 +1788,7 @@ class RuntimeSupervisor {
       return { status: "stopped" };
     } catch (error) {
       const compensationErrors = [];
-      if (tunnelStopped && config?.mode === "full" && !this.tunnel) {
+      if (tunnelStopped && usesMcpTunnel(config) && !this.tunnel) {
         try {
           await this.startTunnel(config);
         } catch (caught) {

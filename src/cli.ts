@@ -50,7 +50,9 @@ Usage:
 
 Setup options:
   --browser-only               Account-eligible Web models, full context/images, no local tools or tunnel
-  --full                       Account-eligible Web models with tools through the configured connector
+  --full                       Account-eligible Web models with outer Codex tools
+  --responses-tool-bridge      Full mode without a ChatGPT custom MCP App; tool calls return through native Responses
+  --mcp-tool-bridge            Full mode through the configured ChatGPT custom MCP App (default for existing installs)
   --port NUMBER                Loopback Responses port (default: 17841)
   --chrome PATH                Google Chrome/Chromium executable used for account login
   --browser-host-descriptor PATH
@@ -224,6 +226,11 @@ async function setupCommand(args: string[]): Promise<void> {
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
+  const responsesToolBridge = takeFlag(args, "--responses-tool-bridge");
+  const mcpToolBridge = takeFlag(args, "--mcp-tool-bridge");
+  if (responsesToolBridge && mcpToolBridge) throw new Error("Choose at most one tool bridge: --responses-tool-bridge or --mcp-tool-bridge");
+  if ((responsesToolBridge || mcpToolBridge) && !full) throw new Error("Tool bridge selection requires --full");
+  if (responsesToolBridge || mcpToolBridge) options.localToolTransport = responsesToolBridge ? "responses" : "mcp";
   const biggerContext = takeFlag(args, "--bigger-context");
   const standardContext = takeFlag(args, "--standard-context");
   if (biggerContext && standardContext) {

@@ -89,6 +89,8 @@ export interface AppConfig {
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
   autoApproveToolCalls: boolean;
+  /** Full-harness transport. MCP uses ChatGPT custom Apps; responses keeps execution in outer Codex without an App. */
+  localToolTransport?: "mcp" | "responses";
   subagentProtocol: SubagentProtocol;
   controlToken: string;
   runtimeCommand: string[];
@@ -190,6 +192,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     proAvailable: false,
     experimentalBiggerContext: false,
     autoApproveToolCalls: false,
+    localToolTransport: "mcp",
     subagentProtocol: "compatibility-v1",
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
@@ -398,6 +401,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (typeof parsed.autoApproveToolCalls !== "boolean") {
     throw new Error(`Invalid autoApproveToolCalls in ${path}`);
   }
+  if (parsed.localToolTransport !== undefined
+    && parsed.localToolTransport !== "mcp"
+    && parsed.localToolTransport !== "responses") {
+    throw new Error(`Invalid localToolTransport in ${path}`);
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -426,8 +434,8 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`brokerSocketPath must be an absolute Unix socket path in ${path}`);
   }
   if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.controlToken!)) throw new Error(`Invalid controlToken in ${path}`);
-  if (parsed.mode === "full") {
-    if (!parsed.tunnel || typeof parsed.tunnel !== "object") throw new Error("Full mode requires tunnel configuration");
+  if (usesMcpToolTransport(parsed as AppConfig)) {
+    if (!parsed.tunnel || typeof parsed.tunnel !== "object") throw new Error("MCP tool transport requires tunnel configuration");
     for (const key of ["binaryPath", "tunnelId", "runtimeKeyFile", "profileDir", "profileName", "alias"] as const) {
       if (typeof parsed.tunnel[key] !== "string" || !parsed.tunnel[key].trim()) {
         throw new Error(`Missing tunnel.${key} in ${path}`);
@@ -477,6 +485,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
   } as AppConfig;
 }
 
+export function usesMcpToolTransport(config: Pick<AppConfig, "mode" | "localToolTransport">): boolean {
+  return config.mode === "full" && (config.localToolTransport ?? "mcp") === "mcp";
+}
+
 export function saveConfig(config: AppConfig): void {
   const path = getConfigPath();
   const original = existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -517,6 +529,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
+      ...(config.mode === "full" ? { localToolTransport: config.localToolTransport ?? "mcp" } : {}),
       solAvailable: config.solAvailable,
       proAvailable: config.proAvailable,
       experimentalBiggerContext: config.experimentalBiggerContext,

@@ -361,10 +361,13 @@ test("prompt verification accepts Lexical NBSP preservation without weakening ot
   expect(promptTextEquivalent.call(worker, "warn ⚠️ now", "warn ⚠ now")).toBeTrue();
   expect(promptTextEquivalent.call(worker, "text ☀︎ now", "text ☀ now")).toBeTrue();
   expect(promptTextEquivalent.call(worker, "Cafe\u0301", "Café")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "first\r\nsecond\r\nthird", "first\nsecond\nthird")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "first\rsecond", "first\nsecond")).toBeTrue();
 
   // Other whitespace and ordinary text mutations must remain fail closed.
   expect(promptTextEquivalent.call(worker, "a b", "a\tb")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "a\nb", "a b")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "a\n\nb", "a\nb")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "abc", "abd")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "abc", "ab")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "A‍B", "AB")).toBeFalse();
@@ -740,6 +743,36 @@ test("caret re-anchor fails closed when the live composer cannot be anchored", a
   expect(reanchorSource).toContain("[data-inline-selection-pill-cursor-target]");
 });
 
+test("connector mention rows stay scoped to the visible composer popover", () => {
+  const rows = { scoped: true };
+  const nested = {
+    locator: (selector: string) => {
+      expect(selector).toBe('.__menu-item[tabindex="0"]');
+      return rows;
+    },
+  };
+  const visible = {
+    last: () => nested,
+  };
+  const popovers = {
+    filter: (options: { visible: boolean }) => {
+      expect(options).toEqual({ visible: true });
+      return visible;
+    },
+  };
+  const page = {
+    locator: (selector: string) => {
+      expect(selector).toBe(".popover");
+      return popovers;
+    },
+  };
+  const connectorMentionRows = (ChatGptBrowserWorker.prototype as unknown as {
+    connectorMentionRows(page: unknown): unknown;
+  }).connectorMentionRows;
+
+  expect(connectorMentionRows.call({}, page)).toBe(rows);
+});
+
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {
   const calls: Array<[string, string?]> = [];
   let connectorSelected = false;
@@ -807,6 +840,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   let activeComposerCalls = 0;
   const resolved = await selectConnector.call({
     config: { appName: "Codex Native3" },
+    connectorMentionRows: () => page.locator('.__menu-item[tabindex="0"]'),
     connectorIsSelected: async () => connectorSelected,
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => {
@@ -821,7 +855,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     ["fill", ""],
     ["fill", ""],
     ["focus"],
-    ["pressSequentially", "@c"],
+    ["pressSequentially", "@Codex Native3"],
     ["waitForResult"],
     ["press"],
     ["waitForSelectedConnector"],
@@ -863,6 +897,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
 
   await expect(selectConnector.call({
     config: { appName: "Codex Native3 DEV" },
+    connectorMentionRows: () => menuRows,
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => selected ? selectedComposer : initialComposer,
@@ -899,7 +934,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     fill: async () => { calls.push("clear"); },
     focus: async () => { calls.push("focus"); },
     pressSequentially: async (value: string) => {
-      expect(value).toBe("@c");
+      expect(value).toBe("@Codex Native3");
       calls.push("type");
     },
   };
@@ -923,6 +958,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
   let activeComposerCalls = 0;
   await selectConnector.call({
     config: { appName: "Codex Native3" },
+    connectorMentionRows: () => ({ filter: () => appResult, evaluateAll: async () => [] }),
     connectorIsSelected: async () => selected,
     connectorMentionRowTitles: async () => [],
     selectedConnectorControl: () => selectedConnector,
@@ -1001,6 +1037,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
       calls.push(`prepare:${prepared}`);
     },
     activeComposer: async () => selected ? selectedComposer : initialComposer,
+    connectorMentionRows: () => menuRows,
     connectorIsSelected: async () => selected,
     connectorMentionFailure: prototype.connectorMentionFailure,
     connectorMentionRowTitles: prototype.connectorMentionRowTitles,
@@ -1061,6 +1098,7 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
     try {
       return await selectConnector.call({
         config: { appName: CHATGPT_CONNECTOR_NAME },
+        connectorMentionRows: () => page.locator(),
         activeComposer: async () => ({
           fill: async () => {},
           focus: async () => {},
@@ -1141,6 +1179,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
   let activeComposerCalls = 0;
   await attachPrompt.call({
     config: { appName: "Codex Native3" },
+    connectorMentionRows: () => ({ filter: () => appResult, evaluateAll: async () => [] }),
     selectConnector,
     insertPromptText,
     connectorIsSelected: async () => selected,
@@ -1157,7 +1196,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     ["fill", ""],
     ["fill", ""],
     ["focus"],
-    ["type", "@c"],
+    ["type", "@Codex Native3"],
     ["connectorMenu"],
     ["selectConnector"],
     ["selectedConnector"],

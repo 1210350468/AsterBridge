@@ -2,9 +2,7 @@
 
 ## Trust boundaries
 
-The user trusts the local Codex app, this loopback daemon, the launcher's private Electron browser
-profile, the selected ChatGPT workspace, OpenAI's tunnel service, and the exact MCP connector they
-created. Repository contents, tool output, websites, and prompt text are untrusted data.
+The user trusts the local Codex app, this loopback daemon, the selected browser profile/session, the selected ChatGPT workspace, and—when Full Harness is enabled—the configured OpenAI Tunnel/custom MCP connector. Repository contents, tool output, websites, and prompt text are untrusted data.
 
 ## Full-mode capability flow
 
@@ -12,18 +10,13 @@ created. Repository contents, tool output, websites, and prompt text are untrust
 2. It extracts `cwd`, workspace roots, sandbox policy, and the tool registry only from the native
    Codex wire envelope with matching turn metadata. A user-authored `<environment_context>` is not
    accepted as authority.
-3. It creates a random, turn-scoped token and embeds it in that one ChatGPT browser prompt.
-4. Every Codex Native action presents that same turn token. The MCP handler idempotently claims an
-   internal binding and immediately dispatches the requested action; the binding is never exposed
-   to the model. Both handles are revoked when the turn completes, aborts, or expires.
-5. MCP can request only a tool advertised by the active outer Codex turn. Codex remains responsible
-   for its sandbox, approval, UI, command sessions, and tool result.
+3. In primary MCP Full, a turn-scoped capability is claimed through the private broker and `Codex Native3` connector. The derived binding remains private to the local bridge, and ChatGPT can continue requesting tools within the same response.
+4. In the experimental Responses fallback, AsterBridge creates a private turn binding and includes only the current turn's advertised tool names/schemas in the ChatGPT prompt. The Browser Worker prefers the assistant DOM's raw private envelope; AsterBridge validates binding, tool membership, argument shape, and parallel-call policy before returning a normal Responses tool call to outer Codex.
+5. Both transports can request only tools advertised by the active outer Codex turn. Codex remains responsible for sandbox, approval, UI, command sessions, execution, and tool results. All turn capabilities are revoked on completion, abort, or retirement.
 
-The bridge transports decisions; it does not add a second planner, semantic router, or fallback
-model. Every available effort uses the same MCP contract. An unavailable account route, missing
-connector, or missing outer tool fails explicitly instead of becoming an effort-specific exception.
+The bridge transports decisions; it does not add a second planner, semantic router, tool executor, or fallback model. Missing bindings/tools/transport capability fail explicitly. MCP is the default Full Harness transport; the Responses fallback requires explicit opt-in and is never selected as an automatic migration.
 
-The current direct turn-token MCP schema is attached only through the `Codex Native3` connector identity. The retired `Codex Native` and `Codex Native2` identities are not reused because ChatGPT caches MCP contracts by App identity.
+The current MCP schema is attached only through the `Codex Native3` connector identity. The retired `Codex Native` and `Codex Native2` identities are not reused because ChatGPT can cache MCP contracts by App identity.
 The pre-v4 `Codex Native` connector is treated as legacy and is never selected as a fallback. This
 prevents a cached legacy schema from being mistaken for the current capability contract.
 
@@ -33,8 +26,7 @@ prevents a cached legacy schema from being mistaken for the current capability c
 
 ChatGPT sees repository content and tool results that may contain hostile instructions. Full mode
 can invoke write and command tools. Use a trusted workspace, keep Codex sandbox/approval settings
-appropriate, and grant only intended connector actions. Automatic per-call approval is off by
-default.
+appropriate. In MCP Full, grant only intended connector actions; outer Codex still owns the actual sandbox and approval decision. In the experimental Responses fallback, AsterBridge never executes the requested tool itself. Automatic per-call approval is off by default.
 
 ### Browser session theft
 
@@ -45,9 +37,7 @@ revoke the ChatGPT session from the launcher.
 
 ### Tunnel credential theft
 
-The runtime key needs only Tunnels Read + Use. It is accepted through a hidden prompt or copied
-from a file, stored with user-only permissions, referenced by file, and never placed in a command
-argument or generated profile. Rotate it after suspected exposure.
+This risk applies to the primary MCP Full transport. The runtime key needs only Tunnels Read + Use. It is accepted through a hidden prompt or copied from a file, stored with user-only permissions, referenced by file, and never placed in a command argument or generated profile. Rotate it after suspected exposure.
 
 ### Same-user local process
 
@@ -66,9 +56,7 @@ or unauthenticated lifecycle control through ordinary requests.
 
 ### Browser/UI drift
 
-ChatGPT DOM and labels are not a stable API. Selectors are narrow and completion requires stable
-completed-turn evidence. UI drift fails the turn; it never chooses another model, starts another
-transport, or returns a fabricated success.
+ChatGPT DOM and labels are not a stable API. Selectors are narrow and completion requires stable completed-turn evidence. For private Responses tool envelopes, raw assistant DOM text is preferred over Markdown serialization. The compatibility fallback repairs only protocol-owned markers/binding/tool names and structural brackets outside JSON strings; it never rewrites arbitrary tool argument values. Ambiguous mutation fails closed. UI drift never chooses another model/transport or returns fabricated tool success.
 
 ### Login-state isolation
 
@@ -81,19 +69,26 @@ external browser.
 
 ### Cross-turn data leakage
 
-Browser turns use at most five independent task-bound tabs in one private login partition. Every
-outer Codex task owns a fresh Temporary Chat document and an exact launcher surface lease; chats are
-never reused across tasks. Closing a running tab destroys its page and terminates that turn. The
-five-tab limit bounds parallel account traffic. Tool calls remain in the same ChatGPT response. The
-bounded local continuation cache is private, expires, and exists only to implement Codex
-`previous_response_id` replay. ChatGPT Web context compaction remains inside the active browser
-response; the bridge does not fabricate or install a Codex history checkpoint.
+Browser turns use at most five independent task-bound surfaces in one private login partition. A
+Codex task/compaction epoch owns one Temporary Chat document; compatible sequential turns may reuse
+that same retained document, but pages are never shared across different tasks. Retained pages
+expire, are LRU-evicted only while idle, and are retired when a successful compaction hands the
+thread to a new epoch. Closing a running task surface destroys its page and terminates that turn.
+The five-surface limit bounds parallel account traffic, and maintenance probes cannot bypass it.
+Tool calls remain in the same ChatGPT response.
+
+For routed compaction, AsterBridge may install the replacement-history shape required by Codex, but
+only after a dedicated read-only summarization turn. AsterBridge-owned `ocx1:` / `ocxr1:` envelopes
+are transparent local formats and are decoded before crossing back to a native provider. Genuine
+OpenAI encrypted reasoning or compaction remains opaque and preserves its provider-owned identity
+and ciphertext unchanged. The v1 retained-history planner also reserves stable harness and
+post-compaction headroom so history reduction cannot immediately recreate a context overflow.
 
 ## Network exposure
 
 - Responses and health listeners bind to `127.0.0.1` only.
-- Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
-  firewall rule.
+- Primary MCP Full uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound firewall rule.
+- The experimental Responses fallback adds no public listener or Tunnel; tool calls return through the same loopback Responses request to outer Codex.
 - The embedded browser connects to ChatGPT, the selected identity provider during explicit sign-in,
   and user-authorized attachment URLs through normal browser networking.
 

@@ -7,7 +7,7 @@ import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
 
 export const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
 export const MANAGED_REMOTE_COMPACTION_LINE =
-  "remote_compaction_v2 = false # Managed by codex-chatgpt-web: bounds retained Web image history.";
+  "remote_compaction_v2 = false # Managed by codex-chatgpt-web: uses bounded /responses/compact history.";
 export const MANAGED_MULTI_AGENT_LINE =
   "multi_agent = true # Managed by codex-chatgpt-web: enables routed Web subagents.";
 export const MANAGED_MULTI_AGENT_V2_LINE =
@@ -29,6 +29,42 @@ export interface PreviousFeatureAssignment extends PreviousAssignment {
 }
 
 export interface CodexIntegrationJournal {
+  version: 9;
+  active: boolean;
+  configPath: string;
+  catalogPath: string;
+  catalogSha256: string;
+  installed: {
+    openai_base_url: string;
+    model_catalog_json: string;
+    remote_compaction_v2: false;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+export interface LegacyCodexIntegrationJournalV8 {
+  version: 8;
+  active: boolean;
+  configPath: string;
+  catalogPath: string;
+  catalogSha256: string;
+  installed: {
+    openai_base_url: string;
+    model_catalog_json: string;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+export interface LegacyCodexIntegrationJournalV7 {
   version: 7;
   active: boolean;
   configPath: string;
@@ -125,6 +161,8 @@ export interface LegacyCodexIntegrationJournal {
 
 export type ManagedRouteJournal =
   | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV8
+  | LegacyCodexIntegrationJournalV7
   | LegacyCodexIntegrationJournalV6
   | LegacyCodexIntegrationJournalV5
   | LegacyCodexIntegrationJournalV4
@@ -166,6 +204,10 @@ export function getCodexConfigPath(): string {
 
 export function getCodexModelsCachePath(): string {
   return join(getCodexHome(), "models_cache.json");
+}
+
+export function getCodexManagedCatalogPath(): string {
+  return join(getConfigDir(), "codex", "model-catalog.json");
 }
 
 export function getCodexJournalPath(): string {
@@ -234,12 +276,14 @@ export function writeIntegrationState(
   journal: AnyCodexIntegrationJournal,
   configWrite?: { path: string; data: string },
   removals: string[] = [],
+  additionalWrites: Array<{ path: string; data: string | Uint8Array }> = [],
 ): void {
   const data = serializeJournal(journal);
   // The recovery copy records intent and the primary copy records commit. If the process stops
   // between those writes, the physical config unambiguously selects the completed state.
   writeFilesWithCompensation([
     { path: getCodexJournalRecoveryPath(), data },
+    ...additionalWrites,
     ...(configWrite ? [configWrite] : []),
     { path: getCodexJournalPath(), data },
   ], removals);

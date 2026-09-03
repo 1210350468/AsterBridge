@@ -1,5 +1,10 @@
 import { readJsonRequestBody } from "./http-body";
 import { nativeUpstreamFetch } from "./native-upstream-fetch";
+import {
+  BRIDGE_COMPACTION_PREFIX,
+  decodeCompactionSummary,
+  SUMMARY_PREFIX,
+} from "./responses/compaction";
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
 
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
@@ -40,6 +45,41 @@ function isBridgeReasoningItem(value: unknown): value is JsonObject {
     && (Array.isArray(value.summary) || Array.isArray(value.content));
 }
 
+function isBridgeCompactionItem(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.type !== "compaction" && value.type !== "compaction_summary" && value.type !== "context_compaction") {
+    return false;
+  }
+  return typeof value.encrypted_content === "string"
+    && value.encrypted_content.startsWith(BRIDGE_COMPACTION_PREFIX);
+}
+
+function bridgeCompactionReplayMessage(item: JsonObject): JsonObject {
+  const encrypted = item.encrypted_content as string;
+  const summary = decodeCompactionSummary(encrypted);
+  if (summary === null) {
+    throw new Error("Managed Web compaction history is malformed and cannot be replayed to native Codex");
+  }
+  return {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\n${summary}` }],
+  };
+}
+
+function hasNativeOpaqueEncryptedItem(value: JsonObject): boolean {
+  if (value.type !== "reasoning"
+    && value.type !== "compaction"
+    && value.type !== "compaction_summary"
+    && value.type !== "context_compaction") {
+    return false;
+  }
+  const encrypted = value.encrypted_content;
+  return typeof encrypted === "string"
+    && !encrypted.startsWith(BRIDGE_REASONING_PREFIX)
+    && !encrypted.startsWith(BRIDGE_COMPACTION_PREFIX);
+}
+
 /**
  * Response item ids are scoped to the backend that created them. A ChatGPT Web response is
  * generated locally, so replaying its `rs_*` id after switching back to native Codex makes the
@@ -47,12 +87,21 @@ function isBridgeReasoningItem(value: unknown): value is JsonObject {
  * the history crossed providers, send the complete item content without any provider-local ids.
  */
 export function scrubBridgeArtifactsForNative(value: unknown): { value: unknown; changed: boolean } {
-  if (!isObject(value) || !Array.isArray(value.input) || !value.input.some(isBridgeReasoningItem)) {
-    return { value, changed: false };
-  }
+  if (!isObject(value) || !Array.isArray(value.input)) return { value, changed: false };
+  const crossedProviders = value.input.some(item => isBridgeReasoningItem(item) || isBridgeCompactionItem(item));
+  if (!crossedProviders) return { value, changed: false };
 
   const input = value.input.flatMap(item => {
     if (!isObject(item)) return [item];
+
+    // AsterBridge's transparent Web compaction envelope is readable locally but is not an OpenAI
+    // encrypted blob. Replay its summary as ordinary context before switching back to native Codex.
+    if (isBridgeCompactionItem(item)) return [bridgeCompactionReplayMessage(item)];
+
+    // Native encrypted reasoning/compaction belongs to the official backend. Preserve its opaque
+    // blob and provider-owned item identity exactly; mutating either can invalidate verification.
+    if (hasNativeOpaqueEncryptedItem(item)) return [item];
+
     const clean = { ...item };
     delete clean.id;
     if (clean.type !== "reasoning") return [clean];

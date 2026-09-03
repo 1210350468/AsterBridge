@@ -1,6 +1,6 @@
 # AsterBridge: 10-minute quick start
 
-This guide is for first-time GitHub users installing AsterBridge; `codex-chatgpt-web` remains the internal compatibility name. The goal is to prove one ChatGPT Web model turn first, then enable MCP/native Codex tools only if you need them. If anything fails, do not keep reinstalling: run **Settings → Run diagnostics** and then use [Troubleshooting](troubleshooting.md).
+This guide is for first-time GitHub users installing AsterBridge; `codex-chatgpt-web` remains the internal compatibility name. The goal is to prove one ChatGPT Web model turn first, then enable native Codex tools through the primary MCP Full Harness. The connectorless Responses bridge remains an explicit experimental fallback and is never selected automatically. If anything fails, do not keep reinstalling: run **Settings → Run diagnostics** and then use [Troubleshooting](troubleshooting.md).
 
 ## 1. Install the launcher
 
@@ -69,34 +69,36 @@ First prove the browser path with a trivial prompt:
 Reply with exactly: WEB_OK
 ```
 
-Do not configure MCP until this succeeds. That keeps browser failures separate from Tunnel/Connector failures.
+Keep this first Browser-only proof separate from tool-transport debugging.
 
-## 5. Optional: enable native Codex tools through MCP
+## 5. Enable MCP Full Harness (primary tool path)
 
-You need this only if ChatGPT Web models should call the current Codex Harness for shell, files, patches, and other native tools.
+1. Return to Launcher → **MCP**.
+2. Create or reuse the OpenAI Tunnel and Runtime Key. Keep credentials in Launcher; never paste them into chat or issue logs.
+3. Create the matching ChatGPT custom App with **Tunnel**, **Authentication: None**, and the exact Launcher name (default `Codex Native3`).
+4. Run **Connect Harness / Verify runtime**.
+5. Test a harmless native tool call, for example:
 
-1. Open Launcher → **MCP**.
-2. Create an OpenAI Tunnel and a Runtime Key for that Tunnel.
-3. The current release defaults to a fresh App/Connector identity: **`Codex Native3`**. Do not reuse the retired `Codex Native` or `Codex Native2` App identities because ChatGPT caches MCP schemas by App identity.
-4. In ChatGPT Developer Mode, create a new App:
-   - Type: Tunnel
-   - Tunnel: the one you created
-   - Authentication: None
-   - Name: exactly the name shown by Launcher (default `Codex Native3`)
-   - Permissions: Allow all operations when you expect commands/patches; low-risk mode may block them before they reach Codex.
-5. Return to Launcher and run **Connect Harness / Verify runtime**.
-6. Test a harmless native tool call, for example `Write-Output MCP_OK` through `Codex Native3`.
+```text
+Use Codex Native3 to run exactly: Write-Output MCP_OK
+```
+
+Treat the test as passed only when the real outer Codex tool result returns `MCP_OK`. MCP is preferred because ChatGPT can remain in one response while requesting multiple tools; AsterBridge transports the requests, while outer Codex owns approval, sandboxing, and execution.
+
+### Experimental fallback: Responses direct tool bridge
+
+If the current ChatGPT account cannot expose a custom MCP App, that is an account-side MCP limitation. Browser-only remains supported. A connectorless Responses tool bridge also exists for explicit testing, but AsterBridge does not switch to it automatically. Dependent tool chains may require additional Web generations, and the private text-envelope transport is less robust than MCP. Enable it only through the explicit advanced/CLI opt-in when you intentionally want that trade-off.
 
 ## 6. Recommended daily settings
 
 - Roxy users: enable auto-start; use Launcher Live Preview and click **Take control** only for login/CAPTCHA/manual intervention.
-- Enable **Keep running after Launcher closes** if you want the Bridge/Tunnel to stay warm.
+- Enable **Keep running after Launcher closes** if you want the local Responses route and primary MCP tunnel to stay warm.
 - Run **Settings → Run diagnostics** before deleting configuration or reinstalling.
 - For GitHub issues, share only redacted Doctor/Activity output. Never post cookies, API keys, tunnel tokens, full turn tokens, or browser profiles.
 
 ## 7. Healthy installation checklist
 
-A healthy Roxy + Full Harness setup normally has:
+A healthy Roxy + MCP Full Harness setup normally has:
 
 ```text
 Configuration       OK
@@ -105,10 +107,12 @@ RoxyBrowser         OK / auto-open ready
 Codex route         OK
 Responses proxy     OK (127.0.0.1:17841)
 ChatGPT upstream    OK
-OpenAI upstream     OK (Full Harness)
-Tunnel runtime      OK
-Connector           verified from Launcher
+OpenAI/Tunnel       OK
+Connector           Codex Native3 verified
+Tools               MCP Full Harness; outer Codex owns execution
 ```
+
+If you explicitly select the experimental Responses transport, Doctor reports that transport instead and does not require Tunnel/Connector state.
 
 A `/v1/responses` WebSocket `426 Upgrade Required` followed by HTTP/SSE fallback is expected in the current implementation and is not a failure by itself.
 

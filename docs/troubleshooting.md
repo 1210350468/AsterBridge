@@ -11,10 +11,10 @@ Start with **Launcher → Settings → Run diagnostics**. Do not delete app data
 | `stream disconnected before completion` after a browser error | The browser task failed upstream | Fix the earliest browser error first; do not treat the final stream message as the root cause |
 | `HTTP 426 Upgrade Required` on `/v1/responses` | WebSocket is unavailable and Codex falls back to HTTP/SSE | Ignore it if the turn completes; investigate only if the fallback also fails |
 | `127.0.0.1:17841` / `EADDRINUSE` | A stale/second Launcher or another process owns the Bridge port | Quit old Launcher instances and restart one Launcher; do not repoint Codex to an unknown port |
-| Models work but MCP tools do not | Browser-only mode or incomplete Full Harness setup | Prove `WEB_OK` first, then configure/verify MCP separately |
+| Models work but native tools do not | Browser-only mode or MCP Full Harness is not configured/verified | Prove `WEB_OK`, then configure **MCP Full Harness** and run Doctor. Use the Responses bridge only when you explicitly selected that experimental fallback |
 | ChatGPT cannot find the App / Connector | Name mismatch or stale cached MCP schema | Create a fresh App named exactly `Codex Native3`; do not reuse `Codex Native` / `Codex Native2` |
-| Tool call is blocked by safety checks | App permission or outer Codex sandbox/approval rejected it | Check App permissions; outer Codex still enforces its own sandbox and approvals |
-| `turn token is invalid, expired, or revoked` | The token does not belong to the live outer Codex turn, or an old App/session was reused | Use the current `Codex Native3`, start a fresh Codex turn, and never reuse turn tokens manually |
+| Tool call is blocked by safety checks | ChatGPT App permissions blocked it or outer Codex sandbox/approval rejected it | Check the MCP App permissions first, then Codex sandbox/approval. Outer Codex remains the final execution authority |
+| `turn token is invalid, expired, or revoked` | The MCP capability does not belong to the live outer Codex turn, or an old App/session was reused | Use the current `Codex Native3`, start a fresh Codex turn, and never reuse turn tokens manually |
 | `ChatGPT is signed out in the configured browser profile` / `chatgpt_session_expired` | The external Roxy/system-browser profile can open ChatGPT but new pages are no longer authenticated; older retained pages may still look usable because their SPA state was already loaded | Sign in to `chatgpt.com` again inside that exact browser/Profile, then rerun Browser check/Doctor. AsterBridge cannot recreate account credentials itself. |
 | `missing YAML frontmatter delimited by ---` | A local Codex Skill file is invalid | Unrelated to Roxy/Bridge; ensure the file begins with `---` at byte 0 (no leading blank line/BOM), or disable that Skill if unused |
 | Image generation returns `502` / `503` / `504` | The native Codex image request hit an upstream gateway or the local proxy transport failed; on older builds Temporary Chat could also choose ChatGPT's separate first-party image tool and bypass AsterBridge entirely | On 3.0.11+, inspect `[asterbridge:image]`: `origin=upstream` means the Codex image endpoint returned the status; `origin=transport` means local proxy/network fetch failed. If an older build reports image 502 but emits no broker `image_gen__imagegen` call and no image telemetry, it used the wrong first-party path. 3.0.13+ forces outer Codex image routing whenever that tool is advertised. |
@@ -23,7 +23,7 @@ Start with **Launcher → Settings → Run diagnostics**. Do not delete app data
 | `fatal: detected dubious ownership` | Git repository ownership differs from the execution user | Unrelated to Roxy/Native3; handle Git `safe.directory` according to your security policy rather than globally weakening every repo |
 | Tunnel health never becomes ready | tunnel-client, Runtime Key, Tunnel ID, network, or ownership problem | Use Launcher MCP + Doctor `tunnel-*` checks before recreating the ChatGPT App |
 | `ChatGPT/Codex upstream is not reachable` | The Responses daemon cannot reach the ChatGPT/Codex upstream; a common cause is proxy settings not reaching the Bun child process | Open **Settings → Network proxy**, try Automatic first, then a custom HTTP proxy if needed, and rerun Doctor |
-| `OpenAI API/tunnel control plane is not reachable` | Full Harness tunnel-client cannot reach the OpenAI control plane | Verify the configured proxy allows HTTPS CONNECT and rerun Doctor |
+| `OpenAI API/tunnel control plane is not reachable` | MCP tunnel-client cannot reach the OpenAI control plane | Verify the configured proxy allows HTTPS CONNECT and rerun Doctor. Ignore this only if you explicitly chose the experimental Responses fallback |
 | GitHub update checks fail while Web models still work | GitHub Releases are blocked by the current network path | AsterBridge Updater follows the same HTTP/HTTPS proxy environment; verify access to `github.com` and retry |
 
 ## Image generation reliability and upload bounds
@@ -87,8 +87,8 @@ If a stale environment variable is overriding your current Clash configuration, 
 Save the setting, then run **Settings → Run diagnostics**. Check:
 
 - `network-chatgpt`: real HTTPS reachability from the managed runtime to the ChatGPT/Codex upstream;
-- `network-openai`: Full Harness reachability to OpenAI API / tunnel control plane;
-- `tunnel-runtime`: whether tunnel-client itself is ready;
+- `network-openai`: MCP reachability to OpenAI API / tunnel control plane;
+- `tunnel-runtime`: whether the MCP tunnel-client itself is ready;
 - `proxy`: only the health of the local `127.0.0.1:17841` Bridge. It does not prove public-network connectivity.
 
 So a green `proxy` check with a red `network-chatgpt` check is usually a network/proxy problem, not a broken local Bridge.
@@ -121,18 +121,23 @@ Click **Take control** on the Browser page. The action is delivered to the Brows
 - Do not export/copy cookies or localStorage to imitate a fingerprint migration.
 - Do not post API keys, profile archives, or full `DevToolsActivePort` websocket paths in issues.
 
-## MCP / Codex Native3
+## Native tools / MCP Full Harness
 
-Use this order:
+Primary MCP / `Codex Native3` path:
 
 1. Prove Browser-only `WEB_OK`.
-2. Doctor: Codex route + Responses proxy healthy.
-3. MCP page: Tunnel runtime healthy.
-4. ChatGPT: fresh App name exactly matches Launcher (`Codex Native3` by default).
-5. Launcher: **Verify runtime**.
-6. Test a harmless native command such as `Write-Output MCP_OK`.
+2. MCP page: Tunnel runtime healthy.
+3. ChatGPT: fresh App name exactly matches Launcher (`Codex Native3` by default).
+4. Launcher: **Verify runtime**.
+5. Test a harmless native command such as `Write-Output MCP_OK` and require the real outer-Codex tool result.
 
-Keeping these stages separate makes it obvious whether the failure is browser, Tunnel, Connector, or Codex Harness.
+Experimental Responses fallback:
+
+1. Use only after Browser-only is healthy and only through explicit opt-in.
+2. Doctor must report that the Responses tool bridge is active; Tunnel/Connector checks are intentionally absent.
+3. If you see `ChatGPT direct tool bridge returned invalid JSON`, stop using that fallback and return to Browser-only/MCP instead of repeatedly retrying malformed Web generations.
+
+Keeping the two transports separate makes it obvious whether a failure is browser/MCP, or specific to the experimental connectorless bridge.
 
 ## Launcher / Runtime
 

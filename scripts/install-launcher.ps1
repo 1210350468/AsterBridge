@@ -22,6 +22,78 @@ function Invoke-WithRetry {
   }
 }
 
+function Get-AsterBridgeInstallerProcessCount {
+  param([Parameter(Mandatory = $true)][string]$Installer)
+  return @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -eq $Installer }
+  ).Count
+}
+
+function Test-AsterBridgeInstalledRuntime {
+  param([Parameter(Mandatory = $true)][string]$Version)
+  $InstallRegistry = "HKCU:\Software\d1a6026a-6210-588e-9a2b-da3936f94e02"
+  if (-not (Test-Path $InstallRegistry)) { return $false }
+  try {
+    $InstallLocation = [string](Get-ItemPropertyValue -LiteralPath $InstallRegistry -Name "InstallLocation")
+  } catch {
+    return $false
+  }
+  if (-not [System.IO.Path]::IsPathFullyQualified($InstallLocation)) { return $false }
+  $Executable = Join-Path $InstallLocation "AsterBridge.exe"
+  $RuntimeRoot = Join-Path $InstallLocation "resources\runtime"
+  $ManifestPath = Join-Path $RuntimeRoot "manifest.json"
+  foreach ($Required in @(
+    $Executable,
+    (Join-Path $RuntimeRoot "runtime\bun.exe"),
+    (Join-Path $RuntimeRoot "bin\codex-chatgpt-web.cmd"),
+    $ManifestPath
+  )) {
+    if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { return $false }
+  }
+  try {
+    $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+  } catch {
+    return $false
+  }
+  return [string]$Manifest.appVersion -eq $Version `
+    -and [string]$Manifest.platform -eq "win32" `
+    -and [string]$Manifest.arch -eq "x64" `
+    -and [string]$Manifest.bundleId -match '^[a-f0-9]{64}$'
+}
+
+function Wait-AsterBridgeInstallerCompletion {
+  param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [Parameter(Mandatory = $true)][int]$InitialExitCode,
+    [Parameter(Mandatory = $true)][string]$Version
+  )
+  $BootstrapDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  $DetachedInstallerObserved = $false
+  do {
+    if ((Get-AsterBridgeInstallerProcessCount -Installer $Installer) -gt 0) {
+      $DetachedInstallerObserved = $true
+      break
+    }
+    if ($InitialExitCode -eq 0 -and (Test-AsterBridgeInstalledRuntime -Version $Version)) { return }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $BootstrapDeadline)
+
+  if (-not $DetachedInstallerObserved -and $InitialExitCode -ne 0) {
+    throw "Installer exited with code $InitialExitCode and no continuing installer process was observed"
+  }
+
+  $CompletionDeadline = [DateTime]::UtcNow.AddMinutes(10)
+  while ([DateTime]::UtcNow -lt $CompletionDeadline) {
+    if ((Get-AsterBridgeInstallerProcessCount -Installer $Installer) -eq 0) {
+      if (Test-AsterBridgeInstalledRuntime -Version $Version) { return }
+      throw "Installer process exited without completing the AsterBridge $Version runtime"
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "Installer did not settle within 10 minutes"
+}
+
 $Repository = if ($env:CODEX_WEB_GPT_REPOSITORY) { $env:CODEX_WEB_GPT_REPOSITORY } else { "1210350468/AsterBridge" }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
   throw "Invalid GitHub repository: $Repository"
@@ -66,7 +138,7 @@ try {
   $Actual = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
   if ($Actual -ne $Expected) { throw "SHA-256 verification failed for $Asset" }
   $Process = Start-Process -FilePath $Installer -ArgumentList "/S", "/currentuser" -Wait -PassThru
-  if ($Process.ExitCode -ne 0) { throw "Installer exited with code $($Process.ExitCode)" }
+  Wait-AsterBridgeInstallerCompletion -Installer $Installer -InitialExitCode $Process.ExitCode -Version $Version
   $InstallRegistry = "HKCU:\Software\d1a6026a-6210-588e-9a2b-da3936f94e02"
   $InstallLocation = [string](Get-ItemPropertyValue -LiteralPath $InstallRegistry -Name "InstallLocation")
   if (-not [System.IO.Path]::IsPathFullyQualified($InstallLocation)) {

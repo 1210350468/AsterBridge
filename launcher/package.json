@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "3.0.14",
+  "version": "3.0.30",
   "private": true,
   "description": "AsterBridge desktop control center for Codex, ChatGPT Web, and native tools",
   "author": "AsterBridge contributors",
@@ -40,6 +40,7 @@
     "productName": "AsterBridge",
     "artifactName": "asterbridge-${version}-${os}-${arch}.${ext}",
     "asar": true,
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },

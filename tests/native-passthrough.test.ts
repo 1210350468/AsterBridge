@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { forwardNativeCodexRequest } from "../src/native-passthrough";
+import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 
 test("forwards native Codex requests verbatim to the official backend", async () => {
   const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","stream":true}'));
@@ -164,6 +165,68 @@ test("removes ChatGPT Web item identities before native Codex compaction", async
     call_id: "call_keep_linkage",
   });
   expect(forwarded.input.at(-1)).toEqual({ type: "compaction_trigger" });
+});
+
+test("translates AsterBridge Web compaction before switching back to native Codex", async () => {
+  const summary = "The Web route compacted the earlier task and preserved the current plan.";
+  const nativeReasoning = {
+    type: "reasoning",
+    id: "rs_native_keep_identity",
+    summary: [],
+    encrypted_content: "gAAAAABnative-opaque-reasoning",
+  };
+  const body = {
+    model: "gpt-5.6-sol",
+    store: false,
+    previous_response_id: "resp_local_web_compaction",
+    input: [
+      nativeReasoning,
+      {
+        type: "compaction",
+        id: "cmp_local_web",
+        encrypted_content: encodeCompactionSummary(summary),
+      },
+      {
+        type: "message",
+        id: "msg_local_web",
+        role: "user",
+        content: [{ type: "input_text", text: "Continue with native Sol." }],
+      },
+    ],
+  };
+  const originalBody = Bun.zstdCompressSync(Buffer.from(JSON.stringify(body)));
+  const encoded = new ArrayBuffer(originalBody.byteLength);
+  new Uint8Array(encoded).set(originalBody);
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-oauth-token",
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+    },
+    body: encoded,
+  });
+  let upstreamRequest: Request | undefined;
+  await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response("data: native\n\n", { headers: { "content-type": "text/event-stream" } });
+  }, body);
+
+  expect(upstreamRequest!.headers.get("content-encoding")).toBeNull();
+  const forwarded = await upstreamRequest!.json() as Record<string, any>;
+  expect(forwarded).not.toHaveProperty("previous_response_id");
+  expect(forwarded.input[0]).toEqual(nativeReasoning);
+  expect(forwarded.input[1]).toEqual({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\n${summary}` }],
+  });
+  expect(forwarded.input[2]).toEqual({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Continue with native Sol." }],
+  });
+  expect(JSON.stringify(forwarded)).not.toContain("ocx1:");
 });
 
 test("keeps native encrypted reasoning requests byte-for-byte intact", async () => {

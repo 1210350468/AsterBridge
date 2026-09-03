@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { namespacedToolName, type CodexAssistantContentPart, type CodexContentPart, type CodexMessage, type CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { directToolBridgePromptContract } from "./direct-tool-bridge";
 import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
@@ -25,6 +26,8 @@ export interface CompiledChatGptWebPrompt {
 export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Required binding for the connectorless native Responses tool bridge. */
+  directToolBinding?: string;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
@@ -362,8 +365,12 @@ export function compileChatGptWebPrompt(
   if (captureLunaCheckpoint && (parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID || parsed._compactionRequest)) {
     throw new Error("Rolling checkpoints are supported only for normal ChatGPT Luna turns");
   }
-  if (mode.localTools && !turnToken) {
-    throw new Error("Tool-capable ChatGPT web mode requires a broker turn token");
+  const directToolBridge = mode.localTools && capabilities.localToolTransport === "responses";
+  if (mode.localTools && !directToolBridge && !turnToken) {
+    throw new Error("MCP tool-capable ChatGPT web mode requires a broker turn token");
+  }
+  if (directToolBridge && !options?.directToolBinding) {
+    throw new Error("Responses tool-capable ChatGPT web mode requires a direct-tool binding");
   }
   if (!mode.localTools && turnToken !== undefined) {
     throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
@@ -412,12 +419,17 @@ export function compileChatGptWebPrompt(
       "Return only the checkpoint summary that the next model needs to resume the task.",
     ]
     : mode.localTools
-    ? [
-      "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
-      "Do not call Codex Native tools for work that is fully answerable from the supplied context alone, such as echoing or formatting text, trivial arithmetic, or recalling prior conversation content. Honor an explicit user request not to use tools unless a higher-priority instruction or the requested operation genuinely requires one.",
-      "Use actual Codex Native results as evidence for local observations and effects, and keep calling tools until the requested work is complete and verified.",
-      ...imageGenerationContract,
-    ]
+    ? directToolBridge
+      ? [
+        ...directToolBridgePromptContract(parsed, options!.directToolBinding!),
+        ...imageGenerationContract.map(line => line.replaceAll("call codex_tool_call with wire_name", "request the Responses bridge tool with wire_name").replaceAll("codex_tool_call ->", "Responses bridge ->")),
+      ]
+      : [
+        "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+        "Do not call Codex Native tools for work that is fully answerable from the supplied context alone, such as echoing or formatting text, trivial arithmetic, or recalling prior conversation content. Honor an explicit user request not to use tools unless a higher-priority instruction or the requested operation genuinely requires one.",
+        "Use actual Codex Native results as evidence for local observations and effects, and keep calling tools until the requested work is complete and verified.",
+        ...imageGenerationContract,
+      ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
       "Use any ChatGPT-native capabilities available in this chat—including web search, browsing, research, and other first-party tools—whenever they help complete the request. The missing local-computer bridge says nothing about whether those ChatGPT capabilities are available.",
@@ -450,7 +462,9 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      directToolBridge
+        ? `The task context is complete. The private Responses tool-bridge binding for this response is ${options!.directToolBinding}. Execute the latest active user request now.`
+        : `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
       "</codex_transport_resume>",
     ]
     : [

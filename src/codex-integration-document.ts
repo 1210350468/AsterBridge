@@ -262,7 +262,7 @@ export function findMultiAgentV2Assignment(lines: string[]): PreviousFeatureAssi
     : scalar;
 }
 
-function verifyInstalledBooleanFeature(
+export function verifyInstalledBooleanFeature(
   text: string,
   key: string,
   expectedValue: "true" | "false",
@@ -303,6 +303,32 @@ function verifyInstalledMultiAgentV2Feature(
       "Codex [features.multi_agent_v2].enabled changed after setup; refusing to overwrite the user's newer value",
     );
   }
+}
+
+export function installBooleanFeature(
+  text: string,
+  key: string,
+  value: "true" | "false",
+  managedLine: string,
+): { text: string; previous: PreviousFeatureAssignment } {
+  const document = parseDocument(text);
+  const previous = findFeatureAssignment(document.lines, key);
+  if (previous.index !== undefined) {
+    document.lines[previous.index] = managedLine;
+    return { text: renderDocument(document), previous };
+  }
+  const table = findTomlTable(document.lines, "features");
+  if (table) {
+    insertDocumentLine(document, table.endIndex, managedLine);
+  } else {
+    insertDocumentLine(document, document.lines.length, "[features]");
+    insertDocumentLine(document, document.lines.length, managedLine);
+  }
+  const installed = findFeatureAssignment(document.lines, key);
+  if (installed.value !== value || installed.rawLine !== managedLine) {
+    throw new Error(`Could not install Codex [features].${key}=${value}`);
+  }
+  return { text: renderDocument(document), previous };
 }
 
 export function restoreBooleanFeature(

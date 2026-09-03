@@ -125,7 +125,8 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
   stopCatalogVerificationMonitor();
   const check = async () => {
     const current = stateStore.read();
-    if (current.coreSetupComplete !== true || current.codexCatalogVerified === true) {
+    if (current.coreSetupComplete !== true
+      || (current.codexCatalogVerified === true && current.codexRestartRequired !== true)) {
       stopCatalogVerificationMonitor();
       return;
     }
@@ -134,18 +135,28 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
     try {
       const config = runtimeSupervisor.readConfig();
       const health = await runtimeSupervisor.proxyHealthPayload(config);
-      if (!Number.isInteger(health?.successful_model_catalog_requests)
-        || health.successful_model_catalog_requests < 1) return;
+      const liveCatalogVerified = Number.isInteger(health?.successful_model_catalog_requests)
+        && health.successful_model_catalog_requests >= 1;
+      let installedCatalogVerified = current.codexCatalogVerified === true;
+      if (!installedCatalogVerified) {
+        const route = await runtimeHost.bridgeStatus("catalog-verification");
+        installedCatalogVerified = route.installed === true
+          && route.active === true
+          && Array.isArray(route.errors)
+          && route.errors.length === 0;
+      }
+      if (!liveCatalogVerified && !installedCatalogVerified) return;
       const state = stateStore.update({
         codexCatalogVerified: true,
-        codexRestartRequired: false,
+        ...(liveCatalogVerified ? { codexRestartRequired: false } : {}),
       });
       logger.info("codex.model_catalog_verified", {
-        requests: health.successful_model_catalog_requests,
-        at: health.last_successful_model_catalog_request_at,
+        source: liveCatalogVerified ? "codex-request" : "managed-route",
+        requests: health?.successful_model_catalog_requests ?? 0,
+        at: health?.last_successful_model_catalog_request_at ?? null,
       });
       send("launcher:state-changed", state);
-      stopCatalogVerificationMonitor();
+      if (liveCatalogVerified || state.codexRestartRequired !== true) stopCatalogVerificationMonitor();
     } catch (error) {
       logger.debug("codex.model_catalog_verification_pending", {
         message: error instanceof Error ? error.message : String(error),
@@ -509,6 +520,7 @@ function registerIpc({ logger, stateStore }) {
     browser: browserHost?.snapshot() ?? null,
     roxyPreview: browserControl?.roxyPreviewSnapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
+    toolTransport: runtimeHost.toolTransport(),
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
     roxyApiKeyConfigured: runtimeHost?.roxyBrowserApiKeyConfigured() ?? false,
     networkProxy: networkProxyStatus(stateStore.read()),
@@ -710,7 +722,7 @@ function registerIpc({ logger, stateStore }) {
     stopCatalogVerificationMonitor();
     return { cancelled: false, state };
   });
-  handle("launcher:setup-core", async () => {
+  handle("launcher:setup-core", async (_event, input) => {
     const setupState = stateStore.read();
     refreshNetworkProxyEnvironment(setupState, logger, "core-setup");
     const useSystemBrowser = !IS_DEV_PROFILE && setupState.useSystemBrowser === true;
@@ -742,13 +754,14 @@ function registerIpc({ logger, stateStore }) {
       : await runtimeHost.setupCore({
           useSystemBrowser,
           roxyBrowser: useRoxyBrowser ? roxyBrowserOptionsFromState(setupState) : null,
+          fullResponses: input?.fullResponses === true,
         });
     stateStore.update({
       bridgeEnabled: IS_DEV_PROFILE ? false : true,
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
-      ...(result.mode === "full" ? {
+      ...(result.mode === "full" && result.toolTransport === "mcp" ? {
         mcpRuntimeInstalled: true,
         mcpSetupComplete: false,
         mcpGuideStep: 2,
@@ -1246,6 +1259,7 @@ async function start() {
         mode: upgrade.mode,
         bridgeEnabled: upgrade.bridgeEnabled,
         connectorMigrated: upgrade.connectorMigrated,
+        responsesFallbackRetired: upgrade.responsesFallbackRetired === true,
       });
     }
     const configuredRuntime = runtimeHost.runtimeConfigSnapshot();

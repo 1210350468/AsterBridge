@@ -1038,7 +1038,7 @@ function SetupSurface({
         </NoticeRow>
       ) : null}
 
-      <SectionHeading label="MCP" meta={copy.optional} spaced />
+      <SectionHeading label={devProfile ? "MCP" : copy.mcpTitle} meta={devProfile ? copy.optional : copy.recommended} spaced />
       <button className="next-surface-row" disabled={!snapshot.state.codexCatalogVerified} onClick={showMcp} type="button">
         <Icon name="mcp" />
         <span>

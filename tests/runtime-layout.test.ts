@@ -14,6 +14,7 @@ import {
   loadConfig,
   loadConfigForSetup,
   providerConfig,
+  saveConfig,
   resolveBrokerEndpoint,
   resolveDevSetupConnectorName,
   resolveSetupConnectorName,
@@ -88,6 +89,12 @@ test("user-home expansion accepts native Unix and Windows separators", () => {
   expect(expandUserPath("~\\runtime")).toBe(join(homedir(), "runtime"));
 });
 
+test("Full Harness defaults to MCP; Responses requires explicit opt-in", () => {
+  const config = defaultConfig("full");
+  expect(config.localToolTransport).toBe("mcp");
+  expect(providerConfig(config).chatgptWeb?.localToolTransport).toBe("mcp");
+});
+
 test("the direct-turn connector identity migrates known legacy setup without overwriting custom names", () => {
   expect(defaultConfig("full").appName).toBe(CHATGPT_CONNECTOR_NAME);
   expect(resolveSetupConnectorName("Codex Native")).toBe("Codex Native3");
@@ -135,6 +142,24 @@ test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", 
     mode: "browser-only",
     browserHost: "managed-chrome",
     solAvailable: true,
+  });
+});
+
+test("Responses Full config loads without Tunnel credentials and exposes outer Codex tools", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-responses-full-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  const config = defaultConfig("full");
+  config.localToolTransport = "responses";
+  delete config.tunnel;
+  saveConfig(config);
+
+  const loaded = loadConfig();
+  expect(loaded).toMatchObject({ mode: "full", localToolTransport: "responses" });
+  expect(loaded.tunnel).toBeUndefined();
+  expect(providerConfig(loaded).chatgptWeb).toMatchObject({
+    localToolsEnabled: true,
+    localToolTransport: "responses",
   });
 });
 

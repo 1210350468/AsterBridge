@@ -8,6 +8,8 @@ export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
+  /** MCP uses the ChatGPT custom App; responses uses a private structured envelope and outer Codex Responses calls. */
+  localToolTransport?: "mcp" | "responses";
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
@@ -19,6 +21,8 @@ export interface ChatGptWebModelMode {
   displayLabel: "Luna" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";
   uiEffortIndex: 0 | 1 | 2 | 3 | 4 | null;
   localTools: boolean;
+  /** True only when ChatGPT itself must have the Codex Native MCP App selected in the composer. */
+  connectorTools: boolean;
 }
 
 export function resolveChatGptWebModelMode(
@@ -38,6 +42,7 @@ export function resolveChatGptWebModelMode(
       displayLabel: "Luna",
       uiEffortIndex: null,
       localTools: capabilities.localToolsEnabled,
+      connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses",
     };
   }
   if (modelId !== CHATGPT_WEB_MODEL_ID) {
@@ -49,17 +54,17 @@ export function resolveChatGptWebModelMode(
   const effort = reasoning ?? "high";
   switch (effort) {
     case "low":
-      return { modelId, effort, displayLabel: "Instant", uiEffortIndex: 0, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Instant", uiEffortIndex: 0, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "medium":
-      return { modelId, effort, displayLabel: "Medium", uiEffortIndex: 1, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Medium", uiEffortIndex: 1, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "high":
-      return { modelId, effort, displayLabel: "High", uiEffortIndex: 2, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "High", uiEffortIndex: 2, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "xhigh":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Extra High effort is not available for this account");
-      return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "max":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Pro effort is not available for this account");
-      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     default:
       throw new Error(`ChatGPT web effort is not supported: ${effort}`);
   }

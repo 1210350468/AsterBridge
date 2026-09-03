@@ -25,6 +25,19 @@ const MAX_CHECKPOINT_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_TUNNEL_PROFILE_BYTES = 256 * 1024;
 const TUNNEL_ID_PATTERN = /^tunnel_[a-f0-9]{32}$/;
 
+function fullToolTransportFlag(config, { development = false } = {}) {
+  if (development) return "--mcp-tool-bridge";
+  return (config?.localToolTransport ?? "mcp") === "responses"
+    ? "--responses-tool-bridge"
+    : "--mcp-tool-bridge";
+}
+
+function isLegacyRecommendedResponsesConfig(config) {
+  return config?.mode === "full"
+    && config.localToolTransport === "responses"
+    && /^3\.0\.(?:20|21|22|23|24)$/.test(config.releaseVersion || "");
+}
+
 function managedMcpCredentials(coreHome) {
   if (typeof coreHome !== "string" || !path.isAbsolute(coreHome)) return null;
   const runtimeKeyFile = path.join(coreHome, "secrets", "tunnel-runtime.key");
@@ -837,6 +850,12 @@ class RuntimeHost {
     });
   }
 
+  toolTransport() {
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured || current.mode !== "full") return "browser-only";
+    return current.config?.localToolTransport ?? "mcp";
+  }
+
   mcpConnectorName() {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured || current.mode !== "full") {
@@ -918,12 +937,13 @@ class RuntimeHost {
     }
   }
 
-  async setupCore({ useSystemBrowser = false, roxyBrowser = null } = {}) {
+  async setupCore({ useSystemBrowser = false, roxyBrowser = null, fullResponses = false } = {}) {
     this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const args = [
       "setup",
-      "--browser-only",
+      fullResponses ? "--full" : "--browser-only",
+      ...(fullResponses ? ["--responses-tool-bridge"] : []),
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--refresh-account-capabilities",
@@ -954,11 +974,19 @@ class RuntimeHost {
       if (useSystemBrowser) args.push("--system-browser-channel", "auto");
     }
     const result = await this.runSetup("core-setup", args, {
-      message: "Installing ChatGPT Web models into Codex",
-      successMessage: "Codex integration installed",
+      message: fullResponses
+        ? "Enabling native Codex tools through the Responses bridge"
+        : "Installing ChatGPT Web models into Codex",
+      successMessage: fullResponses
+        ? "Native Codex tools are ready through the Responses bridge"
+        : "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });
-    return { ...result, mode: "browser-only" };
+    return {
+      ...result,
+      mode: fullResponses ? "full" : "browser-only",
+      toolTransport: fullResponses ? "responses" : "browser-only",
+    };
   }
 
   async setupDevCore() {
@@ -977,7 +1005,10 @@ class RuntimeHost {
       "--refresh-account-capabilities",
       "--acknowledge-unofficial",
     ];
-    if (mode === "full") args.push("--app-name", this.browserConnectorName());
+    if (mode === "full") {
+      args.push(fullToolTransportFlag(existing.config, { development: true }));
+      args.push("--app-name", this.browserConnectorName());
+    }
     const result = await this.runDevSetup("dev-profile-setup", args, {
       message: "Configuring the isolated DEV harness",
       successMessage: "Isolated DEV harness configured",
@@ -1004,7 +1035,10 @@ class RuntimeHost {
         contextFlag,
       ];
       if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-      if (mode === "full") args.push("--app-name", this.browserConnectorName());
+      if (mode === "full") {
+        args.push(fullToolTransportFlag(current.config, { development: true }));
+        args.push("--app-name", this.browserConnectorName());
+      }
       const result = await this.runDevSetup("bigger-context", args, {
         message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
         successMessage: enabled ? "Bigger Context enabled" : "Standard context restored",
@@ -1023,7 +1057,12 @@ class RuntimeHost {
       contextFlag,
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    if (mode === "full") args.push("--app-name", this.browserConnectorName());
+    if (mode === "full") {
+      args.push(fullToolTransportFlag(current.config));
+      if ((current.config?.localToolTransport ?? "mcp") === "mcp") {
+        args.push("--app-name", this.browserConnectorName());
+      }
+    }
     const result = await this.runSetup("bigger-context", args, {
       message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
       successMessage: enabled ? "Bigger Context enabled; restart Codex" : "Standard context restored; restart Codex",
@@ -1037,7 +1076,11 @@ class RuntimeHost {
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
     const currentVersion = this.app.getVersion();
-    const connectorMigrationRequired = existing.mode === "full"
+    const retireLegacyResponses = isLegacyRecommendedResponsesConfig(existing.config);
+    const targetMode = retireLegacyResponses ? "browser-only" : existing.mode;
+    const existingUsesMcp = targetMode === "full"
+      && (existing.config?.localToolTransport ?? "mcp") === "mcp";
+    const connectorMigrationRequired = existingUsesMcp
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     if (existing.owner !== "launcher"
       || (existing.config?.releaseVersion === currentVersion && !connectorMigrationRequired)) {
@@ -1046,25 +1089,29 @@ class RuntimeHost {
     const route = await this.bridgeStatus("runtime-upgrade-route");
     const args = [
       "setup",
-      existing.mode === "full" ? "--full" : "--browser-only",
+      targetMode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    if (existing.mode === "full") {
-      args.push("--app-name", connectorNameForSetup(existing.config?.appName));
+    if (targetMode === "full") {
+      args.push(fullToolTransportFlag(existing.config));
+      if ((existing.config?.localToolTransport ?? "mcp") === "mcp") {
+        args.push("--app-name", connectorNameForSetup(existing.config?.appName));
+      }
     }
     const result = await this.runSetup("runtime-upgrade", args, {
       message: `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
       successMessage: `Launcher runtime upgraded to ${currentVersion}`,
-      timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      timeoutMs: targetMode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
     });
     if (!route.active) await this.setBridgeEnabled(false);
     return {
       updated: true,
-      mode: existing.mode,
+      mode: targetMode,
       bridgeEnabled: route.active,
+      responsesFallbackRetired: retireLegacyResponses,
       fromVersion: existing.config.releaseVersion,
       toVersion: currentVersion,
       connectorMigrated: connectorMigrationRequired,
@@ -1094,6 +1141,7 @@ class RuntimeHost {
     const args = [
       "setup",
       "--full",
+      "--mcp-tool-bridge",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
@@ -1169,6 +1217,7 @@ class RuntimeHost {
       "dev",
       "setup",
       "--full",
+      "--mcp-tool-bridge",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",

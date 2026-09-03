@@ -32,6 +32,31 @@ test("explicit browser-turn cancellation aborts and removes every registered ses
   expect(sessions.activeCount()).toBe(0);
 });
 
+test("explicit cancellation tombstones the cancelled execution key without blocking a new turn", () => {
+  const sessions = new ChatGptTurnSessions();
+  let starts = 0;
+  const runtime = () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: new Promise<string>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => {},
+    };
+  };
+
+  sessions.getOrCreate("cancelled-turn", runtime);
+  expect(sessions.cancelAllExplicitly()).toBe(1);
+  expect(sessions.wasExplicitlyCancelled("cancelled-turn")).toBe(true);
+  expect(() => sessions.getOrCreate("cancelled-turn", runtime)).toThrow("explicitly cancelled");
+  expect(starts).toBe(1);
+
+  sessions.getOrCreate("next-turn", runtime);
+  expect(starts).toBe(2);
+  sessions.clear();
+});
+
 test("session cache expiry never cancels a still-active long browser turn", async () => {
   const sessions = new ChatGptTurnSessions(1);
   let cancelled = 0;

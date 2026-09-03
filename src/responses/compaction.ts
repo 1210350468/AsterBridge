@@ -15,6 +15,9 @@
  * routed models get a short "history was compacted" note instead.
  */
 
+import { CHATGPT_WEB_PLATFORM_RESERVE_TOKENS } from "../chatgpt-web-models";
+import { estimateTokens } from "../lib/token-estimate";
+
 export const BRIDGE_COMPACTION_PREFIX = "ocx1:";
 
 /** Mirrors codex-rs core/templates/compact/prompt.md (the local-compaction instruction). */
@@ -67,8 +70,105 @@ export function compactionItemToText(encryptedContent: string | undefined): stri
  * contextual wrappers are filtered there, and v2-style `compaction` items are NOT expected here.
  */
 
-/** codex-rs compact.rs COMPACT_USER_MESSAGE_MAX_TOKENS = 20k tokens (~4 chars/token). */
-const COMPACT_V1_RETAINED_CHAR_BUDGET = 20_000 * 4;
+/** codex-rs compact.rs COMPACT_USER_MESSAGE_MAX_TOKENS = 20k tokens. */
+export const COMPACT_V1_MAX_RETAINED_HISTORY_TOKENS = 20_000;
+/**
+ * Installed Codex 0.149/0.150 turns with the normal AsterBridge system/developer/skills/plugins
+ * surface consume roughly 17k tokens before retained user history. Keep that measured floor even
+ * when a compact request omits some stable harness material from its wire body; requests that do
+ * expose more instructions/tools reserve their larger measured cost instead.
+ */
+export const COMPACT_V1_MIN_STABLE_HARNESS_RESERVE_TOKENS = 17_000;
+/** Leave room for the first useful post-compact turn instead of compacting directly onto the gate. */
+export const COMPACT_V1_MIN_POST_COMPACT_HEADROOM_TOKENS = 6_000;
+const COMPACT_V1_POST_COMPACT_HEADROOM_FRACTION = 0.10;
+const COMPACT_V1_REPLACEMENT_STRUCTURE_RESERVE_TOKENS = 512;
+const COMPACT_V1_IMAGE_RESERVE_TOKENS = 4_096;
+const COMPACT_V1_ORIGINAL_IMAGE_RESERVE_TOKENS = 8_192;
+
+export interface CompactV1BudgetPlan {
+  autoCompactTokenLimit: number;
+  stableHarnessReserveTokens: number;
+  postCompactHeadroomTokens: number;
+  summaryTokens: number;
+  structureReserveTokens: number;
+  retainedHistoryTokenBudget: number;
+}
+
+function estimateJsonTokens(value: unknown): number {
+  try {
+    return estimateTokens(JSON.stringify(value));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Estimate stable context that Codex will re-inject around the compacted replacement history.
+ * Hidden ChatGPT/Codex-Native product state is always reserved; visible instructions, developer /
+ * system items and tool schemas are added when the compact wire exposes them. The measured 17k
+ * floor prevents an apparently sparse compact request from under-reserving the actual harness.
+ */
+export function estimateCompactV1StableHarnessTokens(request: Record<string, unknown>): number {
+  let measured = CHATGPT_WEB_PLATFORM_RESERVE_TOKENS;
+  if (typeof request.instructions === "string" && request.instructions.length > 0) {
+    measured += estimateTokens(request.instructions);
+  }
+  if (Array.isArray(request.tools) && request.tools.length > 0) {
+    measured += estimateJsonTokens(request.tools);
+  }
+  if (Array.isArray(request.input)) {
+    for (const item of request.input) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      if (rec.role === "system" || rec.role === "developer") {
+        measured += estimateJsonTokens(rec.content ?? rec);
+      }
+      if (rec.type === "additional_tools" && Array.isArray(rec.tools)) {
+        measured += estimateJsonTokens(rec.tools);
+      }
+    }
+  }
+  return Math.max(COMPACT_V1_MIN_STABLE_HARNESS_RESERVE_TOKENS, measured);
+}
+
+/**
+ * Plan the replacement-history budget against the routed model's real automatic-compaction gate.
+ * The summary and stable harness are non-negotiable; only recent historical user material may use
+ * the remainder. This prevents a successful compact from immediately crossing the same threshold
+ * again as soon as Codex re-installs its system/skills/plugins context.
+ */
+export function planCompactV1Budget(
+  autoCompactTokenLimit: number,
+  summary: string,
+  request: Record<string, unknown>,
+): CompactV1BudgetPlan {
+  if (!Number.isSafeInteger(autoCompactTokenLimit) || autoCompactTokenLimit <= 0) {
+    throw new Error("autoCompactTokenLimit must be a positive integer");
+  }
+  const stableHarnessReserveTokens = estimateCompactV1StableHarnessTokens(request);
+  const postCompactHeadroomTokens = Math.max(
+    COMPACT_V1_MIN_POST_COMPACT_HEADROOM_TOKENS,
+    Math.ceil(autoCompactTokenLimit * COMPACT_V1_POST_COMPACT_HEADROOM_FRACTION),
+  );
+  const summaryTokens = estimateTokens(`${SUMMARY_PREFIX}\n${summary}`);
+  const available = autoCompactTokenLimit
+    - stableHarnessReserveTokens
+    - postCompactHeadroomTokens
+    - summaryTokens
+    - COMPACT_V1_REPLACEMENT_STRUCTURE_RESERVE_TOKENS;
+  return {
+    autoCompactTokenLimit,
+    stableHarnessReserveTokens,
+    postCompactHeadroomTokens,
+    summaryTokens,
+    structureReserveTokens: COMPACT_V1_REPLACEMENT_STRUCTURE_RESERVE_TOKENS,
+    retainedHistoryTokenBudget: Math.max(
+      0,
+      Math.min(COMPACT_V1_MAX_RETAINED_HISTORY_TOKENS, available),
+    ),
+  };
+}
 
 type CompactMessageItem = Record<string, unknown>;
 
@@ -141,23 +241,67 @@ function imageBlock(block: CompactContentBlock): boolean {
     && !isOnePixelPngDataUrl(block.image_url);
 }
 
+function imageReserveTokens(block: CompactContentBlock): number {
+  return block.detail === "original"
+    ? COMPACT_V1_ORIGINAL_IMAGE_RESERVE_TOKENS
+    : COMPACT_V1_IMAGE_RESERVE_TOKENS;
+}
+
+function suffixWithinTokenBudget(text: string, tokenBudget: number): string {
+  if (tokenBudget <= 0 || text.length === 0) return "";
+  if (estimateTokens(text) <= tokenBudget) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    let mid = Math.floor((low + high) / 2);
+    if (mid > 0) {
+      const code = text.charCodeAt(mid);
+      if (code >= 0xDC00 && code <= 0xDFFF) mid -= 1;
+    }
+    const candidate = text.slice(mid);
+    if (estimateTokens(candidate) > tokenBudget) low = Math.max(mid + 1, low + 1);
+    else high = mid;
+  }
+  let start = Math.min(low, text.length);
+  if (start > 0) {
+    const code = text.charCodeAt(start);
+    if (code >= 0xDC00 && code <= 0xDFFF) start += 1;
+  }
+  let candidate = text.slice(start);
+  while (candidate.length > 0 && estimateTokens(candidate) > tokenBudget) {
+    start += text.codePointAt(start)! > 0xFFFF ? 2 : 1;
+    candidate = text.slice(start);
+  }
+  return candidate;
+}
+
+export interface CompactV1OutputOptions {
+  maxImages?: number;
+  /**
+   * When provided, text and images share this model-aware token budget. Without it the helper keeps
+   * the historical Codex-compatible 20k text budget and the independent ten-image cap.
+   */
+  retainedHistoryTokenBudget?: number;
+}
+
 /**
  * Build the v1 compact replacement history.
  *
- * Text follows Codex's 20k-token retained-user-message budget. Image history is independently
- * bounded to ChatGPT's ten-attachment limit, newest first. This prevents an old image corpus from
- * immediately refilling Codex's context window after a successful compact while still preserving
- * the visual context the browser model can actually receive.
+ * Production callers pass a model-aware retained-history budget. Text is counted with the GPT-5
+ * tokenizer and retained images consume the same budget using the browser input estimator's image
+ * reserves, so a successful compact cannot immediately refill a small routed context window.
  */
 export function buildCompactV1Output(
   userMessages: CompactMessageItem[],
   summary: string,
-  maxImages = 10,
+  options: CompactV1OutputOptions = {},
 ): CompactMessageItem[] {
   const selected: CompactMessageItem[] = [];
-  let remaining = COMPACT_V1_RETAINED_CHAR_BUDGET;
+  const maxImages = options.maxImages ?? 10;
+  const sharedTokenBudget = options.retainedHistoryTokenBudget;
+  let remainingTokens = sharedTokenBudget ?? COMPACT_V1_MAX_RETAINED_HISTORY_TOKENS;
   let retainedImages = 0;
-  for (let i = userMessages.length - 1; i >= 0 && (remaining > 0 || retainedImages < maxImages); i--) {
+  for (let i = userMessages.length - 1; i >= 0 && (remainingTokens > 0 || (sharedTokenBudget === undefined && retainedImages < maxImages)); i--) {
     const message = structuredClone(userMessages[i]!);
     const blocks = compactContentBlocks(message);
     const retainedReversed: CompactContentBlock[] = [];
@@ -165,19 +309,27 @@ export function buildCompactV1Output(
       const block = blocks[blockIndex]!;
       if (imageBlock(block)) {
         if (retainedImages < maxImages) {
-          retainedImages += 1;
-          retainedReversed.push(block);
+          const cost = sharedTokenBudget === undefined ? 0 : imageReserveTokens(block);
+          if (cost <= remainingTokens) {
+            retainedImages += 1;
+            remainingTokens -= cost;
+            retainedReversed.push(block);
+          }
         }
         continue;
       }
-      if (!textBlock(block) || remaining === 0) continue;
+      if (!textBlock(block) || remainingTokens === 0) continue;
       const text = block.text!;
-      if (text.length <= remaining) {
-        remaining -= text.length;
+      const textTokens = estimateTokens(text);
+      if (textTokens <= remainingTokens) {
+        remainingTokens -= textTokens;
         retainedReversed.push({ ...block, type: "input_text", text });
       } else {
-        retainedReversed.push({ ...block, type: "input_text", text: text.slice(text.length - remaining) });
-        remaining = 0;
+        const suffix = suffixWithinTokenBudget(text, remainingTokens);
+        if (suffix.length > 0) {
+          remainingTokens -= estimateTokens(suffix);
+          retainedReversed.push({ ...block, type: "input_text", text: suffix });
+        }
       }
     }
     const content = retainedReversed.reverse();

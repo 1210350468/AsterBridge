@@ -98,8 +98,7 @@ irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-l
 2. 选择浏览器后端。内置浏览器最省事；如果希望固定外部 Profile、自动启动和 Live Preview，推荐 RoxyBrowser。
 3. 安装模型前先运行一次 **设置 → 运行诊断**。
 4. 点击 **安装模型**，重启一次 Codex，先用简单 `WEB_OK` 回合证明 Browser-only 链路。
-5. 只有 Browser-only 已经成功后，再进入可选的 **MCP** 页面配置完整 Harness。只有确实需要更大
-   任务上下文时再启用 **Bigger Context**，日常任务保持标准模式即可。
+5. 配置 **MCP Full Harness**。MCP 是 AsterBridge 的主工具通道，因为同一次 ChatGPT Web response 可以持续调用多个 Codex 工具；真正的审批、沙箱和执行仍由外层 Codex 掌控。Responses direct bridge 只保留为显式实验兜底，不会自动启用。只有确实需要更大任务上下文时再启用 **Bigger Context**。
 
 ### 复制给 AI：自动安装并跑通 AsterBridge
 
@@ -114,10 +113,11 @@ irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-l
 3. 安装后启动 AsterBridge，先运行 Doctor。网络异常时优先检查 AsterBridge → 启动器设置 → 网络代理；Windows 上优先使用“自动”，它会读取系统代理。不要随意修改全局代理或清空配置。
 4. 如果选择 RoxyBrowser：确认 RoxyBrowser 主程序正在运行、Local API 已启用且 AsterBridge 能访问 127.0.0.1:50000；Profile 关闭时应由 AsterBridge 自动打开。不要复制浏览器 Cookie。
 5. 在“模型设置”中安装模型，完成后重启 Codex。实际运行 chatgpt-web/high（若账户不支持则用可用的 ChatGPT Web 模型），要求只回复 WEB_OK。必须看到 WEB_OK 才继续。
-6. Browser-only 成功后再配置 MCP。若本机已有安全保存的 Tunnel/profile/key，优先复用，不要求我重新粘贴；若是首次配置，引导我在 OpenAI 官方页面创建 Tunnel 和 Tunnels Read + Use key，并只在 AsterBridge 本地界面填写。
-7. MCP 配好后，在 ChatGPT 中确认与 AsterBridge 显示完全相同的 Connector/App 名称（默认 Codex Native3），然后用 chatgpt-web/high 调用 Codex Native3 执行无副作用命令：Write-Output ASTERBRIDGE_FULL_OK。只有真实工具结果返回 ASTERBRIDGE_FULL_OK 才算 Full Harness 跑通。
-8. 任一步失败时，先读取 AsterBridge Doctor、活动日志和仓库 docs/troubleshooting.zh-CN.md，定位最早的 warning/error；不要通过反复重装、删除 ~/.codex-chatgpt-web 或重置 Codex 来碰运气。
-9. 最后向我报告：AsterBridge 版本、Codex 版本、Browser backend、代理来源、Browser-only WEB_OK 是否成功、MCP/Native3 FULL_OK 是否成功，以及仍需我手工完成的步骤。
+6. Browser-only 成功后再配置 MCP。已有 Tunnel/profile/key 应优先安全复用；首次配置时也只能让我在 AsterBridge 本地界面填写密钥，不要把密钥发进聊天。确认 ChatGPT App 名称与 Launcher 完全一致（默认 `Codex Native3`）。
+7. 通过 MCP 使用 chatgpt-web/high 执行无副作用命令 `Write-Output ASTERBRIDGE_FULL_OK`。只有真实 outer Codex 工具结果返回 `ASTERBRIDGE_FULL_OK` 才算 Full Harness 跑通，不能把模型口头声称成功当证据。
+8. 如果当前 ChatGPT 账户根本没有自定义 MCP App 能力，明确报告这是账户侧限制，不要静默把安装切到实验性 Responses direct bridge；只有我明确要求时才启用该兜底。
+9. 任一步失败时，先读取 AsterBridge Doctor、活动日志和仓库 docs/troubleshooting.zh-CN.md，定位最早的 warning/error；不要通过反复重装、删除 ~/.codex-chatgpt-web 或重置 Codex 来碰运气。
+10. 最后向我报告：AsterBridge 版本、Codex 版本、Browser backend、代理来源、Browser-only WEB_OK 是否成功、MCP/Native3 FULL_OK 是否成功，以及仍需我手工完成的步骤。
 ```
 
 启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户只会显示 Luna；只有已登录账户
@@ -138,43 +138,26 @@ bun run app
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
-| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 无 |
-| **完整 harness** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 每个列出的 effort 均支持，包括 Pro | OpenAI 隧道 + ChatGPT 连接器 |
+| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用 | 无 |
+| **Full · MCP（主路径）** | 同一账户可用的 Web 模型 | 可用 | OpenAI Tunnel + 自定义 ChatGPT App |
+| **Full · Responses（实验兜底）** | 同一账户可用的 Web 模型 | 可用 | 仅显式 CLI opt-in；无需 Tunnel/自定义 App，但依赖工具链可能增加 Web generation 次数 |
 
-模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
-选项，但更改它们不会在后台静默切换所选的浏览器模型。在完整模式下，每一个可用 effort 都会
-获得同一个与当前回合绑定的 MCP 能力；Pro 没有单独限制，也没有缩减后的工具契约。
+模型选择器中的每一项都对应固定的 ChatGPT 模式。无论使用哪一种 Full transport，ChatGPT 都只负责提出工具调用；真正的工具执行、审批与沙箱权始终属于外层 Codex。AsterBridge 不会在没有明确 opt-in 的情况下把 MCP 安装迁移成 Responses。
 
-## 完整 harness
+## Full Harness：MCP / Codex Native3
 
-完整模式通过官方
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client)
-将 ChatGPT 的工具调用连接回当前 Codex 任务。该隧道为出站连接：不会暴露公网 IP、开放入站端口，
-也不需要配置路由器端口转发。
+MCP 是 Full Harness 的主工具通道。它使用官方 [OpenAI tunnel-client](https://github.com/openai/tunnel-client)，Tunnel 为纯出站连接，不需要路由器端口转发。优先 MCP 的核心原因是工具循环效率：ChatGPT 可以留在同一次 response 中连续请求多个工具，而不是每一个依赖步骤都结束一次 Web generation。
 
 > [!WARNING]
-> 默认连接器/App 名称现在是 **Codex Native3**。旧的 **Codex Native** 和 **Codex Native2**
-> 身份不会继续复用，因为 ChatGPT 会按 App 身份缓存 MCP schema。请保留旧 App 不动，并新建
-> `Codex Native3`，不要通过重命名旧 App 来绕过缓存。**允许低风险操作** 会在命令和补丁
-> 到达 Codex harness 前将其拦截。
+> 默认连接器/App 名称是 **Codex Native3**。旧的 **Codex Native** 和 **Codex Native2** 不会继续复用，以避免 ChatGPT 按 App 身份缓存旧 MCP schema。
 
-1. 完成启动器中的必需设置。
-2. 在启动器中打开 **MCP**。请在将使用 ChatGPT 连接器的同一个 OpenAI 账户中创建 Tunnel
-   和普通 API 密钥；创建密钥本身免费，也不会消耗模型 API 额度。
-3. 填写你要使用的精确 **连接器 / App 名称**，需要时再填写 Tunnel ID 和 API 密钥，然后点击
-   **连接 Harness**。如果只修改 App 名称，可以直接复用此前已经安全保存的 Tunnel 凭据。
-4. 在 ChatGPT 设置中启用 **开发者模式**。新建 App/连接器时选择 **Tunnel**，选择刚创建的
-   Tunnel，将 **身份验证** 设为 **无**，并把名称准确设置成启动器里配置的同一个名称。
-5. 旧的连接器身份保持不动。ChatGPT 会按 App 身份缓存公开 MCP 合约，因此 MCP 工具/schema
-   发生不兼容变更后，使用新名称是强制触发全新工具扫描的最稳妥方式。在新 App 的 **权限** 中
-   选择 **允许所有操作**；**允许低风险操作** 会在命令和补丁到达本地运行时前将其拦截。外层
-   Codex harness 仍会执行沙箱和审批规则。
-6. 运行 **验证运行时**。它只会精确选择当前配置的 App 名称；旧名称或其他名称不会被当作替代。
+1. 先完成 Browser-only。
+2. 在启动器打开 **MCP**，创建或复用 Tunnel 与 runtime key。
+3. 创建对应 ChatGPT App：选择 **Tunnel**、**Authentication: None**，并使用启动器显示的精确名称。
+4. 运行 **验证运行时**；旧名称或其他名称不会被当作替代。
+5. 用一个无副作用的真实 outer Codex 工具调用证明 Full Harness 后再正式使用。
 
-写入/修改操作还需要 ChatGPT 工作区及其管理员政策允许。请参阅
-[开发者模式和 MCP 应用](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)。
-除非显式启用 `--auto-approve-tool-calls`，否则意外的审批提示会直接失败；该选项只会点击
-**Allow once**，绝不会授予永久权限。
+MCP 是否可用以及具体权限由 ChatGPT 账户、工作区和管理员策略控制，可能独立于 AsterBridge 变化。如果当前账户确实没有自定义 MCP App 能力，Browser-only 仍然可用；Responses direct bridge 可以通过显式开关作为实验兜底，但绝不会自动替代 MCP，因为依赖工具链会增加 Web generation，文本 envelope 也比原生 MCP 更脆弱。请参阅 [开发者模式和 MCP 应用](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)。外层 Codex 仍会执行沙箱与审批规则。
 
 ## 日常操作
 

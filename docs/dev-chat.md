@@ -43,9 +43,11 @@ After optional Full/MCP setup, the same command also exposes simulated outer too
 bun run dev:chat tool-lab "Use a command tool and explain the simulated receipt"
 ```
 
-Reusing the same name continues its canonical Responses history. Each model turn still opens a
-fresh Temporary Chat, exactly like production; the complete named history is compiled into that
-turn by the existing prompt owner. New chats use the cheapest account-supported browser mode:
+Reusing the same name continues its canonical Responses history. The DEV driver follows the same
+production retained-conversation contract: a new conversation/compaction epoch opens a Temporary
+Chat, compatible continuations may reuse that page and send only the canonical suffix, and page
+loss/retirement rebuilds from the complete named history through the existing prompt owner. New
+chats use the cheapest account-supported browser mode:
 Instant (`light`) when Sol is available, otherwise Luna. Override it with `--model` or `/model`.
 
 Interactive commands:

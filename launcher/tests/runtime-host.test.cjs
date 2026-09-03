@@ -10,7 +10,7 @@ function hostFor(existingConfig, options = {}) {
   const host = new RuntimeHost({
     app: {
       getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test"),
-      getVersion: () => "1.1.3",
+      getVersion: () => options.appVersion || "1.1.3",
     },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
@@ -72,6 +72,27 @@ test("core setup deliberately resets an existing full harness to browser-only be
     "--restart-service",
     "--embedded-browser",
   ]);
+});
+
+test("core setup can enable Responses Full without a Tunnel or ChatGPT App", async () => {
+  const fixture = hostFor({ mode: "browser-only" });
+  const result = await fixture.host.setupCore({ fullResponses: true });
+  assert.equal(result.mode, "full");
+  assert.equal(result.toolTransport, "responses");
+  assert.deepEqual(fixture.invocation().args, [
+    "setup",
+    "--full",
+    "--responses-tool-bridge",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
+    "--replace-codex-route",
+    "--acknowledge-unofficial",
+    "--restart-service",
+    "--embedded-browser",
+  ]);
+  assert.equal(fixture.invocation().args.includes("--tunnel-id"), false);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
 });
 
 test("core setup can run ChatGPT turns in the authorized main browser while launcher keeps runtime ownership", async () => {
@@ -171,8 +192,29 @@ test("Bigger Context uses the setup transaction and refreshes the production Cod
       "--acknowledge-unofficial",
       "--restart-service",
       "--bigger-context",
+      "--mcp-tool-bridge",
       "--app-name",
       "Codex Native3",
+    ],
+  });
+});
+
+test("Bigger Context preserves Responses Full without requiring MCP configuration", async () => {
+  const fixture = hostFor({ mode: "full", localToolTransport: "responses" });
+  const result = await fixture.host.setBiggerContext(true);
+  assert.equal(result.enabled, true);
+  assert.deepEqual(fixture.invocation(), {
+    name: "bigger-context",
+    args: [
+      "setup",
+      "--full",
+      "--browser-host-descriptor",
+      "/runtime/launcher-browser.json",
+      "--replace-codex-route",
+      "--acknowledge-unofficial",
+      "--restart-service",
+      "--bigger-context",
+      "--responses-tool-bridge",
     ],
   });
 });
@@ -243,6 +285,7 @@ test("DEV MCP setup reuses only DEV-home credentials and targets its distinct co
         "dev",
         "setup",
         "--full",
+        "--mcp-tool-bridge",
         "--browser-host-descriptor",
         "/dev/runtime/launcher-browser.json",
         "--app-name",
@@ -330,6 +373,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "/runtime/launcher-browser.json",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--mcp-tool-bridge",
     "--app-name",
     "Codex Native3",
   ]);
@@ -340,8 +384,57 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     fromVersion: "1.1.1",
     toVersion: "1.1.3",
     connectorMigrated: false,
+    responsesFallbackRetired: false,
     stdout: "",
   });
+});
+
+test("launcher update transaction preserves Responses Full without inventing MCP state", async () => {
+  const fixture = hostFor({
+    mode: "full",
+    localToolTransport: "responses",
+    browserHost: "launcher",
+    releaseVersion: "1.1.1",
+  });
+  fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
+
+  const result = await fixture.host.upgradeManagedRuntime();
+
+  assert.deepEqual(fixture.invocation().args, [
+    "setup",
+    "--full",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--acknowledge-unofficial",
+    "--restart-service",
+    "--responses-tool-bridge",
+  ]);
+  assert.equal(result.updated, true);
+  assert.equal(result.mode, "full");
+});
+
+test("3.0.25 retires the legacy recommended Responses config back to Browser-only", async () => {
+  const fixture = hostFor({
+    mode: "full",
+    localToolTransport: "responses",
+    browserHost: "launcher",
+    releaseVersion: "3.0.24",
+  }, { appVersion: "3.0.25" });
+  fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
+
+  const result = await fixture.host.upgradeManagedRuntime();
+
+  assert.deepEqual(fixture.invocation().args, [
+    "setup",
+    "--browser-only",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--acknowledge-unofficial",
+    "--restart-service",
+  ]);
+  assert.equal(result.updated, true);
+  assert.equal(result.mode, "browser-only");
+  assert.equal(result.responsesFallbackRetired, true);
 });
 
 test("launcher migrates the legacy connector identity even when the release version is unchanged", async () => {
@@ -362,6 +455,7 @@ test("launcher migrates the legacy connector identity even when the release vers
     "/runtime/launcher-browser.json",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--mcp-tool-bridge",
     "--app-name",
     "Codex Native3",
   ]);
@@ -425,6 +519,7 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
     assert.deepEqual(fixture.invocation().args, [
       "setup",
       "--full",
+      "--mcp-tool-bridge",
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--app-name",
@@ -477,9 +572,10 @@ test("new MCP setup uses the explicit default connector name", async () => {
     runtimeKey: "new-private-runtime-key",
   });
 
-  assert.deepEqual(fixture.invocation().args.slice(0, 6), [
+  assert.deepEqual(fixture.invocation().args.slice(0, 7), [
     "setup",
     "--full",
+    "--mcp-tool-bridge",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--app-name",

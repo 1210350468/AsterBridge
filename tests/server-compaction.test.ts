@@ -5,6 +5,7 @@ import { COMPACT_PROMPT, SUMMARY_PREFIX, decodeCompactionSummary } from "../src/
 import { compactRequest, responseRequest } from "../src/server";
 import type { CodexProviderConfig } from "../src/types";
 import { extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
+import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 
 const model = "chatgpt-web/high";
@@ -58,6 +59,25 @@ test("compacts ChatGPT Web v1 through a dedicated read-only browser summarizatio
     "Latest request",
     `${SUMMARY_PREFIX}\n${summary}`,
   ]);
+});
+
+test("Instant v1 compaction applies the small-window retained-history budget", async () => {
+  const denseHistory = "recent-history ".repeat(20_000);
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "chatgpt-web/light",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: denseHistory }] }],
+    }),
+  }), defaultConfig("full"), compactionAdapterFactory());
+
+  expect(response.status).toBe(200);
+  const body = await response.json() as { output: Array<{ content: Array<{ text?: string }> }> };
+  const retainedText = body.output[0]!.content[0]!.text ?? "";
+  expect(retainedText.length).toBeLessThan(denseHistory.length);
+  expect(denseHistory.endsWith(retainedText)).toBe(true);
+  expect(estimateTokens(retainedText)).toBeLessThan(8_500);
 });
 
 test("compacts a Pro task with Extra High while preserving the Pro route", async () => {
