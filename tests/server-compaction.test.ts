@@ -194,6 +194,111 @@ test("returns exactly one native compaction item for a ChatGPT Web v2 request", 
   expect(decodeCompactionSummary(body.output[0]!.encrypted_content ?? "")).toBe(summary);
 });
 
+test("bridges a retired native compact endpoint to modern compaction_trigger without enabling global v2 retention", async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown>; contentEncoding: string | null }> = [];
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Keep this requirement" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "Earlier answer" }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Latest native request" }] },
+  ];
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-oauth-token",
+      "content-type": "application/json",
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_native", turn_id: "turn_native" }),
+    },
+    body: JSON.stringify({
+      model: "gpt-5.6-sol",
+      input,
+      max_output_tokens: 1_000,
+    }),
+  }), defaultConfig("full"), undefined, async request => {
+    const body = await request.clone().json() as Record<string, unknown>;
+    calls.push({
+      url: request.url,
+      body,
+      contentEncoding: request.headers.get("content-encoding"),
+    });
+    if (calls.length === 1) {
+      return Response.json({ detail: "Not Found" }, {
+        status: 404,
+        headers: { "cf-ray": "native-legacy-retired-NRT" },
+      });
+    }
+    expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(request.headers.get("authorization")).toBe("Bearer codex-oauth-token");
+    expect(request.headers.get("accept")).toBe("text/event-stream");
+    expect(body.stream).toBe(true);
+    expect(body.store).toBe(false);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.tools).toBeUndefined();
+    expect(body.include).toEqual(["reasoning.encrypted_content"]);
+    expect(body.max_output_tokens).toBeUndefined();
+    expect((body.input as unknown[]).at(-1)).toEqual({ type: "compaction_trigger" });
+    const item = { type: "compaction", id: "cmp_native_v2", encrypted_content: "gAAAAABnative-opaque-compaction" };
+    // The authenticated backend can traverse an intermediary that normalizes this header. The
+    // synthesized request itself is stream=true, so transport parsing must not depend on it.
+    return new Response([
+      `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [item] } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""), { headers: { "content-type": "application/json" } });
+  });
+
+  expect(calls).toHaveLength(2);
+  expect(calls[0]!.url).toBe("https://chatgpt.com/backend-api/codex/responses/compact");
+  expect(calls[1]!.contentEncoding).toBeNull();
+  expect(response.status).toBe(200);
+  const body = await response.json() as { output: Array<Record<string, unknown>> };
+  expect(body.output).toHaveLength(3);
+  expect(body.output[0]).toMatchObject({ role: "user" });
+  expect(body.output[1]).toMatchObject({ role: "user" });
+  expect(body.output[2]).toEqual({
+    type: "compaction",
+    id: "cmp_native_v2",
+    encrypted_content: "gAAAAABnative-opaque-compaction",
+  });
+});
+
+test("does not mask a non-404 native compact failure with the v2 compatibility fallback", async () => {
+  let calls = 0;
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+  }), defaultConfig("full"), undefined, async () => {
+    calls += 1;
+    return Response.json({ error: { message: "model temporarily unavailable" } }, { status: 503 });
+  });
+  expect(calls).toBe(1);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ error: { message: "model temporarily unavailable" } });
+});
+
+test("fails closed when the native v2 fallback returns no compaction item", async () => {
+  let calls = 0;
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+  }), defaultConfig("full"), undefined, async () => {
+    calls += 1;
+    if (calls === 1) return Response.json({ detail: "Not Found" }, { status: 404 });
+    return new Response([
+      `event: response.output_item.done\ndata: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "unexpected" }] },
+      })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [] } })}\n\n`,
+    ].join(""), { headers: { "content-type": "text/event-stream" } });
+  });
+  expect(response.status).toBe(502);
+  const body = await response.json() as { error: { message: string } };
+  expect(body.error.message).toContain("produced 0 compaction items; expected one");
+});
+
 test("streams one compaction item without leaking the summary as a normal assistant message", async () => {
   const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
     method: "POST",

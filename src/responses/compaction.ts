@@ -291,9 +291,8 @@ export interface CompactV1OutputOptions {
  * tokenizer and retained images consume the same budget using the browser input estimator's image
  * reserves, so a successful compact cannot immediately refill a small routed context window.
  */
-export function buildCompactV1Output(
+function selectCompactV1UserMessages(
   userMessages: CompactMessageItem[],
-  summary: string,
   options: CompactV1OutputOptions = {},
 ): CompactMessageItem[] {
   const selected: CompactMessageItem[] = [];
@@ -341,8 +340,33 @@ export function buildCompactV1Output(
     }
   }
   selected.reverse();
+  return selected;
+}
+
+export function buildCompactV1Output(
+  userMessages: CompactMessageItem[],
+  summary: string,
+  options: CompactV1OutputOptions = {},
+): CompactMessageItem[] {
   // codex-rs compact.rs uses "{SUMMARY_PREFIX}\n{summary}" (single newline) and detects stored
   // summaries by that exact prefix — keep the same shape.
   const summaryText = summary.trim().length > 0 ? `${SUMMARY_PREFIX}\n${summary}` : "(no summary available)";
-  return [...selected, compactUserMessageItem(summaryText)];
+  return [...selectCompactV1UserMessages(userMessages, options), compactUserMessageItem(summaryText)];
+}
+
+/**
+ * Bridge a modern native `compaction_trigger` result back into the legacy compact endpoint shape.
+ * The official opaque compaction item remains authoritative; AsterBridge only supplies the same
+ * bounded recent-user prefix used by routed Web v1 compaction so an old Codex client never needs
+ * the retired upstream `/responses/compact` endpoint.
+ */
+export function buildNativeCompactV1Output(
+  userMessages: CompactMessageItem[],
+  compactionItem: CompactMessageItem,
+  options: CompactV1OutputOptions = {},
+): CompactMessageItem[] {
+  if (compactionItem.type !== "compaction" && compactionItem.type !== "context_compaction") {
+    throw new Error("Native compact fallback requires an official compaction output item");
+  }
+  return [...selectCompactV1UserMessages(userMessages, options), structuredClone(compactionItem)];
 }

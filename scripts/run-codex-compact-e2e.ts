@@ -4,13 +4,22 @@ import { createInterface } from "node:readline";
 const codexBin = process.env.ASTERBRIDGE_CODEX_BIN?.trim();
 const requestedThreadId = process.env.ASTERBRIDGE_CODEX_THREAD_ID?.trim();
 const createThread = process.env.ASTERBRIDGE_CODEX_CREATE_THREAD === "1";
+const requestedModel = process.env.ASTERBRIDGE_CODEX_MODEL?.trim() || "chatgpt-web/light";
+const remoteCompactionV2 = process.env.ASTERBRIDGE_REMOTE_COMPACTION_V2?.trim();
 const baseUrl = process.env.ASTERBRIDGE_E2E_BASE_URL?.trim();
+const compactTimeoutMs = Number.parseInt(process.env.ASTERBRIDGE_COMPACT_E2E_TIMEOUT_MS ?? "180000", 10);
+if (!Number.isSafeInteger(compactTimeoutMs) || compactTimeoutMs < 10_000 || compactTimeoutMs > 600_000) {
+  throw new Error("ASTERBRIDGE_COMPACT_E2E_TIMEOUT_MS must be an integer between 10000 and 600000");
+}
 if (!codexBin) throw new Error("ASTERBRIDGE_CODEX_BIN is required");
 if (!createThread && !requestedThreadId) throw new Error("ASTERBRIDGE_CODEX_THREAD_ID is required unless ASTERBRIDGE_CODEX_CREATE_THREAD=1");
 let threadId = requestedThreadId ?? "";
 
 const appServerArgs = ["app-server", "--listen", "stdio://"];
 if (baseUrl) appServerArgs.push("-c", `openai_base_url=${JSON.stringify(baseUrl)}`);
+if (remoteCompactionV2 === "true" || remoteCompactionV2 === "false") {
+  appServerArgs.push("-c", `features.remote_compaction_v2=${remoteCompactionV2}`);
+}
 const child = spawn(codexBin, appServerArgs, {
   env: process.env,
   stdio: ["pipe", "pipe", "pipe"],
@@ -78,7 +87,7 @@ async function runTextTurn(text: string): Promise<any> {
   return Promise.race([waitForTurnCompletion(threadId, startIndex), exited]);
 }
 
-async function waitForCompaction(afterIndex: number, timeoutMs = 180_000): Promise<any> {
+async function waitForCompaction(afterIndex: number, timeoutMs = compactTimeoutMs): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (let index = afterIndex; index < notifications.length; index += 1) {
@@ -100,7 +109,12 @@ async function waitForCompaction(afterIndex: number, timeoutMs = 180_000): Promi
     }
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for native Codex compaction completion");
+  const recent = (notifications as any[]).slice(afterIndex).map(message => ({
+    method: message?.method ?? null,
+    itemType: message?.params?.item?.type ?? null,
+    turnStatus: message?.params?.turn?.status ?? null,
+  }));
+  throw new Error(`Timed out waiting for native Codex compaction completion; events=${JSON.stringify(recent.slice(-40))}`);
 }
 
 try {
@@ -113,7 +127,7 @@ try {
   ]);
   if (createThread) {
     const started = await Promise.race([send("thread/start", {
-      model: "chatgpt-web/light",
+      model: requestedModel,
       cwd: process.cwd(),
     }), exited]) as any;
     threadId = started?.thread?.id ?? "";

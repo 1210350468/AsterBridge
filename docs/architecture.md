@@ -142,12 +142,18 @@ never modified in place and is restored byte-for-byte on disconnect/uninstall; t
 hash-verified and fails closed if externally changed. While the integration is active, native models
 that support delegation and routed Web models share Codex's readable V1 collaboration surface so an
 explicitly selected Web subagent receives plaintext task content. An explicit native `disabled`
-delegation capability is preserved. For Codex 0.150 automatic compaction, the active v9 route also
-transactionally owns `[features].remote_compaction_v2 = false`: remote compaction remains enabled
-but uses `/responses/compact` v1, where AsterBridge can bound replacement history to the selected
-Web model's window. Disconnect/uninstall restores the user's prior feature assignment and table
-placement byte-for-byte; an external edit while the route is active fails closed. Model choice,
-effort, context, and service tiers are otherwise unchanged.
+delegation capability is preserved. The active v9 route transactionally owns
+`[features].remote_compaction_v2 = false`: routed Web models keep the bounded `/responses/compact`
+v1 replacement contract so a small Web context never inherits Codex's larger native retained-history
+budget. Native models use the same local v1 entry point for compatibility, but if the official legacy
+`/backend-api/codex/responses/compact` endpoint returns 404, AsterBridge translates that single native
+operation to the current streamed `/responses` + `compaction_trigger` protocol, preserves the official
+opaque compaction item, and returns a bounded v1 replacement to the calling Codex client. Non-404
+upstream failures and malformed/missing compaction output remain fail-closed. This keeps current Codex
+0.153/native compaction working without globally enabling v2 retention for routed Web models.
+Disconnect/uninstall restores the user's prior feature assignment and table placement byte-for-byte;
+an external edit while the route is active fails closed. Model choice, effort, context, and service
+tiers are otherwise unchanged.
 
 The built-in provider attempts a Responses WebSocket prewarm. The local route explicitly returns
 HTTP `426`, which is Codex's native capability-negotiation signal for an immediate, session-sticky

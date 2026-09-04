@@ -22,7 +22,9 @@ import {
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
 import {
   buildCompactV1Output,
+  buildNativeCompactV1Output,
   COMPACT_PROMPT,
+  COMPACT_V1_MAX_RETAINED_HISTORY_TOKENS,
   decodeCompactionSummary,
   extractCompactUserMessages,
   planCompactV1Budget,
@@ -417,10 +419,174 @@ export async function responseRequest(
   return Response.json(json);
 }
 
+function nativeCompactionItem(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && ((value as { type?: unknown }).type === "compaction"
+      || (value as { type?: unknown }).type === "context_compaction"));
+}
+
+async function collectNativeV2CompactionItem(response: Response): Promise<Record<string, unknown>> {
+  // This helper is called only for a synthesized `stream:true` Responses compaction request.
+  // Do not infer transport from Content-Type: the authenticated Codex backend can return an SSE
+  // body through intermediaries that normalize or omit that header. The current Codex client also
+  // consumes this operation as an event stream unconditionally.
+  if (!response.body) throw new Error("Native compaction v2 fallback returned an empty event stream");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const completedItems: Record<string, unknown>[] = [];
+  let buffer = "";
+
+  const handleFrame = (frame: string): Record<string, unknown> | null => {
+    if (!frame.trim()) return null;
+    const data = frame.split(/\r?\n/)
+      .filter(line => line.startsWith("data:"))
+      .map(line => line.slice(5).trimStart())
+      .join("\n");
+    if (!data || data === "[DONE]") return null;
+    let event: Record<string, unknown>;
+    try {
+      const decoded = JSON.parse(data);
+      if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return null;
+      event = decoded as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const type = typeof event.type === "string" ? event.type : "";
+    if (type === "response.output_item.done" && nativeCompactionItem(event.item)) {
+      completedItems.push(event.item);
+      return null;
+    }
+    if (type === "response.failed" || type === "response.incomplete") {
+      const terminal = event.response;
+      const status = terminal && typeof terminal === "object" && !Array.isArray(terminal)
+        ? (terminal as { status?: unknown }).status
+        : undefined;
+      throw new Error(`Native compaction v2 fallback terminated as ${status ? String(status) : type}`);
+    }
+    if (type !== "response.completed") return null;
+    if (completedItems.length === 0) {
+      const completed = event.response;
+      if (completed && typeof completed === "object" && !Array.isArray(completed)) {
+        const output = (completed as { output?: unknown }).output;
+        if (Array.isArray(output)) completedItems.push(...output.filter(nativeCompactionItem));
+      }
+    }
+    if (completedItems.length !== 1) {
+      throw new Error(`Native compaction v2 fallback produced ${completedItems.length} compaction items; expected one`);
+    }
+    return completedItems[0]!;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: !done });
+      if (done) buffer += decoder.decode();
+      while (true) {
+        const lf = buffer.indexOf("\n\n");
+        const crlf = buffer.indexOf("\r\n\r\n");
+        const positions = [lf, crlf].filter(index => index >= 0);
+        if (positions.length === 0) break;
+        const boundary = Math.min(...positions);
+        const separatorLength = boundary === crlf ? 4 : 2;
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + separatorLength);
+        const item = handleFrame(frame);
+        if (item) {
+          try { await reader.cancel(); } catch { /* terminal event already received */ }
+          return item;
+        }
+      }
+      if (done) {
+        const trailing = handleFrame(buffer);
+        if (trailing) return trailing;
+        throw new Error("Native compaction v2 fallback stream ended before response.completed");
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+}
+
+async function compactNativeViaModernResponses(
+  req: Request,
+  raw: Record<string, unknown>,
+  fetchUpstream?: NativeFetch,
+): Promise<Response> {
+  const input = Array.isArray(raw.input) ? raw.input : [];
+  const modernBody: Record<string, unknown> = {
+    model: raw.model,
+    input: [...input, { type: "compaction_trigger" }],
+    tool_choice: "auto",
+    parallel_tool_calls: raw.parallel_tool_calls === true,
+    store: false,
+    stream: true,
+    include: ["reasoning.encrypted_content"],
+  };
+  for (const key of [
+    "tools",
+    "instructions",
+    "reasoning",
+    "service_tier",
+    "prompt_cache_key",
+    "text",
+    "client_metadata",
+    "access_programs",
+    "stream_options",
+  ]) {
+    if (raw[key] !== undefined) modernBody[key] = raw[key];
+  }
+
+  const headers = new Headers(req.headers);
+  headers.set("content-type", "application/json");
+  headers.set("accept", "text/event-stream");
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  const modernRequest = new Request("http://127.0.0.1/v1/responses", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(modernBody),
+    signal: req.signal,
+  });
+  console.error("[asterbridge:native-compaction] forwarding legacy compact as responses compaction_trigger");
+  const modern = await forwardNativeCodexRequest(
+    modernRequest,
+    "responses",
+    fetchUpstream,
+    modernBody,
+  );
+  if (!modern.ok) {
+    const message = await modelCatalogFailureMessage(modern);
+    console.error(`[asterbridge:native-compaction] modern fallback failed status=${modern.status} message=${JSON.stringify((message ?? "unknown").slice(0, 500))}`);
+    return modern;
+  }
+
+  let compactionItem: Record<string, unknown>;
+  try {
+    compactionItem = await collectNativeV2CompactionItem(modern);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[asterbridge:native-compaction] modern stream rejected message=${JSON.stringify(message.slice(0, 500))}`);
+    return formatErrorResponse(
+      502,
+      "invalid_response_error",
+      message,
+    );
+  }
+  const output = buildNativeCompactV1Output(
+    extractCompactUserMessages(input),
+    compactionItem,
+    { retainedHistoryTokenBudget: COMPACT_V1_MAX_RETAINED_HISTORY_TOKENS },
+  );
+  console.error(`[asterbridge:native-compaction] modern fallback PASS retained_items=${Math.max(0, output.length - 1)}`);
+  return Response.json({ output });
+}
+
 export async function compactRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
+  fetchUpstream?: NativeFetch,
 ): Promise<Response> {
   const nativeRequest = req.clone();
   let raw: Record<string, unknown>;
@@ -456,7 +622,13 @@ export async function compactRequest(
   }
   if (!isChatGptWebModelSlug(raw.model)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
+      const legacy = await forwardNativeCodexRequest(nativeRequest, "responses/compact", fetchUpstream, raw);
+      if (legacy.status !== 404) return legacy;
+      console.error("[asterbridge:native-compaction] legacy endpoint returned 404; activating compatibility fallback");
+      // ChatGPT's legacy `/backend-api/codex/responses/compact` endpoint is retired. Keep the local
+      // v1 contract for Codex clients that still select it, but translate the native operation to
+      // the modern `/responses` + `compaction_trigger` protocol before it leaves AsterBridge.
+      return await compactNativeViaModernResponses(req, raw, fetchUpstream);
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -686,7 +858,10 @@ export function startServer(
       }
       if (req.method === "POST" && url.pathname === "/v1/responses/compact") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
-        return httpTurns.track(signal => compactRequest(new Request(req, { signal }), config), req.signal);
+        return httpTurns.track(
+          signal => compactRequest(new Request(req, { signal }), config, createChatGptWebAdapter, dependencies.fetchUpstream),
+          req.signal,
+        );
       }
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
