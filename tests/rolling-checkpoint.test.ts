@@ -149,6 +149,9 @@ test("Luna prompt requests the strict private checkpoint only when capture is en
   expect(rolling.text).toContain(`${CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS.toLocaleString("en-US")} tokens`);
 });
 
+// This correctness test performs repeated real o200k tokenizer counts over a large synthetic prompt.
+// Cold tokenizer initialization on shared Linux CI runners can exceed Bun's default 5 s test timeout;
+// this is not a performance SLA, so keep the relaxation local to this tokenizer-heavy case.
 test("Luna checkpoint replaces only exact-parent history and preserves the current native turn", () => {
   const root = mkdtempSync(join(tmpdir(), "codex-luna-checkpoint-"));
   roots.push(root);
@@ -234,7 +237,7 @@ test("Luna checkpoint replaces only exact-parent history and preserves the curre
   const stale = new ChatGptLunaCheckpointStore(path).apply(repeatedAnswerWithoutCheckpoint);
   expect(stale.applied).toBe(false);
   expect(stale.reason).toContain("source turn");
-});
+}, 15_000);
 
 test("Luna checkpoint preserves the server-resolved backend model when the raw body carries a route slug", () => {
   const root = mkdtempSync(join(tmpdir(), "codex-luna-route-checkpoint-"));
