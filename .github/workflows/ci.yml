@@ -40,11 +40,24 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
       - run: bun run verify
+      - name: Prepare Electron binary
+        run: bun run prepare:electron
       - run: bun run app:package
       - name: Ensure virtual display is available
         if: runner.os == 'Linux'
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Audit root and launcher dependencies
+        run: bun run audit
 
   actionlint:
     runs-on: ubuntu-latest

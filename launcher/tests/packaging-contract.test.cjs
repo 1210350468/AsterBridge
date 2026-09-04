@@ -24,11 +24,44 @@ test("release verification runs core tests in deterministic Bun batches", () => 
   assert.match(coreRunner, /PASS \$\{testFiles\.length\} files in \$\{batchCount\} deterministic batches/);
 });
 
+test("dependency audit is a bounded network gate for both lockfiles", () => {
+  const verifier = fs.readFileSync(path.join(repositoryRoot, "scripts", "verify.ts"), "utf8");
+  const auditor = fs.readFileSync(path.join(repositoryRoot, "scripts", "audit-dependencies.ts"), "utf8");
+  const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+  assert.equal(repositoryManifest.scripts.audit, "bun run scripts/audit-dependencies.ts");
+  assert.doesNotMatch(verifier, /\["run", "audit"\]/);
+  assert.match(auditor, /ASTERBRIDGE_AUDIT_ATTEMPTS/);
+  assert.match(auditor, /ASTERBRIDGE_AUDIT_TIMEOUT_MS/);
+  assert.match(auditor, /resolve\(root, "launcher"\)/);
+  assert.match(auditor, /Bun\.spawn\(\[process\.execPath, "audit"\]/);
+  assert.match(auditor, /DEPENDENCY_AUDIT_OK root\+launcher/);
+  assert.match(ci, /\n  audit:\r?\n[\s\S]*run: bun run audit/);
+  assert.match(release, /\n  audit:\r?\n[\s\S]*run: bun run audit/);
+  assert.match(release, /needs: \[audit, build\]/);
+});
+
 test("launcher publishes native packages for all supported desktop operating systems", () => {
+  const electronBootstrap = fs.readFileSync(path.join(repositoryRoot, "scripts", "prepare-electron.ts"), "utf8");
+  const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+  assert.equal(repositoryManifest.scripts["prepare:electron"], "bun run scripts/prepare-electron.ts");
+  assert.equal(manifest.scripts["prepare:electron"], "bun run ../scripts/prepare-electron.ts");
+  for (const scriptName of ["package", "package:mac", "package:win", "package:linux"]) {
+    assert.match(manifest.scripts[scriptName], /^bun run prepare:electron && /);
+  }
+  assert.match(electronBootstrap, /ASTERBRIDGE_ELECTRON_INSTALL_ATTEMPTS/);
+  assert.match(electronBootstrap, /ASTERBRIDGE_ELECTRON_INSTALL_TIMEOUT_MS/);
+  assert.match(electronBootstrap, /node_modules", "electron"/);
+  assert.match(electronBootstrap, /install\.js/);
+  assert.match(electronBootstrap, /applyNetworkProxyEnvironment/);
+  assert.match(electronBootstrap, /mode: "auto"/);
+  assert.match(electronBootstrap, /Bun\.spawn\(\[process\.execPath, installScript, "--no"\]/);
+  assert.match(ci, /name: Prepare Electron binary\r?\n\s+run: bun run prepare:electron/);
+  assert.match(release, /name: Prepare Electron binary\r?\n\s+run: bun run prepare:electron/);
   assert.equal(manifest.build.appId, "dev.codexwebgpt.launcher");
   assert.equal(manifest.build.artifactName, "asterbridge-${version}-${os}-${arch}.${ext}");
   assert.equal(manifest.build.electronDist, "node_modules/electron/dist");
-  assert.ok(fs.existsSync(path.join(launcherRoot, manifest.build.electronDist, "electron.exe")));
   assert.deepEqual(manifest.build.mac.target, ["dmg", "zip"]);
   assert.deepEqual(manifest.build.win.target, ["nsis"]);
   assert.equal(manifest.build.productName, "AsterBridge");

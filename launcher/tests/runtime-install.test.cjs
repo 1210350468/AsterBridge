@@ -112,3 +112,43 @@ test("packaged runtime replaces stale files when a release is refreshed under th
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("successful packaged runtime refresh tolerates a locked previous runtime and reclaims it later", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-locked-previous-"));
+  const resourcesPath = runtimeFixture(root, "0.2.0", "a".repeat(64));
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRmSync = fs.rmSync;
+  let blockedPrevious = null;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const source = path.join(resourcesPath, "runtime");
+    const manifestPath = path.join(source, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    fs.writeFileSync(path.join(source, "app", "cli.js"), "new cli");
+    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, bundleId: "b".repeat(64) })}\n`);
+
+    fs.rmSync = (target, options) => {
+      const resolved = String(target);
+      if (resolved.includes(".previous-")) {
+        blockedPrevious = resolved;
+        const error = new Error(`EPERM, runtime still in use: ${resolved}`);
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalRmSync(target, options);
+    };
+
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "new cli");
+    assert.ok(blockedPrevious);
+    assert.equal(fs.existsSync(blockedPrevious), true);
+
+    fs.rmSync = originalRmSync;
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.equal(fs.existsSync(blockedPrevious), false);
+  } finally {
+    fs.rmSync = originalRmSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

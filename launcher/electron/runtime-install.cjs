@@ -29,6 +29,29 @@ function validateRuntimeBundle(runtimeRoot, { version, platform, arch, bundleId 
   return paths.runtimeRoot;
 }
 
+function removeRuntimeTreeBestEffort(target) {
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupStalePreviousRuntimes(versionsRoot, destination) {
+  const prefix = `${path.basename(destination)}.previous-`;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(versionsRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    removeRuntimeTreeBestEffort(path.join(versionsRoot, entry.name));
+  }
+}
+
 function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   if (!app.isPackaged) return null;
   const identity = {
@@ -47,7 +70,9 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   );
   if (fs.existsSync(destination)) {
     try {
-      return validateRuntimeBundle(destination, expectedIdentity);
+      const installed = validateRuntimeBundle(destination, expectedIdentity);
+      cleanupStalePreviousRuntimes(versionsRoot, destination);
+      return installed;
     } catch {
       // A terminated installer or external cleanup can leave a version directory present but
       // incomplete. Rebuild the launcher-owned bundle transactionally from the signed package.
@@ -84,11 +109,15 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
       throw error;
     }
     if (previousMoved) {
-      fs.rmSync(previous, { recursive: true, force: true });
+      // A launcher-owned MCP/tunnel child may still have the previous Bun executable open on
+      // Windows. The replacement is already verified at this point, so cleanup must not turn a
+      // successful runtime refresh into a fatal launcher startup. A later launch retries stale
+      // previous-directory cleanup after the old process has released its handles.
+      removeRuntimeTreeBestEffort(previous);
       previousMoved = false;
     }
   } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
+    removeRuntimeTreeBestEffort(temporary);
     if (previousMoved && fs.existsSync(previous) && !fs.existsSync(destination)) {
       renameAtomicFile(previous, destination);
       previousMoved = false;

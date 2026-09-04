@@ -2,6 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
+const electronModulePath = require.resolve("electron");
+require.cache[electronModulePath] = {
+  id: electronModulePath,
+  filename: electronModulePath,
+  loaded: true,
+  exports: { WebContentsView: class WebContentsView {}, shell: {} },
+};
 const {
   browserViewVisible,
   constrainBrowserBounds,
