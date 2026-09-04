@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { applyNetworkProxyEnvironment } = require("../launcher/electron/network-proxy.cjs") as {
@@ -38,7 +38,7 @@ function electronPlatformPath(): string {
   switch (platform) {
     case "mas":
     case "darwin":
-      return resolve("Electron.app", "Contents", "MacOS", "Electron");
+      return join("Electron.app", "Contents", "MacOS", "Electron");
     case "freebsd":
     case "openbsd":
     case "linux":

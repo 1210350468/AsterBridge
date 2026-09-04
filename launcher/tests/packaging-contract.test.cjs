@@ -53,6 +53,8 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.match(electronBootstrap, /ASTERBRIDGE_ELECTRON_INSTALL_ATTEMPTS/);
   assert.match(electronBootstrap, /ASTERBRIDGE_ELECTRON_INSTALL_TIMEOUT_MS/);
   assert.match(electronBootstrap, /node_modules", "electron"/);
+  assert.match(electronBootstrap, /return join\("Electron\.app", "Contents", "MacOS", "Electron"\)/);
+  assert.doesNotMatch(electronBootstrap, /return resolve\("Electron\.app"/);
   assert.match(electronBootstrap, /install\.js/);
   assert.match(electronBootstrap, /applyNetworkProxyEnvironment/);
   assert.match(electronBootstrap, /mode: "auto"/);
