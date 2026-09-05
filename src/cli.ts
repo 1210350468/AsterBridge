@@ -306,7 +306,7 @@ async function routeCommand(args: string[]): Promise<void> {
         };
       })()
     : action === "connect"
-      ? activateCodexIntegration()
+      ? activateCodexIntegration(loadConfig())
       : action === "disconnect"
         ? deactivateCodexIntegration()
         : undefined;

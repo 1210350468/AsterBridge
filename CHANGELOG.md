@@ -2,6 +2,16 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.31 - 2026-09-05
+
+### Native model catalog freshness
+
+- Fixed bridge reconnect hiding newly rolled-out official Codex models such as `gpt-6-astra`. While disconnected, current Codex refreshes its provider-agnostic `models_cache.json` from the official service; AsterBridge 3.0.30 previously verified and reused the older managed `model_catalog_json` during reconnect, then deleted that fresh cache, so the bridge could expose an older native model list than direct Codex.
+- `route connect` now rebuilds the managed catalog from the freshest available direct Codex cache before reinstalling the bridge route, preserves all native rows, appends only the account-eligible `chatgpt-web/*` routes, updates the authenticated catalog SHA in the integration journal, and removes the provider cache only after the replacement catalog is committed. If no fresh cache exists, the previously authenticated managed catalog remains the fail-closed fallback.
+- Live Windows diagnosis reproduced the mismatch on Codex **0.153.1**: direct mode refreshed a cache containing `gpt-6-astra`, `gpt-5.6-sol`, and `gpt-5.6-terra`; the repaired reconnect then produced one managed catalog containing `gpt-6-astra` plus `chatgpt-web/light`, `chatgpt-web/medium`, and `chatgpt-web/high`. Focused integration coverage passes **27 / 27** with TypeScript PASS.
+- 3.0.31 local release validation is green on Windows 11 x64: Core **42 / 42** deterministic batches, Launcher **212 pass / 0 fail / 1 Windows-inapplicable skip** (**213 total**), renderer/runtime/license gates PASS, `RELOCATABLE_RUNTIME_SMOKE_OK`, root **0 vulnerabilities / 106 packages**, launcher **0 vulnerabilities / 351 packages**, and `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`. The local installer is **161,916,884 bytes**, blockmap **169,421 bytes**, SHA-256 `F4EE55DA81B5CB2F34A1FD3289B657F25D7AE2C3EE53A2823174DD9EAB37B051`; the installed durable runtime reports bundle id `6ced941fb20203bb6c9652aa58a01bebdb2e875f39598b9ad7bf984aa54cf6fb`.
+- The exact installed 3.0.31 runtime was then exercised against production state: Launcher upgraded the existing Full/MCP 3.0.30 install to 3.0.31, Doctor returned `ok=true`, Tunnel/Roxy/Responses stayed healthy, `Codex Native3` remained visible, bridge disconnect let Codex 0.153.1 refresh `gpt-6-astra`, and reconnect rebuilt the managed catalog with Astra plus the three account-eligible Web routes while removing the provider cache only after commit.
+
 ## 3.0.30 - 2026-09-04
 
 ### Retained compaction handoff compatibility

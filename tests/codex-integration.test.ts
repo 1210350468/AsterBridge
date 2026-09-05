@@ -509,6 +509,42 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(configPath, "utf8")).toBe(original);
   });
 
+  test("refreshes newly available native models from the direct Codex cache when reconnecting", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+    const nativeCatalog = JSON.parse(readFileSync(getCodexModelsCachePath(), "utf8"));
+    const nativeTemplate = nativeCatalog.models[0];
+
+    const installed = installCodexIntegration(defaultConfig("browser-only"));
+    expect(deactivateCodexIntegration()).toEqual({ changed: true, active: false });
+    expect(existsSync(getCodexModelsCachePath())).toBe(false);
+
+    const astra = {
+      ...structuredClone(nativeTemplate),
+      slug: "gpt-6-astra",
+      display_name: "GPT-6-Astra",
+      context_window: 1_050_000,
+      max_context_window: 1_050_000,
+      auto_compact_token_limit: 997_500,
+    };
+    writeFileSync(getCodexModelsCachePath(), `${JSON.stringify({ models: [nativeTemplate, astra] }, null, 2)}\n`);
+
+    expect(activateCodexIntegration(defaultConfig("browser-only"))).toEqual({ changed: true, active: true });
+    expect(existsSync(getCodexModelsCachePath())).toBe(false);
+    const refreshed = JSON.parse(readFileSync(getCodexManagedCatalogPath(), "utf8"));
+    expect(refreshed.models.map((model: { slug: string }) => model.slug)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-6-astra",
+      "chatgpt-web/light",
+      "chatgpt-web/medium",
+      "chatgpt-web/high",
+    ]);
+    const reconnectedJournal = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
+    expect(reconnectedJournal.catalogSha256).not.toBe(installed.catalogSha256);
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+  });
+
   test("keeps a disconnected bridge disabled across process-style journal reloads", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");

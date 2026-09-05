@@ -137,9 +137,13 @@ Setup keeps Codex's built-in `openai` provider and transactionally owns both `op
 an AsterBridge-generated `model_catalog_json` while the bridge is active. The managed catalog is
 built from the user's existing catalog, Codex model cache, or bundled Codex catalog, preserves every
 native model, and appends only the account-available `chatgpt-web/` routes with their exact context,
-auto-compaction, reasoning, and compatibility metadata. The user's original catalog assignment is
-never modified in place and is restored byte-for-byte on disconnect/uninstall; the managed copy is
-hash-verified and fails closed if externally changed. While the integration is active, native models
+auto-compaction, reasoning, and compatibility metadata. A disconnected route lets native Codex refresh
+its provider cache directly from the official service; reconnect consumes that fresh cache before
+reinstalling the static managed catalog, updates the journaled catalog SHA transactionally, and only
+then invalidates the provider cache. This prevents bridge mode from freezing an older native model
+list when OpenAI rolls out a new model. The user's original catalog assignment is never modified in
+place and is restored byte-for-byte on disconnect/uninstall; the managed copy is hash-verified and
+fails closed if externally changed. While the integration is active, native models
 that support delegation and routed Web models share Codex's readable V1 collaboration surface so an
 explicitly selected Web subagent receives plaintext task content. An explicit native `disabled`
 delegation capability is preserved. The active v9 route transactionally owns

@@ -257,7 +257,7 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
   return { changed: true, active: false };
 }
 
-export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
+export function activateCodexIntegration(config?: AppConfig): SetCodexIntegrationActiveResult {
   const existing = readJournal();
   if (!existing) throw new Error("Codex integration is not installed");
   if (existing.version === 2) {
@@ -273,6 +273,17 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     }
     verifyRestoredRoute(current, existing);
     verifyManagedCatalog(existing);
+    const refreshedCatalog = config
+      ? buildManagedCodexModelCatalog(
+          config,
+          current,
+          readCodexModelContextOverride(),
+          trustedManagedCatalogSource(existing),
+        )
+      : undefined;
+    if (refreshedCatalog && refreshedCatalog.path !== existing.catalogPath) {
+      throw new Error("Refreshed Codex model catalog resolved to an unexpected path");
+    }
     const route = installRoute(current, existing.installed, true);
     assertPreservedPreviousAssignments(route.previous, existing.previous, true);
     if (!route.previousRemoteCompactionV2
@@ -281,8 +292,15 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
       || route.previousRemoteCompactionV2.tablePresent !== existing.previousRemoteCompactionV2.tablePresent) {
       throw new Error("Codex remote_compaction_v2 changed while the bridge was disconnected; refusing to replace it");
     }
-    const connected: CodexIntegrationJournal = { ...existing, active: true };
-    writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+    const connected: CodexIntegrationJournal = refreshedCatalog
+      ? { ...existing, active: true, catalogSha256: sha256(refreshedCatalog.data) }
+      : { ...existing, active: true };
+    writeIntegrationState(
+      connected,
+      { path: existing.configPath, data: route.text },
+      [getCodexModelsCachePath()],
+      refreshedCatalog ? [{ path: refreshedCatalog.path, data: refreshedCatalog.data }] : [],
+    );
     return { changed: true, active: true };
   }
   if (existing.version === 8) {
@@ -292,10 +310,28 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     }
     verifyRestoredRoute(current, existing);
     verifyManagedCatalog(existing);
+    const refreshedCatalog = config
+      ? buildManagedCodexModelCatalog(
+          config,
+          current,
+          readCodexModelContextOverride(),
+          trustedManagedCatalogSource(existing),
+        )
+      : undefined;
+    if (refreshedCatalog && refreshedCatalog.path !== existing.catalogPath) {
+      throw new Error("Refreshed Codex model catalog resolved to an unexpected path");
+    }
     const route = installRoute(current, existing.installed, true);
     assertPreservedPreviousAssignments(route.previous, existing.previous, true);
-    const connected: LegacyCodexIntegrationJournalV8 = { ...existing, active: true };
-    writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+    const connected: LegacyCodexIntegrationJournalV8 = refreshedCatalog
+      ? { ...existing, active: true, catalogSha256: sha256(refreshedCatalog.data) }
+      : { ...existing, active: true };
+    writeIntegrationState(
+      connected,
+      { path: existing.configPath, data: route.text },
+      [getCodexModelsCachePath()],
+      refreshedCatalog ? [{ path: refreshedCatalog.path, data: refreshedCatalog.data }] : [],
+    );
     return { changed: true, active: true };
   }
   if (existing.version !== 3 && existing.active) {
