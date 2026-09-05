@@ -11,7 +11,7 @@ import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebC
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, countChatGptContextImages } from "./prompt";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
-import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnExplicitlyCancelledError, chatGptCompactionSourceExecutionKey, chatGptDirectTurnExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
+import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnExplicitlyCancelledError, ChatGptTurnSupersededError, chatGptCompactionSourceExecutionKey, chatGptDirectTurnExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import { chatGptConversationKey, retainedConversationResumeRequest } from "./conversation-key";
@@ -293,6 +293,8 @@ export function createChatGptWebAdapter(
         browser,
         trace,
         text,
+        ...(identity.threadId ? { threadId: identity.threadId } : {}),
+        ...(identity.turnId ? { turnId: identity.turnId } : {}),
         cancel: () => browserAbort.abort(),
       };
     }
@@ -328,6 +330,7 @@ export function createChatGptWebAdapter(
         trace,
         text,
         ...(identity.threadId ? { threadId: identity.threadId } : {}),
+        ...(identity.turnId ? { turnId: identity.turnId } : {}),
         ...(conversationKey ? {
           conversationKey,
           releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
@@ -394,6 +397,7 @@ export function createChatGptWebAdapter(
       trace,
       text,
       ...(identity.threadId ? { threadId: identity.threadId } : {}),
+      ...(identity.turnId ? { turnId: identity.turnId } : {}),
       ...(conversationKey ? {
         conversationKey,
         releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
@@ -498,6 +502,13 @@ export function createChatGptWebAdapter(
       }
       const directToolRound = mode.localTools && turnCapabilities.localToolTransport === "responses";
       const executionKey = `${executionNamespace}:${directToolRound ? chatGptDirectTurnExecutionKey(parsed) : chatGptTurnExecutionKey(parsed)}`;
+      const turnIdentity = extractChatGptTurnIdentity(parsed);
+      if (turnIdentity.threadId && turnIdentity.turnId) {
+        const preempted = await chatGptTurnSessions.preemptSupersededThread(turnIdentity.threadId, turnIdentity.turnId);
+        if (preempted > 0) {
+          console.warn(`[chatgpt-web] superseded ${preempted} active browser turn(s) for a newer native Codex turn on the same thread`);
+        }
+      }
       await chatGptTurnSessions.waitForRetirement(executionKey);
       const traceId = createHash("sha256").update(executionKey).digest("hex").slice(0, 12);
       let session: ChatGptTurnSession;
@@ -511,6 +522,12 @@ export function createChatGptWebAdapter(
           throw new ChatGptWebAdapterError(
             "This Codex turn was explicitly cancelled by the launcher and cannot be retried.",
             { status: 409, errorType: "invalid_request_error", code: "turn_cancelled", retryable: false },
+          );
+        }
+        if (error instanceof ChatGptTurnSupersededError) {
+          throw new ChatGptWebAdapterError(
+            "This Codex turn was superseded by a newer turn on the same thread and cannot be retried.",
+            { status: 409, errorType: "invalid_request_error", code: "turn_superseded", retryable: false },
           );
         }
         throw error;

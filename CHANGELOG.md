@@ -2,6 +2,17 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.32 - 2026-09-05
+
+### Codex interrupt propagation and same-thread recovery
+
+- Fixed a Windows cancellation leak where stopping or interrupting a Codex Web turn could leave the corresponding ChatGPT browser generation running. The Windows `HttpTurnCounter` previously used `ReadableStream.tee()` to avoid Bun 1.4.0's async-pull teardown crash; cancelling only Codex's tee branch left the lifecycle branch consuming the upstream SSE, so the browser turn stayed alive and continued to own the conversation.
+- Windows response streaming now uses a push-driven single-branch wrapper with no async `pull()`. Client stream cancellation aborts the tracked request and directly cancels the underlying response reader, preserving the Bun workaround while restoring end-to-end cancellation propagation.
+- Added a same-thread recovery guard for current Codex versions that can acknowledge `turn/interrupt` yet continue consuming the old provider stream. When a newer native turn arrives on the same Codex thread, AsterBridge preempts only older active browser turns from that thread, tombstones their execution keys so stale retries cannot revive them, releases retained-conversation ownership, and then starts the new turn. Other threads and same-turn tool rounds are unaffected.
+- Focused lifecycle/session coverage passes **28 pass / 0 fail** on Windows with the eight existing Bun 1.4.0 named-pipe-only cases skipped. A real Codex **0.153.1** app-server E2E reproduced the user journey against an isolated patched runtime: ChatGPT was allowed to enter `generation_running`, Codex sent `turn/interrupt`, an immediate same-thread follow-up superseded the old Web turn, the follow-up completed, and final health returned to `active_http_turns=0` / `active_browser_turns=0` with `ASTERBRIDGE_CODEX_CANCEL_OK`.
+- Final local release validation is green: Core **42 / 42** deterministic batches, Launcher **212 pass / 0 fail / 1 Windows-inapplicable skip** (**213 total**), TypeScript and renderer production build PASS, `RELOCATABLE_RUNTIME_SMOKE_OK`, dependency audit reports **0 vulnerabilities / 106 root packages** and **0 vulnerabilities / 351 launcher packages**, and `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`. The local Windows installer is **161,917,387 bytes**, blockmap **169,505 bytes**, SHA-256 `0B0C034973B835FBEC67B0192FACA67647383D21E148C90169B7CE5F206648A7`; installed durable runtime bundle id is `3a267e53cda69068aef2c4016a3bb43e450dae5615587bf484ca284335933403`.
+- The exact installed 3.0.32 Full runtime then repeated the cancellation regression on production port `17841`: Codex **0.153.1** reached one active HTTP/browser turn, `turn/interrupt` was sent after the Web generation was running, the same-thread follow-up completed successfully, both post-interrupt and post-follow-up health snapshots were `active_http_turns=0` / `active_browser_turns=0`, Doctor returned `ok=true`, Tunnel/Roxy/Responses were healthy, and `Codex Native3` remained visible.
+
 ## 3.0.31 - 2026-09-05
 
 ### Native model catalog freshness

@@ -120,6 +120,8 @@ interface ChatGptTurnRuntimeBase {
   text: ChatGptTextFeed;
   /** Native Codex thread owning this browser runtime, when one is available. */
   threadId?: string;
+  /** Native Codex turn owning this browser runtime, used to reject stale retries after interruption. */
+  turnId?: string;
   /** Stable retained ChatGPT conversation identity for one Codex thread/compaction epoch. */
   conversationKey?: string;
   /** Idempotently release a retained external-browser conversation when its epoch ends. */
@@ -216,6 +218,13 @@ export class ChatGptTurnExplicitlyCancelledError extends Error {
   }
 }
 
+export class ChatGptTurnSupersededError extends Error {
+  constructor() {
+    super("ChatGPT web turn was superseded by a newer native Codex turn on the same thread");
+    this.name = "ChatGptTurnSupersededError";
+  }
+}
+
 export class ChatGptTurnSession {
   readonly createdAt = Date.now();
   private lastTouchedAt = this.createdAt;
@@ -264,6 +273,10 @@ export class ChatGptTurnSession {
 
   threadId(): string | undefined {
     return this.runtime.threadId;
+  }
+
+  turnId(): string | undefined {
+    return this.runtime.turnId;
   }
 
   conversationKey(): string | undefined {
@@ -335,6 +348,7 @@ export class ChatGptTurnSessions {
   private readonly conversationRetirements = new Map<string, Promise<void>>();
   private readonly threadHeads = new Map<string, ChatGptTurnSession>();
   private readonly explicitCancellationTombstones = new Map<string, number>();
+  private readonly supersededTombstones = new Map<string, number>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
@@ -344,6 +358,7 @@ export class ChatGptTurnSessions {
   getOrCreate(key: string, start: () => ChatGptTurnRuntime): ChatGptTurnSession {
     this.prune();
     if (this.explicitCancellationTombstones.has(key)) throw new ChatGptTurnExplicitlyCancelledError();
+    if (this.supersededTombstones.has(key)) throw new ChatGptTurnSupersededError();
     const existing = this.entries.get(key);
     if (existing) {
       existing.touch();
@@ -368,6 +383,37 @@ export class ChatGptTurnSessions {
   wasExplicitlyCancelled(key: string): boolean {
     this.prune();
     return this.explicitCancellationTombstones.has(key);
+  }
+
+  async preemptSupersededThread(threadId: string, turnId: string): Promise<number> {
+    this.prune();
+    const matches = [...this.entries].filter(([, session]) => (
+      session.isActive()
+      && session.threadId() === threadId
+      && session.turnId() !== undefined
+      && session.turnId() !== turnId
+    ));
+    if (matches.length === 0) return 0;
+
+    const cancelledAt = Date.now();
+    for (const [key] of matches) this.supersededTombstones.set(key, cancelledAt);
+    const maxTombstones = Math.max(this.maxEntries * 4, 256);
+    while (this.supersededTombstones.size > maxTombstones) {
+      const oldest = this.supersededTombstones.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.supersededTombstones.delete(oldest);
+    }
+
+    const releases = new Set<() => Promise<void>>();
+    for (const [key, session] of matches) {
+      if (this.entries.get(key) === session) this.entries.delete(key);
+      const release = this.forgetConversationHead(session);
+      if (release) releases.add(release);
+      session.cancel();
+    }
+    await Promise.all(matches.map(([, session]) => session.browserOutcome.then(() => undefined)));
+    await Promise.all([...releases].map(release => release()));
+    return matches.length;
   }
 
   cancelAllExplicitly(): number {
@@ -497,6 +543,7 @@ export class ChatGptTurnSessions {
     this.conversationHeads.clear();
     this.threadHeads.clear();
     this.explicitCancellationTombstones.clear();
+    this.supersededTombstones.clear();
     for (const session of heads) {
       const release = session.runtime.releaseRetainedConversation;
       if (!release) continue;

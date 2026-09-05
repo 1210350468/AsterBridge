@@ -52,7 +52,7 @@ test("HTTP turn tracking releases a cancelled response stream", async () => {
   await waitForTurnCount(turns, 0);
 });
 
-test("HTTP turn tracking uses a tee branch on Windows", async () => {
+test("HTTP turn tracking uses a push-driven single branch on Windows", async () => {
   const turns = new HttpTurnCounter();
   let source!: ReadableStreamDefaultController<Uint8Array>;
   const original = new ReadableStream<Uint8Array>({
@@ -66,6 +66,43 @@ test("HTTP turn tracking uses a tee branch on Windows", async () => {
   source.close();
   expect((await reader.read()).done).toBe(true);
   await waitForTurnCount(turns, 0);
+});
+
+test("Windows stream releases lifecycle ownership as soon as upstream EOF is known", async () => {
+  const turns = new HttpTurnCounter();
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  const response = await turns.track(async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) { source = controller; },
+  })), undefined, "win32");
+  const reader = response.body!.getReader();
+
+  source.enqueue(new TextEncoder().encode("final"));
+  source.close();
+  await waitForTurnCount(turns, 0);
+  expect(new TextDecoder().decode((await reader.read()).value)).toBe("final");
+  expect((await reader.read()).done).toBe(true);
+});
+
+test("Windows client stream cancellation aborts the tracked turn and underlying source", async () => {
+  const turns = new HttpTurnCounter();
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  let sourceCancelled = false;
+  let trackedSignalAborted = false;
+  const response = await turns.track(async signal => {
+    signal.addEventListener("abort", () => { trackedSignalAborted = true; }, { once: true });
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) { source = controller; },
+      cancel() { sourceCancelled = true; },
+    }));
+  }, undefined, "win32");
+  const reader = response.body!.getReader();
+
+  source.enqueue(new TextEncoder().encode("started"));
+  expect(new TextDecoder().decode((await reader.read()).value)).toBe("started");
+  await reader.cancel("codex stopped the turn");
+  await waitForTurnCount(turns, 0);
+  expect(trackedSignalAborted).toBe(true);
+  expect(sourceCancelled).toBe(true);
 });
 
 test("HTTP turn tracking uses direct pull and cancellation outside Windows", async () => {

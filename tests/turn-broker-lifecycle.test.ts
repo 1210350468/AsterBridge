@@ -57,6 +57,45 @@ test("explicit cancellation tombstones the cancelled execution key without block
   sessions.clear();
 });
 
+test("a newer native turn preempts only the older active browser turn on the same thread", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let cancelledOld = 0;
+  let rejectOld!: (error: Error) => void;
+  const oldBrowser = new Promise<string>((_resolve, reject) => { rejectOld = reject; });
+  sessions.getOrCreate("old-turn-key", () => ({
+    mode: "read-only",
+    browser: oldBrowser,
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-a",
+    turnId: "turn-old",
+    cancel: () => {
+      cancelledOld += 1;
+      rejectOld(new DOMException("superseded", "AbortError"));
+    },
+  }));
+  sessions.getOrCreate("other-thread-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-b",
+    turnId: "turn-other",
+    cancel: () => {},
+  }));
+
+  expect(sessions.activeCount()).toBe(2);
+  expect(await sessions.preemptSupersededThread("thread-a", "turn-new")).toBe(1);
+  expect(cancelledOld).toBe(1);
+  expect(sessions.activeCount()).toBe(1);
+  expect(() => sessions.getOrCreate("old-turn-key", () => {
+    throw new Error("a superseded native turn must never restart");
+  })).toThrow("superseded");
+  expect(await sessions.preemptSupersededThread("thread-b", "turn-other")).toBe(0);
+  expect(sessions.activeCount()).toBe(1);
+  sessions.clear();
+});
+
 test("session cache expiry never cancels a still-active long browser turn", async () => {
   const sessions = new ChatGptTurnSessions(1);
   let cancelled = 0;

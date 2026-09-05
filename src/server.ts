@@ -136,31 +136,57 @@ export class HttpTurnCounter {
         });
       }
 
-      // Windows-safe Bun#32111 shape: the client gets a native tee branch,
-      // never a JS ReadableStream with async pull(). The second branch is consumed only
-      // to observe completion. The request signal releases lifecycle ownership immediately
-      // when the client disconnects and cancels the observer branch.
-      const [clientBody, lifecycleBody] = response.body.tee();
-      const reader = lifecycleBody.getReader();
+      // Windows-safe Bun#32111 shape: avoid an async pull(), but do not tee the response. A tee
+      // keeps the underlying stream alive until both branches are cancelled, so a Codex-side stop
+      // can cancel its branch while the lifecycle observer silently keeps the ChatGPT browser turn
+      // running. A push-driven single-branch wrapper preserves the Windows workaround and gives the
+      // client branch direct ownership of cancellation again.
+      const reader = response.body.getReader();
+      let closed = false;
       streamAbortListener = () => {
-        void Promise.allSettled([
-          reader.cancel(abort.signal.reason),
-          clientBody.cancel(abort.signal.reason),
-        ]).finally(release);
+        closed = true;
+        void reader.cancel(abort.signal.reason).catch(() => {}).finally(release);
       };
       abort.signal.addEventListener("abort", streamAbortListener, { once: true });
-      void (async () => {
-        try {
-          while (!(await reader.read()).done) {
-            // Consume eagerly so the lifecycle branch never backpressures the client branch.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          void (async () => {
+            try {
+              while (!closed) {
+                // Keep at most one upstream chunk in hand. Reading before waiting on downstream
+                // capacity lets us observe EOF/release lifecycle ownership immediately after the
+                // final chunk, instead of leaving a short completed response counted as active.
+                const chunk = await reader.read();
+                if (chunk.done) {
+                  closed = true;
+                  release();
+                  try { controller.close(); } catch { /* client already cancelled */ }
+                  return;
+                }
+                while (!closed && (controller.desiredSize ?? 1) <= 0) {
+                  await new Promise<void>(resolve => setTimeout(resolve, 5));
+                }
+                if (closed) return;
+                controller.enqueue(chunk.value);
+              }
+            } catch (error) {
+              if (closed) return;
+              closed = true;
+              release();
+              try { controller.error(error); } catch { /* client already cancelled */ }
+            }
+          })();
+        },
+        cancel(reason) {
+          closed = true;
+          if (!abort.signal.aborted) {
+            abort.abort(reason ?? new Error("Client response stream cancelled"));
+          } else {
+            void reader.cancel(reason).catch(() => {}).finally(release);
           }
-        } catch {
-          // Stream failure is delivered to the client branch; lifecycle cleanup stays best-effort.
-        } finally {
-          release();
-        }
-      })();
-      return new Response(clientBody, {
+        },
+      });
+      return new Response(body, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
