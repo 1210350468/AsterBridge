@@ -702,6 +702,29 @@ test("bridge connection starts a healthy runtime before routing Codex to it", as
   assert.deepEqual(fixture.calls, ["route status", "runtime:start", "route connect", "route status"]);
 });
 
+test("bridge enable refreshes the managed model catalog even when the route is already active", async () => {
+  const fixture = bridgeFixture({ active: true });
+  const result = await fixture.host.setBridgeEnabled(true);
+  assert.equal(result.active, true);
+  assert.equal(result.changed, true);
+  assert.deepEqual(fixture.calls, ["route status", "runtime:start", "route connect", "route status"]);
+});
+
+test("an active-route catalog refresh failure never tears down the runtime Codex is using", async () => {
+  const fixture = bridgeFixture({ active: true });
+  fixture.host.run = async (_name, args) => {
+    const action = args.join(" ");
+    fixture.calls.push(action);
+    if (action === "route status") {
+      return { stdout: JSON.stringify({ installed: true, active: true, errors: [] }) };
+    }
+    if (action === "route connect") throw new Error("synthetic catalog refresh failure");
+    throw new Error(`Unexpected command: ${action}`);
+  };
+  await assert.rejects(fixture.host.setBridgeEnabled(true), /synthetic catalog refresh failure/);
+  assert.deepEqual(fixture.calls, ["route status", "runtime:start", "route connect"]);
+});
+
 test("bridge disconnection proves idleness and stops the runtime before restoring the prior route", async () => {
   const fixture = bridgeFixture({ active: true });
   const result = await fixture.host.setBridgeEnabled(false);

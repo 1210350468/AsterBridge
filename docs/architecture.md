@@ -140,8 +140,12 @@ native model, and appends only the account-available `chatgpt-web/` routes with 
 auto-compaction, reasoning, and compatibility metadata. A disconnected route lets native Codex refresh
 its provider cache directly from the official service; reconnect consumes that fresh cache before
 reinstalling the static managed catalog, updates the journaled catalog SHA transactionally, and only
-then invalidates the provider cache. This prevents bridge mode from freezing an older native model
-list when OpenAI rolls out a new model. The user's original catalog assignment is never modified in
+then invalidates the provider cache. An already-active bridge also performs an idempotent catalog refresh
+when Launcher startup or the bridge-enable action re-proves the route. Fresh provider cache remains the
+highest-authority source; otherwise Windows supplements the authenticated managed catalog from the
+currently installed Codex Desktop core before considering standalone/PATH fallbacks, while preserving
+hidden model visibility. This prevents Codex Desktop upgrades from leaving bridge mode on an older native
+model list even when an older standalone Codex CLI remains on PATH. The user's original catalog assignment is never modified in
 place and is restored byte-for-byte on disconnect/uninstall; the managed copy is hash-verified and
 fails closed if externally changed. While the integration is active, native models
 that support delegation and routed Web models share Codex's readable V1 collaboration surface so an

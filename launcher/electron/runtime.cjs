@@ -780,7 +780,6 @@ class RuntimeHost {
         if (runtime.status !== "ready") {
           throw new Error(`Local runtime is ${runtime.status}${runtime.detail ? `: ${runtime.detail}` : ""}`);
         }
-        if (current.active) return current;
         try {
           const connected = await this.run(name, ["route", "connect"], {
             embedded: true,
@@ -795,6 +794,10 @@ class RuntimeHost {
           }
           return result;
         } catch (error) {
+          // Refreshing an already-active route must never tear down the runtime that Codex is
+          // currently using. Cleanup is only correct for a failed transition from disconnected to
+          // connected, where the runtime was started solely for the attempted route change.
+          if (current.active) throw error;
           let cleanupError;
           try { await this.supervisor.stopForSetup(); } catch (caught) { cleanupError = caught; }
           if (!cleanupError) throw error;

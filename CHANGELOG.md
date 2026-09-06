@@ -2,6 +2,18 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.33 - 2026-09-06
+
+### Codex-update model catalog self-refresh
+
+- Fixed native models such as `gpt-6-astra` disappearing again after Codex Desktop updates while the bridge remains enabled. AsterBridge now refreshes an already-active managed catalog instead of treating an enabled bridge as a no-op, so a newly written provider cache can be adopted without requiring a disconnect/reconnect cycle.
+- Windows bundled-catalog discovery now prefers the current Codex Desktop core under `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<build>\\codex.exe` before standalone/PATH fallbacks. This prevents an older standalone CLI from silently supplying stale model metadata after the Desktop app has updated.
+- When no fresh provider cache exists, an active refresh supplements the authenticated managed catalog from the current Desktop bundled catalog without exposing hidden native rows. Catalog contents and the journal SHA are committed transactionally; a failed refresh leaves the existing active route/runtime untouched.
+- Live Windows validation reproduced the regression after updating Codex Desktop to **26.901.6511.0 / codex-cli 0.153.4** while PATH still resolved an older **0.150.1** standalone CLI. The 0.153.4 bundled catalog contains `gpt-6-astra` while the 0.150.1 bundled catalog does not. The repaired active refresh produced a stable managed catalog containing Astra, Sol, Terra, Luna and all three account-eligible `chatgpt-web/*` routes; a second refresh returned `changed=false` with the same authenticated SHA. Focused Codex integration coverage passes **29 / 29**, and Launcher coverage passes **214 / 0 / 1 skip** (**215 total**).
+- Final local release validation is green on the exact 3.0.33 source: Core **42 / 42** deterministic batches, Launcher **214 pass / 0 fail / 1 Windows-inapplicable skip** (**215 total**), root and Launcher TypeScript PASS, renderer production build PASS, runtime/license generation PASS, `RELOCATABLE_RUNTIME_SMOKE_OK`, and dependency audit reports **0 vulnerabilities / 106 root packages** plus **0 vulnerabilities / 351 launcher packages**.
+- The local Windows installer `asterbridge-3.0.33-win-x64.exe` is **161,917,898 bytes**, blockmap **168,964 bytes**, SHA-256 `6BCF4F48C2980B039C7876E235A124209D769D50AD6B8FA993AAD401CCE47D36`, and the project-native installer smoke finishes with `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`. A first local smoke attempt was interrupted by the DevPilot control channel after files had been extracted but before NSIS registration completed; that partial unregistered directory was moved aside and is not counted as a successful install. A clean rerun registered `InstallLocation`, `AsterBridge.exe`, and `Uninstall AsterBridge.exe`, installed runtime bundle id `6bc7aa4e57e80eaff243e12e52b09e139cdd86f853d10bacd7ff762e7381e471`, and returned packaged readiness `ok=true / version=3.0.33 / runtimeVerified=true / trayReady=true`.
+- Using that installed 3.0.33 runtime with the bridge already active, an idempotent refresh against Codex Desktop **0.153.4** kept `gpt-6-astra` and `chatgpt-web/high` present and committed identical managed-catalog/journal SHA `9b78def136b52cc2fdebf0fda73d84abe94cab8d9ec67d4f0cccdce0466040b8`, proving the fix is present in the packaged runtime rather than only the source tree.
+
 ## 3.0.32 - 2026-09-05
 
 ### Codex interrupt propagation and same-thread recovery

@@ -17,7 +17,10 @@ import {
   uninstallCodexIntegration,
 } from "../src/codex-integration";
 import { defaultConfig } from "../src/config";
-import { buildManagedCodexModelCatalog } from "../src/codex-managed-model-catalog";
+import {
+  buildManagedCodexModelCatalog,
+  codexBundledCatalogExecutableCandidates,
+} from "../src/codex-managed-model-catalog";
 
 const roots: string[] = [];
 
@@ -60,6 +63,13 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("prefers the current Windows Desktop Codex core before stale PATH fallbacks", () => {
+    const desktop = "C:\\Users\\test\\AppData\\Local\\OpenAI\\Codex\\bin\\current\\codex.exe";
+    const candidates = codexBundledCatalogExecutableCandidates("win32", {}, [desktop]);
+    expect(candidates[0]).toBe(desktop);
+    expect(candidates.at(-1)).toBe("codex.exe");
+  });
+
   test("expands a configured tilde Codex home consistently with launcher paths", () => {
     process.env.CODEX_HOME = "~/custom-codex-home";
     expect(getCodexHome()).toBe(join(homedir(), "custom-codex-home"));
@@ -507,6 +517,34 @@ describe("reversible native Codex route integration", () => {
 
     uninstallCodexIntegration();
     expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  test("refreshes newly available native models from a fresh cache while the bridge is already active", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+    const nativeCatalog = JSON.parse(readFileSync(getCodexModelsCachePath(), "utf8"));
+    const nativeTemplate = nativeCatalog.models[0];
+    const installed = installCodexIntegration(defaultConfig("browser-only"));
+    expect(existsSync(getCodexModelsCachePath())).toBe(false);
+
+    const astra = {
+      ...structuredClone(nativeTemplate),
+      slug: "gpt-6-astra",
+      display_name: "GPT-6-Astra",
+      context_window: 1_050_000,
+      max_context_window: 1_050_000,
+      auto_compact_token_limit: 997_500,
+    };
+    writeFileSync(getCodexModelsCachePath(), `${JSON.stringify({ models: [nativeTemplate, astra] }, null, 2)}\n`);
+
+    expect(activateCodexIntegration(defaultConfig("browser-only"))).toEqual({ changed: true, active: true });
+    expect(existsSync(getCodexModelsCachePath())).toBe(false);
+    const refreshed = JSON.parse(readFileSync(getCodexManagedCatalogPath(), "utf8"));
+    expect(refreshed.models.map((model: { slug: string }) => model.slug)).toContain("gpt-6-astra");
+    const refreshedJournal = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
+    expect(refreshedJournal.catalogSha256).not.toBe(installed.catalogSha256);
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
   });
 
   test("refreshes newly available native models from the direct Codex cache when reconnecting", () => {

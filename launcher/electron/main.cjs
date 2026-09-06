@@ -1295,10 +1295,31 @@ async function start() {
     }
     if (runtime.status === "ready") {
       const config = runtimeSupervisor.readConfig();
+      let catalogRefreshed = false;
+      try {
+        const route = await runtimeHost.bridgeStatus("startup-catalog-refresh");
+        if (route.installed && route.active) {
+          const refreshed = await runtimeHost.setBridgeEnabled(true);
+          catalogRefreshed = refreshed.changed === true;
+          if (catalogRefreshed) {
+            logger.info("codex.model_catalog_refreshed", { source: "launcher-startup" });
+          }
+        }
+      } catch (error) {
+        // The existing verified route/runtime remain usable if a best-effort freshness probe fails.
+        // Surface the failure in diagnostics without taking an active bridge offline.
+        logger.warn("codex.model_catalog_refresh_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
       const current = stateStore.read();
       const patch = {
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
+        ...(catalogRefreshed ? {
+          codexCatalogVerified: false,
+          codexRestartRequired: true,
+        } : {}),
         ...(config.mode === "browser-only" ? {
           mcpSetupComplete: false,
           mcpGuideStep: 0,

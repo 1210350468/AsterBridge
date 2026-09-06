@@ -73,6 +73,39 @@ function trustedManagedCatalogSource(journal: AnyCodexIntegrationJournal | undef
     : undefined;
 }
 
+function refreshActiveManagedCatalog(
+  config: AppConfig,
+  current: string,
+  existing: CodexIntegrationJournal | LegacyCodexIntegrationJournalV8,
+): SetCodexIntegrationActiveResult {
+  verifyManagedJournalState(current, existing);
+  const refreshed = buildManagedCodexModelCatalog(
+    config,
+    current,
+    readCodexModelContextOverride(),
+    trustedManagedCatalogSource(existing),
+    { supplementBundled: true },
+  );
+  if (refreshed.path !== existing.catalogPath) {
+    throw new Error("Refreshed Codex model catalog resolved to an unexpected path");
+  }
+  const refreshedSha256 = sha256(refreshed.data);
+  const cachePath = getCodexModelsCachePath();
+  const removals = existsSync(cachePath) ? [cachePath] : [];
+  if (refreshedSha256 === existing.catalogSha256) {
+    if (removals.length > 0) writeIntegrationState(existing, undefined, removals);
+    return { changed: false, active: true };
+  }
+  const refreshedJournal = { ...existing, catalogSha256: refreshedSha256 };
+  writeIntegrationState(
+    refreshedJournal,
+    undefined,
+    removals,
+    [{ path: refreshed.path, data: refreshed.data }],
+  );
+  return { changed: true, active: true };
+}
+
 export function preflightCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
@@ -268,8 +301,11 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
   const current = readFileSync(existing.configPath, "utf8");
   if (existing.version === 9) {
     if (existing.active) {
-      verifyManagedJournalState(current, existing);
-      return { changed: false, active: true };
+      if (!config) {
+        verifyManagedJournalState(current, existing);
+        return { changed: false, active: true };
+      }
+      return refreshActiveManagedCatalog(config, current, existing);
     }
     verifyRestoredRoute(current, existing);
     verifyManagedCatalog(existing);
@@ -279,6 +315,7 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
           current,
           readCodexModelContextOverride(),
           trustedManagedCatalogSource(existing),
+          { supplementBundled: true },
         )
       : undefined;
     if (refreshedCatalog && refreshedCatalog.path !== existing.catalogPath) {
@@ -305,8 +342,11 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
   }
   if (existing.version === 8) {
     if (existing.active) {
-      verifyManagedJournalState(current, existing);
-      return { changed: false, active: true };
+      if (!config) {
+        verifyManagedJournalState(current, existing);
+        return { changed: false, active: true };
+      }
+      return refreshActiveManagedCatalog(config, current, existing);
     }
     verifyRestoredRoute(current, existing);
     verifyManagedCatalog(existing);
@@ -316,6 +356,7 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
           current,
           readCodexModelContextOverride(),
           trustedManagedCatalogSource(existing),
+          { supplementBundled: true },
         )
       : undefined;
     if (refreshedCatalog && refreshedCatalog.path !== existing.catalogPath) {
