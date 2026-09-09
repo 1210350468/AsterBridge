@@ -55,6 +55,7 @@ import {
   CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
+  preferChatGptEffortSlider,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
 import { discoverSystemBrowserEndpoint, openSystemBrowserTaskWindow, type SystemBrowserChannel } from "../../system-browser-host";
@@ -1650,6 +1651,10 @@ export class ChatGptBrowserWorker {
       ]);
       if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
+      if (ready === "effort") {
+        const preferred = await preferChatGptEffortSlider("items", effortSlider);
+        if (preferred === "slider") ready = "slider";
+      }
       await captureDiagnostic?.(ready === "slider" ? "effort-slider-visible" : "effort-choice-visible");
     } catch (error) {
       if (error instanceof ChatGptWebAdapterError) throw error;

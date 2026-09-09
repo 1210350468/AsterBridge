@@ -21,6 +21,7 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
 export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
+export const CHATGPT_EFFORT_SLIDER_PREFERENCE_GRACE_MS = 750;
 export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
 export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
@@ -67,6 +68,27 @@ async function anyVisible(locator: Locator): Promise<boolean> {
     if (await locator.nth(index).isVisible().catch(() => false)) return true;
   }
   return false;
+}
+
+/**
+ * Current ChatGPT can render the reasoning slider and model radio rows inside the same picker.
+ * The radio rows often become visible first, so treating the first visible semantic control as
+ * authoritative can misclassify model rows as effort options. Prefer the slider whenever it
+ * appears within a short hydration window; radio items remain the legacy fallback.
+ */
+export async function preferChatGptEffortSlider(
+  initialReady: "items" | "slider",
+  slider: Pick<Locator, "isVisible">,
+  graceMs = CHATGPT_EFFORT_SLIDER_PREFERENCE_GRACE_MS,
+): Promise<"items" | "slider"> {
+  if (initialReady === "slider") return "slider";
+  const deadline = Date.now() + Math.max(0, graceMs);
+  do {
+    if (await slider.isVisible().catch(() => false)) return "slider";
+    if (Date.now() >= deadline) break;
+    await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+  } while (Date.now() <= deadline);
+  return "items";
 }
 
 export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> {
@@ -141,12 +163,13 @@ export async function detectChatGptAccountCapabilities(
     const slider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
     const waitAbort = new AbortController();
     try {
-      const ready = await Promise.race([
+      let ready = await Promise.race([
         efforts.first().waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
           .then(() => "items" as const),
         slider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
           .then(() => "slider" as const),
       ]);
+      ready = await preferChatGptEffortSlider(ready, slider);
       if (ready === "items") {
         return { solAvailable: true, proAvailable: await efforts.count() >= 5 };
       }

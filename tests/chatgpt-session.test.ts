@@ -5,6 +5,7 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_HEADER_MODEL_CONTROL_SELECTOR,
   detectChatGptAccountCapabilities,
+  preferChatGptEffortSlider,
 } from "../src/chatgpt-session";
 
 test("login keeps the established turn composer contract", () => {
@@ -21,6 +22,23 @@ test("the effort selector supports the current composer menu plus the legacy/hea
   expect(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR).toBe('button[data-testid="model-switcher-dropdown-button"]');
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain(CHATGPT_COMPOSER_EFFORT_CONTROL_SELECTOR);
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain(CHATGPT_HEADER_MODEL_CONTROL_SELECTOR);
+});
+
+test("a concurrently hydrated reasoning slider outranks legacy/model radio rows", async () => {
+  let reads = 0;
+  const slider = {
+    isVisible: async () => {
+      reads += 1;
+      return reads >= 3;
+    },
+  };
+  await expect(preferChatGptEffortSlider("items", slider as never, 200)).resolves.toBe("slider");
+  expect(reads).toBeGreaterThanOrEqual(3);
+});
+
+test("radio rows remain the legacy effort fallback when no slider appears", async () => {
+  const slider = { isVisible: async () => false };
+  await expect(preferChatGptEffortSlider("items", slider as never, 0)).resolves.toBe("items");
 });
 
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
