@@ -2229,7 +2229,8 @@ function formatBrowserAddress(url: string | undefined, copy: Copy): string {
 }
 
 function messageOf(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
+  const message = value instanceof Error ? value.message : String(value);
+  return message.replace(/^Error invoking remote method '[^']+': Error: /, "");
 }
 
 function platformLabel(value: string): string {

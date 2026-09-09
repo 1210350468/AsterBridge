@@ -20,6 +20,7 @@ import { defaultConfig } from "../src/config";
 import {
   buildManagedCodexModelCatalog,
   codexBundledCatalogExecutableCandidates,
+  supplementMissingModels,
 } from "../src/codex-managed-model-catalog";
 
 const roots: string[] = [];
@@ -68,6 +69,55 @@ describe("reversible native Codex route integration", () => {
     const candidates = codexBundledCatalogExecutableCandidates("win32", {}, [desktop]);
     expect(candidates[0]).toBe(desktop);
     expect(candidates.at(-1)).toBe("codex.exe");
+  });
+
+  test("supplements an incomplete provider cache with missing visible Desktop models", () => {
+    const supplemented = supplementMissingModels(
+      {
+        models: [{
+          slug: "gpt-5.6-sol",
+          display_name: "Cache Sol",
+          visibility: "list",
+          context_window: 272_000,
+        }],
+      },
+      {
+        models: [
+          {
+            slug: "gpt-5.6-sol",
+            display_name: "Bundled Sol",
+            visibility: "list",
+            context_window: 999_000,
+          },
+          {
+            slug: "gpt-6-astra",
+            display_name: "GPT-6-Astra",
+            visibility: "list",
+            context_window: 1_050_000,
+          },
+          {
+            slug: "internal-only",
+            display_name: "Internal",
+            visibility: "hide",
+          },
+        ],
+      },
+    );
+
+    expect(supplemented.models).toEqual([
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "Cache Sol",
+        visibility: "list",
+        context_window: 272_000,
+      },
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6-Astra",
+        visibility: "list",
+        context_window: 1_050_000,
+      },
+    ]);
   });
 
   test("expands a configured tilde Codex home consistently with launcher paths", () => {
@@ -571,13 +621,14 @@ describe("reversible native Codex route integration", () => {
     expect(activateCodexIntegration(defaultConfig("browser-only"))).toEqual({ changed: true, active: true });
     expect(existsSync(getCodexModelsCachePath())).toBe(false);
     const refreshed = JSON.parse(readFileSync(getCodexManagedCatalogPath(), "utf8"));
-    expect(refreshed.models.map((model: { slug: string }) => model.slug)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-6-astra",
-      "chatgpt-web/light",
-      "chatgpt-web/medium",
-      "chatgpt-web/high",
-    ]);
+    const refreshedSlugs = refreshed.models.map((model: { slug: string }) => model.slug);
+    expect(refreshedSlugs).toContain("gpt-5.6-sol");
+    expect(refreshedSlugs).toContain("gpt-6-astra");
+    expect(refreshedSlugs).toContain("chatgpt-web/light");
+    expect(refreshedSlugs).toContain("chatgpt-web/medium");
+    expect(refreshedSlugs).toContain("chatgpt-web/high");
+    expect(refreshed.models.find((model: { slug: string }) => model.slug === "gpt-5.6-sol"))
+      .toMatchObject(nativeTemplate);
     const reconnectedJournal = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
     expect(reconnectedJournal.catalogSha256).not.toBe(installed.catalogSha256);
     expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });

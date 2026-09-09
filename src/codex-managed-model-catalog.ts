@@ -12,7 +12,7 @@ import {
 } from "./codex-integration-shared";
 import { findTopLevelAssignment, splitLines } from "./codex-integration-document";
 
-interface CatalogObject extends Record<string, unknown> {
+export interface CatalogObject extends Record<string, unknown> {
   models: unknown[];
 }
 
@@ -133,7 +133,7 @@ function bundledCatalog(): { catalog: CatalogObject; executable: string } {
   );
 }
 
-function supplementMissingModels(primary: CatalogObject, supplemental: CatalogObject): CatalogObject {
+export function supplementMissingModels(primary: CatalogObject, supplemental: CatalogObject): CatalogObject {
   const models = structuredClone(primary.models);
   const slugs = new Set(models.map(model => {
     if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
@@ -175,8 +175,25 @@ function sourceCatalog(
   const cachePath = getCodexModelsCachePath();
   if (existsSync(cachePath)) {
     try {
+      const cached = parseCatalog(readFileSync(cachePath, "utf8"), `Codex model cache ${cachePath}`);
+      if (supplementBundled) {
+        try {
+          const bundled = bundledCatalog();
+          return {
+            // Preserve cache metadata for every slug it already knows, but add visible models that
+            // ship with the current Desktop binary and are missing from a temporarily incomplete
+            // provider cache. This prevents active bridge refreshes from dropping newly bundled
+            // native models such as Astra merely because the cache was refreshed out of phase.
+            catalog: supplementMissingModels(cached, bundled.catalog),
+            source: "cache",
+            sourcePath: cachePath,
+          };
+        } catch {
+          // A valid direct/provider cache remains authoritative when bundled metadata cannot be read.
+        }
+      }
       return {
-        catalog: parseCatalog(readFileSync(cachePath, "utf8"), `Codex model cache ${cachePath}`),
+        catalog: cached,
         source: "cache",
         sourcePath: cachePath,
       };

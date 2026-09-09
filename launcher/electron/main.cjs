@@ -824,7 +824,47 @@ function registerIpc({ logger, stateStore }) {
     };
   });
   handle("launcher:bigger-context", async (_event, enabled) => {
-    const result = await runtimeHost.setBiggerContext(enabled === true);
+    const desired = enabled === true;
+    if (!IS_DEV_PROFILE && runtimeSupervisor) {
+      const config = runtimeSupervisor.readConfig();
+      const health = config ? await runtimeSupervisor.proxyHealthPayload(config) : null;
+      const activeHttpTurns = Number.isInteger(health?.active_http_turns) ? health.active_http_turns : 0;
+      const activeBrowserTurns = Number.isInteger(health?.active_browser_turns) ? health.active_browser_turns : 0;
+      if (activeHttpTurns > 0 || activeBrowserTurns > 0) {
+        const chinese = stateStore.read().language === "zh-CN";
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+          type: "warning",
+          buttons: chinese ? ["保持当前任务", "取消任务并切换"] : ["Keep current turn", "Cancel turn and switch"],
+          defaultId: 0,
+          cancelId: 0,
+          title: chinese ? "Codex 任务仍在运行" : "Codex turn still running",
+          message: chinese
+            ? "切换 Bigger Context 需要重启本地运行时，但当前仍有 Codex 任务在执行。"
+            : "Changing Bigger Context restarts the local runtime, but a Codex turn is still active.",
+          detail: chinese
+            ? `当前活动：HTTP ${activeHttpTurns}，浏览器 ${activeBrowserTurns}。只有明确选择“取消任务并切换”才会终止该任务的后续 Web/MCP 步骤。`
+            : `Active now: HTTP ${activeHttpTurns}, browser ${activeBrowserTurns}. The current turn is only cancelled if you explicitly choose “Cancel turn and switch”.`,
+          noLink: true,
+        });
+        if (confirmation.response !== 1) return stateStore.read();
+        await runtimeHost.cancelActiveTurns();
+      }
+    }
+
+    let result;
+    try {
+      result = await runtimeHost.setBiggerContext(desired);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("atomic idleness could not be proven")
+        && message.includes("active browser turn(s)")) {
+        const chinese = stateStore.read().language === "zh-CN";
+        throw new Error(chinese
+          ? "切换期间又有新的 Codex 浏览器任务开始执行。请结束该任务，或在启动器中取消活动任务后重试 Bigger Context。"
+          : "A new Codex browser turn started while Bigger Context was being changed. Finish that turn, or cancel the active turn in Launcher and retry.");
+      }
+      throw error;
+    }
     const state = stateStore.update({
       experimentalBiggerContext: result.enabled,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,

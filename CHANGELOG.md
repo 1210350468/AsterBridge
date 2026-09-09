@@ -2,6 +2,23 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.34 - 2026-09-09
+
+### Bigger Context active-turn restart UX
+
+- Launcher now checks the live runtime activity counters before a production Bigger Context change attempts its restart transaction. If Codex still owns an HTTP or browser turn, the user gets an explicit **keep current turn** vs **cancel turn and switch** choice instead of waiting for the supervisor's atomic-idleness timeout and receiving an internal lifecycle error.
+- Choosing cancellation reuses the existing explicit `cancel-turns` contract before setup; keeping the turn leaves both the running task and the Bigger Context setting unchanged. The supervisor's fail-closed drain proof is unchanged, so a turn that races in after the preflight still prevents an unsafe runtime stop.
+- Renderer errors now strip Electron's `Error invoking remote method ...` wrapper and show the actionable application error. A race that begins a new browser turn during the context switch is translated into a clear retry/cancel instruction.
+- Validation: Launcher test suite **214 pass / 0 fail / 1 skip** (**215 total**), Launcher TypeScript PASS, renderer production build PASS, and `git diff --check` PASS.
+
+### Native model refresh completeness
+
+- Fixed an active-route refresh regression where a newly regenerated `~/.codex/models_cache.json` could be valid but incomplete. The refresh path previously treated that cache as exhaustive and therefore dropped visible models that still ship in the current Codex Desktop bundled catalog, reproducing the disappearance of `gpt-6-astra` behind the local gateway.
+- Active refresh now preserves every cache-provided row and its fresher metadata, then supplements only missing `visibility=list` slugs from the current Desktop bundled catalog. Existing cache rows are never overwritten by bundled metadata, hidden bundled rows remain hidden, and the managed catalog/journal transaction stays fail-closed.
+- Live Windows repair on Codex CLI **0.153.4** restored `gpt-6-astra` to the active managed catalog while preserving Bigger Context metadata for `chatgpt-web/high` and `chatgpt-web/medium` at **270,000 context / 240,000 auto-compact**. `codex debug models` independently confirmed all four rows through the active local route. Focused Codex integration coverage passes **30 / 30**.
+- Packaged Windows validation upgraded the maintained machine to **AsterBridge 3.0.34** with durable runtime bundle id `41898ec1aa19143524966ccdf5f0cce856c6a9a7ee973a18fbf1edea6ca04ee9`. After Launcher startup regenerated a provider cache that still omitted Astra, the active managed catalog continued to expose `gpt-6-astra`, proving the incomplete-cache regression is fixed in the installed runtime. A real Codex Desktop **0.153.4** turn through `127.0.0.1:17841` returned `ASTRA_304_OK`; a fresh `chatgpt-web/high` turn completed through the same gateway and recorded `model_context_window=240300` in its session metadata. Final health was `active_http_turns=0` / `active_browser_turns=0`.
+- The maintainer machine still has an older standalone Codex **0.150.1** under `%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin`; direct calls to that stale CLI correctly reject Astra as requiring a newer Codex. AsterBridge's Windows catalog discovery continues to prefer the current Desktop-bundled **0.153.4** executable, so this PATH residue does not control the managed catalog.
+
 ## 3.0.33 - 2026-09-06
 
 ### Codex-update model catalog self-refresh

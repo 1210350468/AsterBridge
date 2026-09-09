@@ -87,12 +87,17 @@ test("the renderer bridge switch reaches the fail-closed runtime route", () => {
   assert.match(electronMain, /codexRestartRequired:\s*true/);
 });
 
-test("Bigger Context setting uses the setup transaction and persists runtime state", () => {
+test("Bigger Context setting safely handles active turns before restarting the runtime", () => {
   assert.match(appSource, /<SettingRow body=\{copy\.biggerContextBody\} label=\{copy\.biggerContext\}>/);
   assert.match(appSource, /api!\.setBiggerContext\(enabled\)/);
   assert.match(preloadSource, /launcher:bigger-context/);
-  assert.match(electronMain, /runtimeHost\.setBiggerContext\(enabled === true\)/);
+  assert.match(electronMain, /runtimeSupervisor\.proxyHealthPayload\(config\)/);
+  assert.match(electronMain, /activeHttpTurns > 0 \|\| activeBrowserTurns > 0/);
+  assert.match(electronMain, /Cancel turn and switch/);
+  assert.match(electronMain, /await runtimeHost\.cancelActiveTurns\(\)/);
+  assert.match(electronMain, /runtimeHost\.setBiggerContext\(desired\)/);
   assert.match(electronMain, /experimentalBiggerContext:\s*result\.enabled/);
+  assert.match(appSource, /Error invoking remote method '\[\^'\]\+': Error:/);
 });
 
 test("MCP remains the primary Full Harness path while Responses stays backend-optional", () => {
