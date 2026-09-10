@@ -79,6 +79,8 @@ Setup options:
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
   --bigger-context             Enable experimental adaptive 1/2/3-message context transport
   --standard-context           Disable experimental multipart context transport
+  --image-generation-provider MODE
+                               auto (default), codex-tool, or web-direct
   --subagent-protocol MODE     compatibility-v1 (default) or native for untouched native Codex agent protocol
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
@@ -191,6 +193,7 @@ async function setupCommand(args: string[]): Promise<void> {
   const roxyBrowserApiHost = takeOption(args, "--roxy-browser-api-host");
   const roxyBrowserApiKeyFile = takeOption(args, "--roxy-browser-api-key-file");
   const subagentProtocol = takeOption(args, "--subagent-protocol");
+  const imageGenerationProvider = takeOption(args, "--image-generation-provider");
   if ([systemBrowser, embeddedBrowser, Boolean(roxyBrowserProfileId)].filter(Boolean).length > 1) {
     throw new Error("Choose only one of --system-browser, --embedded-browser, or --roxy-browser-profile");
   }
@@ -237,6 +240,12 @@ async function setupCommand(args: string[]): Promise<void> {
     throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
+  if (imageGenerationProvider) {
+    if (imageGenerationProvider !== "auto" && imageGenerationProvider !== "codex-tool" && imageGenerationProvider !== "web-direct") {
+      throw new Error("--image-generation-provider must be auto, codex-tool, or web-direct");
+    }
+    options.imageGenerationProvider = imageGenerationProvider;
+  }
   if (subagentProtocol) {
     if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
       throw new Error("--subagent-protocol must be compatibility-v1 or native");

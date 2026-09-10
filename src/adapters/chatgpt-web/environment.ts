@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
-import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
+import type { CodexContentPart, CodexParsedRequest, CodexTool, ImageGenerationProvider } from "../../types";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -15,6 +15,18 @@ export interface ChatGptTurnEnvironment {
   tools: CodexTool[];
   /** Number of image parts present in the authoritative Codex context for this turn. */
   contextImageCount?: number;
+  /** Stable per-turn image-routing configuration copied from the runtime SSOT. */
+  imageGeneration?: {
+    provider: ImageGenerationProvider;
+    browserHost?: "managed-chrome" | "launcher" | "system-browser" | "roxybrowser";
+    systemBrowserChannel?: "auto" | "chrome" | "msedge";
+    roxyBrowserProfileId?: string;
+    roxyBrowserDataDir?: string;
+    roxyBrowserAutoOpen?: boolean;
+    roxyBrowserApiHost?: string;
+    roxyBrowserApiKeyFile?: string;
+    threadId?: string;
+  };
 }
 
 export interface ChatGptTurnIdentity {

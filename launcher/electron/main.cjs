@@ -521,6 +521,7 @@ function registerIpc({ logger, stateStore }) {
     roxyPreview: browserControl?.roxyPreviewSnapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     toolTransport: runtimeHost.toolTransport(),
+    imageGenerationProvider: runtimeHost.imageGenerationProvider(),
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
     roxyApiKeyConfigured: runtimeHost?.roxyBrowserApiKeyConfigured() ?? false,
     networkProxy: networkProxyStatus(stateStore.read()),
@@ -873,6 +874,38 @@ function registerIpc({ logger, stateStore }) {
     send("launcher:state-changed", state);
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
+  });
+  handle("launcher:image-generation-provider", async (_event, provider) => {
+    if (provider !== "auto" && provider !== "codex-tool" && provider !== "web-direct") {
+      throw new Error("Image generation provider must be auto, codex-tool, or web-direct");
+    }
+    if (!IS_DEV_PROFILE && runtimeSupervisor) {
+      const config = runtimeSupervisor.readConfig();
+      const health = config ? await runtimeSupervisor.proxyHealthPayload(config) : null;
+      const activeHttpTurns = Number.isInteger(health?.active_http_turns) ? health.active_http_turns : 0;
+      const activeBrowserTurns = Number.isInteger(health?.active_browser_turns) ? health.active_browser_turns : 0;
+      if (activeHttpTurns > 0 || activeBrowserTurns > 0) {
+        const chinese = stateStore.read().language === "zh-CN";
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+          type: "warning",
+          buttons: chinese ? ["保持当前任务", "取消任务并切换"] : ["Keep current turn", "Cancel turn and switch"],
+          defaultId: 0,
+          cancelId: 0,
+          title: chinese ? "Codex 任务仍在运行" : "Codex turn still running",
+          message: chinese
+            ? "切换生图通道需要重启本地运行时，但当前仍有 Codex 任务在执行。"
+            : "Changing the image generation provider restarts the local runtime, but a Codex turn is still active.",
+          detail: chinese
+            ? `当前活动：HTTP ${activeHttpTurns}，浏览器 ${activeBrowserTurns}。只有明确选择“取消任务并切换”才会终止当前任务。`
+            : `Active now: HTTP ${activeHttpTurns}, browser ${activeBrowserTurns}. The current turn is only cancelled if you explicitly choose “Cancel turn and switch”.`,
+          noLink: true,
+        });
+        if (confirmation.response !== 1) return { provider: runtimeHost.imageGenerationProvider() };
+        await runtimeHost.cancelActiveTurns();
+      }
+    }
+    const result = await runtimeHost.setImageGenerationProvider(provider);
+    return { provider: result.provider };
   });
   handle("launcher:set-preference", (_event, key, value) => {
     if (key !== "keepRunningOnClose" && key !== "showBrowserDuringTurns" && key !== "useSystemBrowser") {

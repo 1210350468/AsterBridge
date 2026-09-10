@@ -8,6 +8,7 @@ const appSource = fs.readFileSync(path.join(launcherRoot, "src", "App.tsx"), "ut
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
+const runtimeSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime.cjs"), "utf8");
 
 test("onboarding no longer depends on the removed X/Twitter action", () => {
   assert.doesNotMatch(appSource, /xOpened/);
@@ -98,6 +99,23 @@ test("Bigger Context setting safely handles active turns before restarting the r
   assert.match(electronMain, /runtimeHost\.setBiggerContext\(desired\)/);
   assert.match(electronMain, /experimentalBiggerContext:\s*result\.enabled/);
   assert.match(appSource, /Error invoking remote method '\[\^'\]\+': Error:/);
+});
+
+test("image generation provider setting reaches the runtime SSOT and protects active turns", () => {
+  assert.match(appSource, /<SettingRow body=\{copy\.imageGenerationProviderBody\} label=\{copy\.imageGenerationProvider\}>/);
+  assert.match(appSource, /api!\.setImageGenerationProvider\(provider\)/);
+  assert.match(appSource, /<option value="auto">\{copy\.imageProviderAuto\}<\/option>/);
+  assert.match(appSource, /<option value="codex-tool">\{copy\.imageProviderCodexTool\}<\/option>/);
+  assert.match(appSource, /value="web-direct"/);
+  assert.match(preloadSource, /launcher:image-generation-provider/);
+  assert.match(electronMain, /imageGenerationProvider:\s*runtimeHost\.imageGenerationProvider\(\)/);
+  assert.match(electronMain, /handle\("launcher:image-generation-provider"/);
+  assert.match(electronMain, /await runtimeHost\.cancelActiveTurns\(\)/);
+  assert.match(electronMain, /runtimeHost\.setImageGenerationProvider\(provider\)/);
+  assert.match(runtimeSource, /imageGenerationProvider\(\)/);
+  assert.match(runtimeSource, /--image-generation-provider/);
+  assert.match(runtimeSource, /--restart-service/);
+  assert.match(runtimeSource, /Web Direct image generation currently requires RoxyBrowser or the system browser/);
 });
 
 test("MCP remains the primary Full Harness path while Responses stays backend-optional", () => {

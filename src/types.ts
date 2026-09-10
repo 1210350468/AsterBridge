@@ -222,6 +222,8 @@ export interface CodexUsage {
   estimated?: boolean;
 }
 
+export type ImageGenerationProvider = "auto" | "codex-tool" | "web-direct";
+
 /** The only provider configuration supported by this focused runtime. */
 export interface CodexProviderConfig {
   adapter: "chatgpt-web";
@@ -282,6 +284,8 @@ export interface CodexProviderConfig {
     proAvailable?: boolean;
     /** Experimental multipart context transport for Sol-backed Web routes. */
     experimentalBiggerContext?: boolean;
+    /** Image execution route. Auto prefers native Codex and falls back to regular ChatGPT Web on proven transient image failures. */
+    imageGenerationProvider?: ImageGenerationProvider;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;
   };

@@ -13,6 +13,7 @@ import { Icon, type IconName } from "./icons";
 import type {
   BrowserState,
   DoctorReport,
+  ImageGenerationProvider,
   Language,
   LauncherSnapshot,
   LauncherState,
@@ -1427,6 +1428,7 @@ function SettingsSurface({
   const [proxyStatus, setProxyStatus] = useState(snapshot.networkProxy);
   const [proxySaved, setProxySaved] = useState(false);
   const [proxyRestartMessage, setProxyRestartMessage] = useState("");
+  const [imageGenerationProvider, setImageGenerationProvider] = useState<ImageGenerationProvider>(snapshot.imageGenerationProvider);
   const [diagnosticCopied, setDiagnosticCopied] = useState(false);
 
   const updateLanguage = async (next: Language) => {
@@ -1495,6 +1497,18 @@ function SettingsSurface({
     setError(null);
     try {
       updateState(await api!.setBiggerContext(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changeImageGenerationProvider = async (provider: ImageGenerationProvider) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api!.setImageGenerationProvider(provider);
+      setImageGenerationProvider(result.provider);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -1583,6 +1597,19 @@ function SettingsSurface({
             disabled={busy || snapshot.state.coreSetupComplete !== true}
             onChange={(checked) => void setBiggerContext(checked)}
           />
+        </SettingRow>
+        <SettingRow body={copy.imageGenerationProviderBody} label={copy.imageGenerationProvider}>
+          <select
+            disabled={busy || snapshot.state.coreSetupComplete !== true || snapshot.toolTransport !== "mcp"}
+            onChange={(event) => void changeImageGenerationProvider(event.target.value as ImageGenerationProvider)}
+            value={imageGenerationProvider}
+          >
+            <option value="auto">{copy.imageProviderAuto}</option>
+            <option value="codex-tool">{copy.imageProviderCodexTool}</option>
+            <option disabled={!snapshot.state.useRoxyBrowser && !snapshot.state.useSystemBrowser} value="web-direct">
+              {copy.imageProviderWebDirect}
+            </option>
+          </select>
         </SettingRow>
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch

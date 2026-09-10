@@ -177,6 +177,44 @@ test("DEV core setup configures only the isolated harness contract", async () =>
   assert.equal(fixture.invocation().args.includes("--restart-service"), false);
 });
 
+test("image generation provider uses the setup transaction and preserves the active Full harness", async () => {
+  const fixture = hostFor({
+    mode: "full",
+    appName: "Codex Native3",
+    turnBrowserHost: "roxybrowser",
+    experimentalBiggerContext: true,
+  });
+  const result = await fixture.host.setImageGenerationProvider("web-direct");
+  assert.equal(result.provider, "web-direct");
+  assert.deepEqual(fixture.invocation(), {
+    name: "image-generation-provider",
+    args: [
+      "setup",
+      "--full",
+      "--browser-host-descriptor",
+      "/runtime/launcher-browser.json",
+      "--acknowledge-unofficial",
+      "--image-generation-provider",
+      "web-direct",
+      "--replace-codex-route",
+      "--restart-service",
+      "--bigger-context",
+      "--mcp-tool-bridge",
+      "--app-name",
+      "Codex Native3",
+    ],
+  });
+});
+
+test("explicit Web Direct refuses a browser host that cannot run regular ChatGPT image generation", async () => {
+  const fixture = hostFor({ mode: "full", appName: "Codex Native3", turnBrowserHost: "launcher" });
+  await assert.rejects(
+    fixture.host.setImageGenerationProvider("web-direct"),
+    /requires RoxyBrowser or the system browser/,
+  );
+  assert.equal(fixture.invocation(), undefined);
+});
+
 test("Bigger Context uses the setup transaction and refreshes the production Codex catalog", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native3" });
   const result = await fixture.host.setBiggerContext(true);

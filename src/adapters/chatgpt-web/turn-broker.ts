@@ -50,6 +50,7 @@ interface TurnChannel {
   queuedCallIds: string[];
   deliveredCallIds: Set<string>;
   invocations: Map<string, PendingInvocation>;
+  localActivities: Map<string, number>;
   waiters: Set<ToolWaiter>;
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
@@ -67,6 +68,8 @@ interface BrokerRequest {
     | "resolve"
     | "release"
     | "invoke"
+    | "activity_begin"
+    | "activity_end"
     | "owner_status"
     | "owner_register"
     | "owner_update"
@@ -85,6 +88,7 @@ interface BrokerRequest {
   ttlMs?: number;
   traceId?: string;
   callId?: string;
+  activityId?: string;
   toolResult?: BrokerToolResult;
   handoffId?: string;
   summary?: string;
@@ -230,6 +234,7 @@ export class TurnBroker implements TurnBrokerOwner {
       queuedCallIds: [],
       deliveredCallIds: new Set(),
       invocations: new Map(),
+      localActivities: new Map(),
       waiters: new Set(),
       compactionRequested: false,
       compactionDeliveryCount: 0,
@@ -326,7 +331,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     if (channel.completionCommitted) return channel.completionRevision;
-    if (channel.invocations.size > 0) return undefined;
+    if (channel.invocations.size > 0 || channel.localActivities.size > 0) return undefined;
     return channel.activityRevision;
   }
 
@@ -338,7 +343,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     if (channel.completionCommitted) return channel.completionRevision === revision;
-    if (channel.activityRevision !== revision || channel.invocations.size > 0) return false;
+    if (channel.activityRevision !== revision || channel.invocations.size > 0 || channel.localActivities.size > 0) return false;
     channel.completionCommitted = true;
     channel.completionRevision = revision;
     console.info(`[chatgpt-web] broker trace=${channel.traceId} committed browser completion revision=${revision}`);
@@ -567,7 +572,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "activity_begin", "activity_end", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -702,6 +707,33 @@ export class TurnBroker implements TurnBrokerOwner {
       return { released: true };
     }
     if (request.method === "resolve") return { environment: binding.channel.environment };
+    if (request.method === "activity_end") {
+      const activityId = request.activityId?.trim();
+      if (!activityId) throw new Error("local activity id is required");
+      if (!binding.channel.localActivities.delete(activityId)) {
+        throw new Error(`local activity is not pending: ${activityId}`);
+      }
+      binding.channel.activityRevision += 1;
+      console.info(`[chatgpt-web] broker trace=${binding.channel.traceId} ended local activity=${activityId.slice(0, 17)} pending=${binding.channel.localActivities.size}`);
+      return { ended: true };
+    }
+    if (request.method === "activity_begin") {
+      if (binding.channel.compactionRequested) {
+        throw new Error("Codex context compaction superseded local MCP activity");
+      }
+      if (binding.channel.completionCommitted) {
+        throw new Error("Codex turn has already committed browser completion");
+      }
+      const ttlMs = request.ttlMs === undefined ? 360_000 : request.ttlMs;
+      if (!Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > 900_000) {
+        throw new Error("local activity TTL must be between 1 and 900000ms");
+      }
+      const activityId = opaqueId("activity");
+      binding.channel.localActivities.set(activityId, Date.now() + ttlMs);
+      binding.channel.activityRevision += 1;
+      console.info(`[chatgpt-web] broker trace=${binding.channel.traceId} began local activity=${activityId.slice(0, 17)} pending=${binding.channel.localActivities.size}`);
+      return { activityId };
+    }
     if (binding.channel.compactionRequested) {
       const result = binding.channel.compactionResult;
       if (!result) throw new Error("Codex context compaction control result is unavailable");
@@ -779,6 +811,7 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.waiters.clear();
     for (const invocation of channel.invocations.values()) invocation.reject(error);
     channel.invocations.clear();
+    channel.localActivities.clear();
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();
   }
@@ -786,6 +819,12 @@ export class TurnBroker implements TurnBrokerOwner {
   private prune(): void {
     const now = Date.now();
     for (const [token, channel] of this.channels) {
+      for (const [activityId, expiresAt] of channel.localActivities) {
+        if (expiresAt > now) continue;
+        channel.localActivities.delete(activityId);
+        channel.activityRevision += 1;
+        console.warn(`[chatgpt-web] broker trace=${channel.traceId} expired local activity=${activityId.slice(0, 17)}`);
+      }
       if (channel.environment.expiresAt === undefined || channel.environment.expiresAt > now) continue;
       this.revoke(token);
     }

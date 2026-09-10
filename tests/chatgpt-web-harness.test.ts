@@ -1634,6 +1634,31 @@ describe("ChatGPT outer-native harness v4", () => {
     await broker.close();
   });
 
+  test("Web Direct local activity participates in the completion fence", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-local-activity-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    const token = await broker.register(environment, 10_000, "web-direct-activity-test");
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+    const started = await callTurnBroker<{ activityId: string }>(socketPath, {
+      method: "activity_begin",
+      bindingId: claimed.bindingId,
+      ttlMs: 5_000,
+    });
+    expect(started.activityId.startsWith("activity_")).toBe(true);
+    expect(broker.beginCompletionFence(token)).toBeUndefined();
+
+    await callTurnBroker(socketPath, {
+      method: "activity_end",
+      bindingId: claimed.bindingId,
+      activityId: started.activityId,
+    });
+    const revision = broker.beginCompletionFence(token);
+    expect(typeof revision).toBe("number");
+    expect(broker.commitCompletionFence(token, revision!)).toBe(true);
+    await broker.close();
+  });
+
   test("makes capability claim retries idempotent until the turn is revoked", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-claim-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);

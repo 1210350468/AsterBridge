@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   setMcpStep: (step) => ipcRenderer.invoke("launcher:set-mcp-step", step),
   setAutostart: (enabled) => ipcRenderer.invoke("launcher:autostart", enabled),
   setBiggerContext: (enabled) => ipcRenderer.invoke("launcher:bigger-context", enabled),
+  setImageGenerationProvider: (provider) => ipcRenderer.invoke("launcher:image-generation-provider", provider),
   setPreference: (key, value) => ipcRenderer.invoke("launcher:set-preference", key, value),
   setRoxyBrowserConfig: (input) => ipcRenderer.invoke("launcher:set-roxy-browser-config", input),
   setNetworkProxy: (input) => ipcRenderer.invoke("launcher:set-network-proxy", input),

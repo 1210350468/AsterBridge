@@ -859,6 +859,11 @@ class RuntimeHost {
     return current.config?.localToolTransport ?? "mcp";
   }
 
+  imageGenerationProvider() {
+    const current = this.runtimeConfigSnapshot();
+    return current.config?.imageGenerationProvider ?? "auto";
+  }
+
   mcpConnectorName() {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured || current.mode !== "full") {
@@ -1018,6 +1023,53 @@ class RuntimeHost {
       timeoutMs: mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
     });
     return { ...result, mode };
+  }
+
+  async setImageGenerationProvider(provider) {
+    if (provider !== "auto" && provider !== "codex-tool" && provider !== "web-direct") {
+      throw new Error("Image generation provider must be auto, codex-tool, or web-direct");
+    }
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing the image generation provider");
+    }
+    if (current.mode !== "full" || (current.config?.localToolTransport ?? "mcp") !== "mcp") {
+      throw new Error("Image generation provider selection currently requires the Full/MCP harness");
+    }
+    const turnBrowserHost = current.config?.turnBrowserHost ?? current.config?.browserHost;
+    if (provider === "web-direct" && turnBrowserHost !== "roxybrowser" && turnBrowserHost !== "system-browser") {
+      throw new Error("Web Direct image generation currently requires RoxyBrowser or the system browser");
+    }
+    const mode = current.mode;
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev"] : []),
+      "setup",
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      "--acknowledge-unofficial",
+      "--image-generation-provider",
+      provider,
+    ];
+    if (this.launcherProfile !== "development") {
+      args.push("--replace-codex-route", "--restart-service");
+    }
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    if (current.config?.experimentalBiggerContext === true) args.push("--bigger-context");
+    else args.push("--standard-context");
+    if (mode === "full") {
+      args.push(fullToolTransportFlag(current.config, { development: this.launcherProfile === "development" }));
+      if ((current.config?.localToolTransport ?? "mcp") === "mcp") {
+        args.push("--app-name", this.browserConnectorName());
+      }
+    }
+    const runner = this.launcherProfile === "development" ? this.runDevSetup.bind(this) : this.runSetup.bind(this);
+    const result = await runner("image-generation-provider", args, {
+      message: `Switching image generation provider to ${provider}`,
+      successMessage: `Image generation provider set to ${provider}`,
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    });
+    return { ...result, provider };
   }
 
   async setBiggerContext(enabled) {

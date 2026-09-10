@@ -11,6 +11,7 @@ import {
   isDeferredSubagentWireName,
 } from "./deferred-subagent-tools";
 import { callTurnBroker, type BrokerToolResult } from "./turn-broker";
+import { generateImageViaChatGptWeb, webDirectImageRequestSupported } from "./web-direct-image";
 
 export {
   CODEX_DEFERRED_SUBAGENT_WIRE_NAMES,
@@ -137,26 +138,40 @@ function retryableImageGatewayStatus(value: BrokerToolResult): number | undefine
   return match ? Number(match[1]) : undefined;
 }
 
-export function annotateRetryableImageToolFailure(
+export function annotateImageToolResult(
   requestedWireName: string,
   value: BrokerToolResult,
 ): BrokerToolResult {
   if (requestedWireName !== CODEX_IMAGE_GEN_WIRE_NAME) return value;
+  const meta = value._meta !== null && typeof value._meta === "object" && !Array.isArray(value._meta)
+    ? value._meta as Record<string, unknown>
+    : {};
+  if (!value.isError) {
+    const note = {
+      type: "text",
+      text: "AsterBridge authoritative status for this image-generation invocation: SUCCESS. The current tool call returned a generated image. This successful result supersedes any earlier HTTP 502/503/504 image-generation failures mentioned in this turn or retained conversation. Do not report this invocation as failed and do not claim that the image backend is unavailable based on older failures.",
+    };
+    return {
+      ...value,
+      content: [note, ...value.content],
+      _meta: {
+        ...meta,
+        asterbridge: { category: "image_generation_success", authoritative: true, succeeded: true },
+      },
+    };
+  }
   const status = retryableImageGatewayStatus(value);
   if (!status) return value;
   const note = {
     type: "text",
-    text: `AsterBridge classified this image-generation failure as transient/retryable (HTTP ${status}). Retry the same generation at most twice before reporting a temporary image-backend failure; do not treat it as permanent image-generation unavailability.`,
+    text: `AsterBridge authoritative status for this image-generation invocation: FAILED with transient/retryable HTTP ${status}. Retry the same generation at most twice before reporting a temporary image-backend failure; do not treat it as permanent image-generation unavailability.`,
   };
-  const meta = value._meta !== null && typeof value._meta === "object" && !Array.isArray(value._meta)
-    ? value._meta as Record<string, unknown>
-    : {};
   return {
     ...value,
     content: [note, ...value.content],
     _meta: {
       ...meta,
-      asterbridge: { category: "image_backend_transient", retryable: true, status },
+      asterbridge: { category: "image_backend_transient", authoritative: true, retryable: true, status },
     },
   };
 }
@@ -257,14 +272,107 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     freeform: boolean,
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
-    const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
+    const invokeOuterCodex = () => callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
       method: "invoke",
       bindingId,
       wireName: requestedWireName,
       freeform,
       ...(freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
     }, invocationTimeout(bound));
-    return asMcpResult(annotateRetryableImageToolFailure(requestedWireName, response));
+
+    if (requestedWireName !== CODEX_IMAGE_GEN_WIRE_NAME || freeform) {
+      return asMcpResult(await invokeOuterCodex());
+    }
+
+    const imageArgs = payload.arguments ?? {};
+    const provider = bound.imageGeneration?.provider ?? "auto";
+    const webDirectBrowserAvailable = bound.imageGeneration?.browserHost === "roxybrowser"
+      || bound.imageGeneration?.browserHost === "system-browser";
+    const runWebDirect = async (): Promise<BrokerToolResult> => {
+      try {
+        return await generateImageViaChatGptWeb(bound, imageArgs);
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `AsterBridge Web Direct image generation could not start: ${error instanceof Error ? error.message : String(error)}`,
+          }],
+          isError: true,
+          _meta: {
+            asterbridge: {
+              category: "image_web_direct_failure",
+              provider: "web-direct",
+              authoritative: true,
+              retryable: false,
+            },
+          },
+        };
+      }
+    };
+    const withImageActivity = async <T>(action: () => Promise<T>): Promise<T> => {
+      const activity = await callTurnBroker<{ activityId: string }>(options.brokerSocketPath, {
+        method: "activity_begin",
+        bindingId,
+        // Auto can spend several minutes in the native image backend before starting Web Direct.
+        // Keep one activity alive across that entire native -> fallback decision so browser
+        // completion can never slip through the handoff gap.
+        ttlMs: 900_000,
+      });
+      try {
+        return await action();
+      } finally {
+        await callTurnBroker(options.brokerSocketPath, {
+          method: "activity_end",
+          bindingId,
+          activityId: activity.activityId,
+        });
+      }
+    };
+
+    if (provider === "web-direct") {
+      if (!webDirectBrowserAvailable) {
+        return asMcpResult({
+          content: [{ type: "text", text: "Web Direct image generation requires RoxyBrowser or the system browser in this release." }],
+          isError: true,
+        });
+      }
+      return asMcpResult(await withImageActivity(runWebDirect));
+    }
+
+    if (provider === "codex-tool") {
+      return asMcpResult(annotateImageToolResult(requestedWireName, await invokeOuterCodex()));
+    }
+
+    return asMcpResult(await withImageActivity(async () => {
+      const nativeResult = await invokeOuterCodex();
+      const transientStatus = retryableImageGatewayStatus(nativeResult);
+      if (!transientStatus
+        || !webDirectBrowserAvailable
+        || !webDirectImageRequestSupported(imageArgs)) {
+        return annotateImageToolResult(requestedWireName, nativeResult);
+      }
+
+      console.info(`[asterbridge:image] provider=auto nativeStatus=${transientStatus} fallback=web-direct`);
+      const directResult = await runWebDirect();
+      if (!directResult.isError) return directResult;
+      const annotatedNative = annotateImageToolResult(requestedWireName, nativeResult);
+      return {
+        content: [
+          ...annotatedNative.content,
+          { type: "text", text: "AsterBridge Auto fallback to Web Direct also failed." },
+          ...directResult.content,
+        ],
+        isError: true,
+        _meta: {
+          asterbridge: {
+            category: "image_generation_all_providers_failed",
+            provider: "auto",
+            authoritative: true,
+            nativeStatus: transientStatus,
+          },
+        },
+      } satisfies BrokerToolResult;
+    }));
   };
 
   const invoke = async (

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import type { AppConfig, RuntimeMode, SubagentProtocol, SystemBrowserChannel, TurnBrowserHostMode } from "./config";
+import type { ImageGenerationProvider } from "./types";
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
@@ -59,6 +60,7 @@ export interface SetupOptions {
   autoApproveToolCalls?: boolean;
   localToolTransport?: "mcp" | "responses";
   experimentalBiggerContext?: boolean;
+  imageGenerationProvider?: ImageGenerationProvider;
   subagentProtocol?: SubagentProtocol;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
@@ -160,6 +162,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: before.solAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
+    imageGenerationProvider: before.imageGenerationProvider,
     autoApproveToolCalls: before.autoApproveToolCalls,
     subagentProtocol: before.subagentProtocol,
     controlToken: before.controlToken,
@@ -189,6 +192,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: after.solAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
+    imageGenerationProvider: after.imageGenerationProvider,
     autoApproveToolCalls: after.autoApproveToolCalls,
     subagentProtocol: after.subagentProtocol,
     controlToken: after.controlToken,
@@ -282,6 +286,7 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
   }
+  if (options.imageGenerationProvider !== undefined) config.imageGenerationProvider = options.imageGenerationProvider;
   if (options.subagentProtocol !== undefined) config.subagentProtocol = options.subagentProtocol;
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {

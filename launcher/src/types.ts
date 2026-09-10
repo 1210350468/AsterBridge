@@ -1,6 +1,7 @@
 export type Language = "en" | "zh-CN";
 export type LauncherProfile = "production" | "development";
 export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
+export type ImageGenerationProvider = "auto" | "codex-tool" | "web-direct";
 
 export interface LauncherState {
   version: 1;
@@ -115,6 +116,7 @@ export interface LauncherSnapshot {
   roxyPreview: RoxyPreviewState | null;
   connectorName: string;
   toolTransport: "browser-only" | "responses" | "mcp";
+  imageGenerationProvider: ImageGenerationProvider;
   mcpCredentialsConfigured: boolean;
   roxyApiKeyConfigured: boolean;
   networkProxy: { source: string; display: string };
@@ -168,6 +170,7 @@ export interface LauncherApi {
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
+  setImageGenerationProvider(provider: ImageGenerationProvider): Promise<{ provider: ImageGenerationProvider }>;
   setPreference(key: "keepRunningOnClose" | "showBrowserDuringTurns" | "useSystemBrowser", value: boolean): Promise<LauncherState>;
   setRoxyBrowserConfig(input: {
     enabled: boolean;

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, openSync, closeSync, renameSync, rmSync, writeFil
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import type { CodexProviderConfig } from "./types";
+import type { CodexProviderConfig, ImageGenerationProvider } from "./types";
 import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
@@ -88,6 +88,7 @@ export interface AppConfig {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
+  imageGenerationProvider: ImageGenerationProvider;
   autoApproveToolCalls: boolean;
   /** Full-harness transport. MCP uses ChatGPT custom Apps; responses keeps execution in outer Codex without an App. */
   localToolTransport?: "mcp" | "responses";
@@ -191,6 +192,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     solAvailable: true,
     proAvailable: false,
     experimentalBiggerContext: false,
+    imageGenerationProvider: "auto",
     autoApproveToolCalls: false,
     localToolTransport: "mcp",
     subagentProtocol: "compatibility-v1",
@@ -470,9 +472,16 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && typeof parsed.experimentalBiggerContext !== "boolean") {
     throw new Error(`Invalid experimentalBiggerContext in ${path}`);
   }
+  if (parsed.imageGenerationProvider !== undefined
+    && parsed.imageGenerationProvider !== "auto"
+    && parsed.imageGenerationProvider !== "codex-tool"
+    && parsed.imageGenerationProvider !== "web-direct") {
+    throw new Error(`Invalid imageGenerationProvider in ${path}`);
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
   const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
+  const imageGenerationProvider: ImageGenerationProvider = parsed.imageGenerationProvider ?? "auto";
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
@@ -482,6 +491,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     solAvailable,
     proAvailable,
     experimentalBiggerContext,
+    imageGenerationProvider,
   } as AppConfig;
 }
 
@@ -533,6 +543,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       solAvailable: config.solAvailable,
       proAvailable: config.proAvailable,
       experimentalBiggerContext: config.experimentalBiggerContext,
+      imageGenerationProvider: config.imageGenerationProvider,
       autoApproveToolCalls: config.autoApproveToolCalls,
     },
   };

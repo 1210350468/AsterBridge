@@ -358,7 +358,21 @@ export function createChatGptWebAdapter(
     let activeToken: string | undefined;
     const prepareWith = async (input: CodexParsedRequest) => {
       const turnToken = activeToken ?? await broker.register(
-        { ...environment, contextImageCount: countChatGptContextImages(input.context.messages) },
+        {
+          ...environment,
+          contextImageCount: countChatGptContextImages(input.context.messages),
+          imageGeneration: {
+            provider: provider.chatgptWeb?.imageGenerationProvider ?? "auto",
+            browserHost: provider.chatgptWeb?.browserHost,
+            systemBrowserChannel: provider.chatgptWeb?.systemBrowserChannel,
+            roxyBrowserProfileId: provider.chatgptWeb?.roxyBrowserProfileId,
+            roxyBrowserDataDir: provider.chatgptWeb?.roxyBrowserDataDir,
+            roxyBrowserAutoOpen: provider.chatgptWeb?.roxyBrowserAutoOpen,
+            roxyBrowserApiHost: provider.chatgptWeb?.roxyBrowserApiHost,
+            roxyBrowserApiKeyFile: provider.chatgptWeb?.roxyBrowserApiKeyFile,
+            ...(identity.threadId ? { threadId: identity.threadId } : {}),
+          },
+        },
         timeoutMs === undefined ? undefined : timeoutMs + 60_000,
         traceId,
       );

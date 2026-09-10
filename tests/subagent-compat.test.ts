@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, providerConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 import {
-  annotateRetryableImageToolFailure,
+  annotateImageToolResult,
   boundedCodexToolArguments,
   CODEX_IMAGE_GEN_WIRE_NAME,
   CODEX_SUBAGENT_WAIT_POLL_MS,
   CODEX_SUBAGENT_WAIT_WIRE_NAME,
 } from "../src/adapters/chatgpt-web/mcp-server";
+import { webDirectImageRequestSupported } from "../src/adapters/chatgpt-web/web-direct-image";
 import {
   ChatGptTextFeed,
   ChatGptTraceFeed,
@@ -41,6 +42,27 @@ function nativeCatalog() {
     ],
   };
 }
+
+test("image generation provider defaults to Auto and reaches the ChatGPT Web adapter", () => {
+  const config = defaultConfig("full");
+  expect(config.imageGenerationProvider).toBe("auto");
+  expect(providerConfig(config).chatgptWeb?.imageGenerationProvider).toBe("auto");
+  config.imageGenerationProvider = "web-direct";
+  expect(providerConfig(config).chatgptWeb?.imageGenerationProvider).toBe("web-direct");
+});
+
+test("Web Direct refuses ambiguous historical-image intent but accepts explicit references", () => {
+  expect(webDirectImageRequestSupported({ prompt: "draw a bridge" })).toBe(true);
+  expect(webDirectImageRequestSupported({
+    prompt: "edit the latest image",
+    num_last_images_to_include: 1,
+  })).toBe(false);
+  expect(webDirectImageRequestSupported({
+    prompt: "edit this local reference",
+    referenced_image_paths: ["C:/tmp/reference.png"],
+    num_last_images_to_include: 1,
+  })).toBe(true);
+});
 
 test("compatibility-v1 remains the default routed subagent protocol", () => {
   const config = defaultConfig("full");
@@ -113,25 +135,39 @@ test("Web subagent waits are bounded to short polling without touching unrelated
   expect(boundedCodexToolArguments("functions__wait", unrelated)).toBe(unrelated);
 });
 
-test("image generation marks only transient gateway failures as retryable for the Web model", () => {
-  const transient = annotateRetryableImageToolFailure(CODEX_IMAGE_GEN_WIRE_NAME, {
+test("image generation gives the Web model authoritative current-invocation status", () => {
+  const success = annotateImageToolResult(CODEX_IMAGE_GEN_WIRE_NAME, {
+    content: [
+      { type: "image", data: "AAAA", mimeType: "image/png" },
+      { type: "text", text: "The generated image is already displayed to the user." },
+    ],
+  });
+  expect(success.content[0]).toMatchObject({
+    type: "text",
+    text: expect.stringContaining("authoritative status for this image-generation invocation: SUCCESS"),
+  });
+  expect(success._meta).toMatchObject({
+    asterbridge: { category: "image_generation_success", authoritative: true, succeeded: true },
+  });
+
+  const transient = annotateImageToolResult(CODEX_IMAGE_GEN_WIRE_NAME, {
     content: [{ type: "text", text: "image generation failed with HTTP 502 Bad Gateway" }],
     isError: true,
   });
   expect(transient.content[0]).toMatchObject({
     type: "text",
-    text: expect.stringContaining("transient/retryable (HTTP 502)"),
+    text: expect.stringContaining("FAILED with transient/retryable HTTP 502"),
   });
   expect(transient._meta).toMatchObject({
-    asterbridge: { category: "image_backend_transient", retryable: true, status: 502 },
+    asterbridge: { category: "image_backend_transient", authoritative: true, retryable: true, status: 502 },
   });
 
   const permanent = {
     content: [{ type: "text", text: "invalid image prompt" }],
     isError: true,
   };
-  expect(annotateRetryableImageToolFailure(CODEX_IMAGE_GEN_WIRE_NAME, permanent)).toBe(permanent);
-  expect(annotateRetryableImageToolFailure("exec_command", {
+  expect(annotateImageToolResult(CODEX_IMAGE_GEN_WIRE_NAME, permanent)).toBe(permanent);
+  expect(annotateImageToolResult("exec_command", {
     content: [{ type: "text", text: "HTTP 503" }],
     isError: true,
   }).content).toEqual([{ type: "text", text: "HTTP 503" }]);
