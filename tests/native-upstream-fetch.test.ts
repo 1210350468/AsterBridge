@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { resolveNativeUpstreamProxy } from "../src/native-upstream-fetch";
+import { createNativeUpstreamFetch, resolveNativeUpstreamProxy } from "../src/native-upstream-fetch";
 
 test("prefers explicit HTTPS proxy environment configuration", () => {
   const proxy = resolveNativeUpstreamProxy({
@@ -34,6 +34,39 @@ test("selects the HTTPS entry from a per-protocol Windows proxy", () => {
   });
 
   expect(proxy).toBe("http://127.0.0.1:7891");
+});
+
+test("can disable Bun's default fetch timeout only for long-running native calls", async () => {
+  let observedInit: (RequestInit & { proxy?: string; timeout?: number | false }) | undefined;
+  const fetchUpstream = createNativeUpstreamFetch({
+    environment: { HTTPS_PROXY: "http://127.0.0.1:7890" },
+    platform: "linux",
+    disableDefaultFetchTimeout: true,
+    fetchImpl: async (_request, init) => {
+      observedInit = init;
+      return Response.json({ ok: true });
+    },
+  });
+
+  const response = await fetchUpstream(new Request("https://chatgpt.com/backend-api/codex/images/edits"));
+  expect(response.status).toBe(200);
+  expect(observedInit?.proxy).toBe("http://127.0.0.1:7890");
+  expect(observedInit?.timeout).toBe(false);
+});
+
+test("ordinary native fetches keep Bun's bounded default timeout", async () => {
+  let observedInit: (RequestInit & { proxy?: string; timeout?: number | false }) | undefined;
+  const fetchUpstream = createNativeUpstreamFetch({
+    environment: {},
+    platform: "linux",
+    fetchImpl: async (_request, init) => {
+      observedInit = init;
+      return Response.json({ ok: true });
+    },
+  });
+
+  await fetchUpstream(new Request("https://chatgpt.com/backend-api/codex/models"));
+  expect(observedInit?.timeout).toBeUndefined();
 });
 
 test("does not use disabled or non-Windows system proxy settings", () => {

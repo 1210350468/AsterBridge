@@ -227,12 +227,17 @@ test("DEV driver uses shared browser methods and its own broker while an unrelat
       if (!token) throw new Error("missing DEV broker token");
       const claimed = await callTurnBroker<{ bindingId: string }>(config.brokerSocketPath, { method: "claim", token });
       turn.onReasoningSummary?.("Exercising the real broker round");
-      const result = await callTurnBroker<BrokerToolResult>(config.brokerSocketPath, {
+      const pendingResult = callTurnBroker<BrokerToolResult>(config.brokerSocketPath, {
         method: "invoke",
         bindingId: claimed.bindingId,
         wireName: "exec_command",
         arguments: { cmd: "git status --short" },
       }, 30_000);
+      if (turn.externalProgress) {
+        const progress = await turn.externalProgress.waitForChange(0, turn.abortSignal);
+        await turn.externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
+      }
+      const result = await pendingResult;
       const simulated = (result.structuredContent as { simulated: boolean }).simulated;
       const answer = `DEV receipt simulated=${simulated}`;
       turn.onTextDelta(answer);

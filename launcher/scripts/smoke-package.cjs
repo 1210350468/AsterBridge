@@ -9,6 +9,13 @@ const launcherManifest = JSON.parse(
   fs.readFileSync(path.join(launcherRoot, "package.json"), "utf8"),
 );
 const expectedVersion = launcherManifest.version;
+const expectedRuntimeManifest = JSON.parse(
+  fs.readFileSync(path.join(launcherRoot, "build", "runtime", "manifest.json"), "utf8"),
+);
+const expectedBundleId = expectedRuntimeManifest.bundleId;
+if (!/^[a-f0-9]{64}$/.test(expectedBundleId)) {
+  throw new Error(`Packaged runtime bundle id is invalid: ${String(expectedBundleId)}`);
+}
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-smoke-"));
 const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
@@ -93,7 +100,7 @@ function windowsPackagedRuntimeReady() {
     return manifest.appVersion === expectedVersion
       && manifest.platform === process.platform
       && manifest.arch === process.arch
-      && /^[a-f0-9]{64}$/.test(manifest.bundleId);
+      && manifest.bundleId === expectedBundleId;
   } catch {
     return false;
   }
@@ -229,7 +236,7 @@ try {
   if (installedManifest.appVersion !== expectedVersion
     || installedManifest.platform !== process.platform
     || installedManifest.arch !== process.arch
-    || !/^[a-f0-9]{64}$/.test(installedManifest.bundleId)) {
+    || installedManifest.bundleId !== expectedBundleId) {
     throw new Error(`Packaged launcher installed the wrong durable runtime: ${JSON.stringify(installedManifest)}`);
   }
   process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch}\n`);

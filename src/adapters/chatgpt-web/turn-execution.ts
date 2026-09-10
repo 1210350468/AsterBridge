@@ -7,6 +7,7 @@ import {
   extractChatGptTurnUserRevision,
 } from "./environment";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import type { ChatGptExternalTurnProgress } from "./turn-progress";
 
 export type ChatGptBrowserOutcome =
   | { type: "final"; answer: string }
@@ -130,7 +131,7 @@ interface ChatGptTurnRuntimeBase {
 }
 
 export type ChatGptTurnRuntime =
-  | (ChatGptTurnRuntimeBase & { mode: "tools"; token: Promise<string> })
+  | (ChatGptTurnRuntimeBase & { mode: "tools"; token: Promise<string>; externalProgress?: ChatGptExternalTurnProgress })
   | (ChatGptTurnRuntimeBase & { mode: "direct-tools"; binding: string })
   | (ChatGptTurnRuntimeBase & { mode: "read-only" });
 

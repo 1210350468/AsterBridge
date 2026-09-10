@@ -1,5 +1,5 @@
 import { readJsonRequestBody } from "./http-body";
-import { nativeUpstreamFetch } from "./native-upstream-fetch";
+import { nativeLongRunningUpstreamFetch, nativeUpstreamFetch } from "./native-upstream-fetch";
 import {
   BRIDGE_COMPACTION_PREFIX,
   decodeCompactionSummary,
@@ -135,7 +135,7 @@ function endToEndHeaders(source: Headers): Headers {
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
-  fetchUpstream: NativeFetch = nativeUpstreamFetch,
+  fetchUpstream?: NativeFetch,
   decodedBody?: unknown,
 ): Promise<Response> {
   const authorization = request.headers.get("authorization") ?? "";
@@ -147,6 +147,7 @@ export async function forwardNativeCodexRequest(
   const headers = endToEndHeaders(request.headers);
   if (endpoint === "models") headers.delete("if-none-match");
   const method = endpoint === "models" ? "GET" : "POST";
+  const imageRequest = endpoint === "images/generations" || endpoint === "images/edits";
   let body: BodyInit | undefined;
   if (method === "POST") {
     const shouldScrubResponsesBody = endpoint === "responses" || endpoint === "responses/compact";
@@ -174,11 +175,18 @@ export async function forwardNativeCodexRequest(
     headers,
     ...(body ? { body } : {}),
     signal: request.signal,
+    // Image POSTs create work. Never auto-follow a redirect and risk replaying the request or
+    // forwarding account headers to a different destination.
+    redirect: imageRequest ? "manual" : "follow",
   });
-  const upstream = await fetchUpstream(upstreamRequest);
+  const upstreamFetch = fetchUpstream ?? (imageRequest ? nativeLongRunningUpstreamFetch : nativeUpstreamFetch);
+  const upstream = await upstreamFetch(upstreamRequest);
+  const responseHeaders = endToEndHeaders(upstream.headers);
+  // Bun fetch exposes decompressed image JSON. Keeping gzip/br would make Codex decode it twice.
+  if (imageRequest) responseHeaders.delete("content-encoding");
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
-    headers: endToEndHeaders(upstream.headers),
+    headers: responseHeaders,
   });
 }

@@ -13,10 +13,20 @@ const PROXY_ENV_KEYS = [
 
 type WindowsInternetSettingReader = (name: "ProxyEnable" | "ProxyServer") => string | undefined;
 
+type BunNativeFetchInit = RequestInit & {
+  proxy?: string;
+  timeout?: number | false;
+};
+
+type BunNativeFetch = (input: Request, init?: BunNativeFetchInit) => Promise<Response>;
+
 export interface NativeUpstreamProxyOptions {
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   readWindowsInternetSetting?: WindowsInternetSettingReader;
+  /** Disable Bun's built-in ~5 minute fetch deadline for explicitly long-running calls. */
+  disableDefaultFetchTimeout?: boolean;
+  fetchImpl?: BunNativeFetch;
 }
 
 function normalizeProxyUrl(value: string | undefined): string | undefined {
@@ -81,8 +91,13 @@ export function createNativeUpstreamFetch(
   options: NativeUpstreamProxyOptions = {},
 ): NativeFetch {
   const proxy = resolveNativeUpstreamProxy(options);
-  if (!proxy) return request => fetch(request);
-  return request => fetch(request, { proxy });
+  const fetchImpl = options.fetchImpl ?? (fetch as BunNativeFetch);
+  const init: BunNativeFetchInit = {
+    ...(proxy ? { proxy } : {}),
+    ...(options.disableDefaultFetchTimeout ? { timeout: false } : {}),
+  };
+  return request => fetchImpl(request, init);
 }
 
 export const nativeUpstreamFetch = createNativeUpstreamFetch();
+export const nativeLongRunningUpstreamFetch = createNativeUpstreamFetch({ disableDefaultFetchTimeout: true });

@@ -54,6 +54,9 @@ interface TurnChannel {
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
   compactionDeliveryCount: number;
+  activityRevision: number;
+  completionCommitted: boolean;
+  completionRevision?: number;
   batchTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -160,6 +163,8 @@ export interface TurnBrokerOwner {
   updateEnvironment(token: string, environment: ChatGptTurnEnvironment): void | Promise<void>;
   nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]>;
   completeTool(token: string, callId: string, result: BrokerToolResult): void | Promise<void>;
+  beginCompletionFence?(token: string): number | undefined | Promise<number | undefined>;
+  commitCompletionFence?(token: string, revision: number): boolean | Promise<boolean>;
   revoke(token: string): void | Promise<void>;
 }
 
@@ -228,6 +233,8 @@ export class TurnBroker implements TurnBrokerOwner {
       waiters: new Set(),
       compactionRequested: false,
       compactionDeliveryCount: 0,
+      activityRevision: 0,
+      completionCommitted: false,
     };
     this.channels.set(token, channel);
     this.pending.set(token, channel);
@@ -309,8 +316,33 @@ export class TurnBroker implements TurnBrokerOwner {
       throw new Error(`tool call was completed before it was delivered: ${callId}`);
     }
     channel.invocations.delete(callId);
+    channel.activityRevision += 1;
     console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
     invocation.resolve(result);
+  }
+
+  beginCompletionFence(token: string): number | undefined {
+    this.prune();
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn token is invalid or expired");
+    if (channel.completionCommitted) return channel.completionRevision;
+    if (channel.invocations.size > 0) return undefined;
+    return channel.activityRevision;
+  }
+
+  commitCompletionFence(token: string, revision: number): boolean {
+    this.prune();
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error("turn completion fence revision is invalid");
+    }
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn token is invalid or expired");
+    if (channel.completionCommitted) return channel.completionRevision === revision;
+    if (channel.activityRevision !== revision || channel.invocations.size > 0) return false;
+    channel.completionCommitted = true;
+    channel.completionRevision = revision;
+    console.info(`[chatgpt-web] broker trace=${channel.traceId} committed browser completion revision=${revision}`);
+    return true;
   }
 
   requestCompaction(token: string, queuedResult: BrokerToolResult): number {
@@ -680,6 +712,9 @@ export class TurnBroker implements TurnBrokerOwner {
 
     const wireName = request.wireName?.trim();
     if (!wireName) throw new Error("wire tool name is required");
+    if (binding.channel.completionCommitted) {
+      throw new Error("Codex turn has already committed browser completion");
+    }
     const callId = opaqueId("call");
     const toolRequest: BrokerToolRequest = {
       callId,
@@ -689,6 +724,7 @@ export class TurnBroker implements TurnBrokerOwner {
     };
     return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
       binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
+      binding.channel.activityRevision += 1;
       binding.channel.queuedCallIds.push(callId);
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,

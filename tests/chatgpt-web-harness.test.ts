@@ -21,6 +21,7 @@ import { defaultBrokerEndpoint } from "../src/config";
 import { DIRECT_TOOL_BRIDGE_PREFIX, DIRECT_TOOL_BRIDGE_SUFFIX } from "../src/adapters/chatgpt-web/direct-tool-bridge";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
+import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
 
@@ -1408,6 +1409,56 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(tracker.update({ ...state, running: true }, 8_100)).toBe(false);
   });
 
+  test("outstanding MCP tools veto apparent DOM completion and require a post-tool answer", async () => {
+    const progress = new ChatGptExternalTurnProgress();
+    const tracker = new ChatGptCompletionTracker(500, 1_000);
+    const apparentFinal = {
+      responsePresent: true,
+      running: false,
+      currentText: "image generation is still failing",
+      currentHtml: "<p>image generation is still failing</p>",
+      completionActionVisible: true,
+    };
+
+    const revision = progress.recordToolBatch(1, 1_000);
+    const observed = progress.waitForToolBatchObservation(revision);
+    expect(tracker.observeToolBatch(revision, apparentFinal.currentText)).toBe(true);
+    await progress.acknowledgeToolBatch(revision);
+    await observed;
+    expect(tracker.update({
+      ...apparentFinal,
+      externalToolCallsInFlight: chatGptExternalToolCallsAreInFlight(progress.snapshot()),
+    }, 1_500)).toBe(false);
+
+    progress.recordToolResult(2_000);
+    expect(tracker.update({ ...apparentFinal, externalToolCallsInFlight: false }, 2_001)).toBe(false);
+    expect(() => tracker.update({ ...apparentFinal, externalToolCallsInFlight: false }, 3_001))
+      .toThrow("completed without producing a final answer after its last Codex tool call");
+  });
+
+  test("a changed post-tool answer can complete after the ordinary settle window", () => {
+    const tracker = new ChatGptCompletionTracker(500, 1_000);
+    const beforeTool = {
+      responsePresent: true,
+      running: false,
+      currentText: "temporary image failure",
+      currentHtml: "<p>temporary image failure</p>",
+      completionActionVisible: true,
+    };
+    expect(tracker.observeToolBatch(1, beforeTool.currentText)).toBe(true);
+    expect(tracker.update({ ...beforeTool, externalToolCallsInFlight: true }, 1_000)).toBe(false);
+
+    const afterTool = {
+      ...beforeTool,
+      currentText: "image generated successfully",
+      currentHtml: "<p>image generated successfully</p>",
+      externalToolCallsInFlight: false,
+    };
+    expect(tracker.update(afterTool, 2_000)).toBe(false);
+    expect(tracker.update(afterTool, 2_499)).toBe(false);
+    expect(tracker.update(afterTool, 2_500)).toBe(true);
+  });
+
   test("preserves GFM formatting while streaming only completed stable DOM blocks", () => {
     const heading = '<h2 data-start="0" data-end="15">Format Probe</h2>';
     const bold = '<p data-start="16" data-end="24"><strong>bold</strong></p>';
@@ -1555,6 +1606,31 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => broker.completeTool(token, "unknown", toolResult({ output: "no" }))).toThrow("not pending");
     broker.completeTool(token, request!.callId, toolResult({ output: tempRoot }));
     expect(await invocation).toEqual(toolResult({ output: tempRoot }));
+    await broker.close();
+  });
+
+  test("completion fence cannot commit across a pending MCP invocation", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-fence-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    const token = await broker.register(environment, 10_000, "completion-fence-test");
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+    const invocation = callTurnBroker<BrokerToolResult>(socketPath, {
+      method: "invoke",
+      bindingId: claimed.bindingId,
+      wireName: "exec_command",
+      freeform: false,
+      arguments: { cmd: "pwd" },
+    }, 10_000);
+    const [request] = await broker.nextToolBatch(token);
+
+    expect(broker.beginCompletionFence(token)).toBeUndefined();
+    broker.completeTool(token, request!.callId, toolResult({ output: tempRoot }));
+    expect(await invocation).toEqual(toolResult({ output: tempRoot }));
+
+    const revision = broker.beginCompletionFence(token);
+    expect(typeof revision).toBe("number");
+    expect(broker.commitCompletionFence(token, revision!)).toBe(true);
     await broker.close();
   });
 

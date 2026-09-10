@@ -22,6 +22,7 @@ import {
   ChatGptLunaCheckpointStore,
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
+import { ChatGptExternalTurnProgress } from "./turn-progress";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -339,6 +340,20 @@ export function createChatGptWebAdapter(
       };
     }
     const token = deferred<string>();
+    const sameProcessToolProgress = provider.chatgptWeb?.browserHost === "roxybrowser"
+      || provider.chatgptWeb?.browserHost === "system-browser"
+      || provider.chatgptWeb?.browserHost === "managed-chrome";
+    const externalProgress = sameProcessToolProgress
+      ? new ChatGptExternalTurnProgress()
+      : undefined;
+    const completionFence = externalProgress
+      && broker.beginCompletionFence
+      && broker.commitCompletionFence
+      ? {
+          begin: async () => await broker.beginCompletionFence!(await token.promise),
+          commit: async (revision: number) => await broker.commitCompletionFence!(await token.promise, revision),
+        }
+      : undefined;
     let tokenSettled = false;
     let activeToken: string | undefined;
     const prepareWith = async (input: CodexParsedRequest) => {
@@ -379,6 +394,8 @@ export function createChatGptWebAdapter(
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
+      ...(externalProgress ? { externalProgress } : {}),
+      ...(completionFence ? { completionFence } : {}),
       ...(captureLunaCheckpoint ? {
         captureLunaCheckpoint: true,
         onLunaCheckpoint: captureCheckpoint,
@@ -393,6 +410,7 @@ export function createChatGptWebAdapter(
     return {
       mode: "tools",
       token: token.promise,
+      ...(externalProgress ? { externalProgress } : {}),
       browser,
       trace,
       text,
@@ -652,6 +670,7 @@ export function createChatGptWebAdapter(
               for (const message of results) {
                 const request = outstanding.find(candidate => candidate.callId === message.toolCallId);
                 await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                session.runtime.externalProgress?.recordToolResult();
                 session.markResultDelivered(message.toolCallId);
                 const closedThreadId = request?.wireName === "multi_agent_v1__close_agent"
                   && message.isError === false
@@ -685,7 +704,16 @@ export function createChatGptWebAdapter(
             emitNewTrace(session.runtime.trace.drain());
             emitNewText(session.runtime.text.drain());
             const nextTools = turnToken
-              ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(requests => ({ type: "tools" as const, requests }))
+              ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(async requests => {
+                  const progress = session.runtime.mode === "tools"
+                    ? session.runtime.externalProgress
+                    : undefined;
+                  if (progress && requests.length > 0) {
+                    const revision = progress.recordToolBatch(requests.length);
+                    await progress.waitForToolBatchObservation(revision, toolWaitAbort.signal);
+                  }
+                  return { type: "tools" as const, requests };
+                })
               : undefined;
             const browserOutcome = session.browserOutcome.then(outcome => ({ type: "browser" as const, outcome }));
             let nextTrace = session.runtime.trace.next(toolWaitAbort.signal).then(event => ({ type: "trace" as const, event }));

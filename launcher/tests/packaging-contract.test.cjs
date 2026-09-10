@@ -80,19 +80,19 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.match(manifest.build.nsis.guid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
 });
 
-test("Windows installer recovers a stale AsterBridge registration without deleting a live install", () => {
+test("Windows installer recovers registration when the prior uninstaller is missing without deleting user data", () => {
   const recovery = fs.readFileSync(path.join(launcherRoot, "scripts", "installer.nsh"), "utf8");
   assert.match(recovery, /!macro customInit/);
-  assert.match(recovery, /AsterBridge\.exe/);
-  assert.match(recovery, /Codex Web GPT\.exe/);
   assert.match(recovery, /Uninstall AsterBridge\.exe/);
   assert.match(recovery, /Uninstall Codex Web GPT\.exe/);
   assert.match(recovery, /DeleteRegKey HKCU "\$\{UNINSTALL_REGISTRY_KEY\}"/);
   assert.match(recovery, /DeleteRegKey HKCU "\$\{INSTALL_REGISTRY_KEY\}"/);
-  assert.ok(
-    recovery.indexOf('IfFileExists "$0\\AsterBridge.exe"') < recovery.indexOf('DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"'),
-    "a live installation must be checked before stale registration keys are removed",
-  );
+  assert.doesNotMatch(recovery, /RMDir|Delete "\$0\\AsterBridge\.exe"|\.codex-chatgpt-web/);
+  const currentUninstaller = recovery.indexOf('IfFileExists "$0\\Uninstall AsterBridge.exe"');
+  const legacyUninstaller = recovery.indexOf('IfFileExists "$0\\Uninstall Codex Web GPT.exe"');
+  const deleteRegistration = recovery.indexOf('DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"');
+  assert.ok(currentUninstaller >= 0 && legacyUninstaller >= 0 && deleteRegistration >= 0);
+  assert.ok(currentUninstaller < deleteRegistration && legacyUninstaller < deleteRegistration);
 });
 
 test("release installers resolve checksummed native launcher assets", () => {

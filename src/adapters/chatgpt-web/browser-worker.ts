@@ -81,6 +81,12 @@ import {
   ChatGptLunaCheckpointStream,
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
+import {
+  chatGptExternalProgressIsLive,
+  chatGptExternalToolCallsAreInFlight,
+  type ChatGptExternalTurnProgressSnapshot,
+  type ChatGptTurnProgressReader,
+} from "./turn-progress";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -548,6 +554,13 @@ export interface BrowserTurn {
   onCommentary?: (text: string, continuation?: boolean) => void;
   /** Append-only, structurally stable Markdown chunks. */
   onTextDelta: (delta: string) => void;
+  /** Proven outer Codex MCP activity for this exact browser turn. */
+  externalProgress?: ChatGptTurnProgressReader;
+  /** Final race check: the browser may finish only while the broker still has no active invocation. */
+  completionFence?: {
+    begin: () => Promise<number | undefined>;
+    commit: (revision: number) => Promise<boolean>;
+  };
   /** Allow one clean pre-submit composer retry for isolated history compaction only. */
   compaction?: boolean;
   /** Require and remove the private Luna checkpoint tail from the visible Markdown stream. */
@@ -611,15 +624,58 @@ export function chatGptSubmissionEvidence(state: {
 
 export class ChatGptCompletionTracker {
   private candidate?: { signature: string; since: number };
+  private lastToolBatchRevision = 0;
+  private postToolAnswerBaselineText?: string;
+  private missingPostToolAnswerSince?: number;
 
-  constructor(private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS) {}
+  constructor(
+    private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
+    private readonly missingPostToolAnswerMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+  ) {}
 
-  update(state: Parameters<typeof chatGptTurnIsComplete>[0], now = Date.now()): boolean {
+  needsToolBatchObservation(revision: number): boolean {
+    if (!Number.isSafeInteger(revision) || revision < this.lastToolBatchRevision) {
+      throw new Error("ChatGPT completion received an invalid tool-batch revision");
+    }
+    return revision > this.lastToolBatchRevision;
+  }
+
+  observeToolBatch(revision: number, currentText: string): boolean {
+    if (!this.needsToolBatchObservation(revision)) return false;
+    this.postToolAnswerBaselineText = currentText;
+    this.lastToolBatchRevision = revision;
+    this.missingPostToolAnswerSince = undefined;
+    this.candidate = undefined;
+    return true;
+  }
+
+  update(
+    state: Parameters<typeof chatGptTurnIsComplete>[0] & { externalToolCallsInFlight?: boolean },
+    now = Date.now(),
+  ): boolean {
+    const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
+    if (state.externalToolCallsInFlight) {
+      this.candidate = undefined;
+      this.missingPostToolAnswerSince = undefined;
+      return false;
+    }
+    if (this.postToolAnswerBaselineText === state.currentText) {
+      this.candidate = undefined;
+      if (!chatGptTurnIsComplete(state)) {
+        this.missingPostToolAnswerSince = undefined;
+        return false;
+      }
+      this.missingPostToolAnswerSince ??= now;
+      if (now - this.missingPostToolAnswerSince >= this.missingPostToolAnswerMs) {
+        throw new Error("ChatGPT completed without producing a final answer after its last Codex tool call");
+      }
+      return false;
+    }
+    this.missingPostToolAnswerSince = undefined;
     if (!chatGptTurnIsComplete(state)) {
       this.candidate = undefined;
       return false;
     }
-    const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
     if (this.candidate?.signature !== signature) {
       this.candidate = { signature, since: now };
       return false;
@@ -640,14 +696,25 @@ export class ChatGptTurnDomHealthTracker {
     private readonly missingCompletionActionMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
   ) {}
 
+  clearMissingResponse(): void {
+    this.missingResponseSince = undefined;
+  }
+
   update(state: {
     responsePresent: boolean;
     running: boolean;
     currentText: string;
     completionActionVisible: boolean;
+    externalProgressLive?: boolean;
   }, now = Date.now()): string | undefined {
+    if (state.responsePresent) this.sawResponse = true;
+    if (state.externalProgressLive) {
+      this.missingResponseSince = undefined;
+      this.emptyCompletionSince = undefined;
+      this.missingCompletionAction = undefined;
+      return undefined;
+    }
     if (state.responsePresent) {
-      this.sawResponse = true;
       this.missingResponseSince = undefined;
     } else {
       this.missingResponseSince ??= now;
@@ -684,6 +751,21 @@ export class ChatGptTurnDomHealthTracker {
     }
     return undefined;
   }
+}
+
+export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = 10 * 60_000;
+export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
+
+export function chatGptExternalProgressSuppressesDomHealth(
+  snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
+  now: number,
+): boolean {
+  if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_RESPONSE_DOM_GRACE_MS)) return false;
+  const lastProgressAt = snapshot?.lastProgressAt;
+  if (lastProgressAt === undefined) return false;
+  const age = now - lastProgressAt;
+  return age >= -CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS
+    && age < CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
 }
 
 export interface ChatGptVisibleTraceBlock {
@@ -3131,6 +3213,7 @@ export class ChatGptBrowserWorker {
       };
       const completionTracker = new ChatGptCompletionTracker();
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
+      let completionFenceRevision: number | undefined;
       for (;;) {
         if (page.isClosed()) {
           throw chatGptBrowserTabClosedError();
@@ -3164,6 +3247,26 @@ export class ChatGptBrowserWorker {
         }
 
         const snapshot = await this.responseDomSnapshot(responseTurn);
+        const externalProgressSnapshot = turn.externalProgress?.snapshot();
+        if (turn.externalProgress
+          && externalProgressSnapshot
+          && completionTracker.needsToolBatchObservation(externalProgressSnapshot.lastToolBatchRevision)) {
+          completionTracker.observeToolBatch(
+            externalProgressSnapshot.lastToolBatchRevision,
+            snapshot.visibleText,
+          );
+          await turn.externalProgress.acknowledgeToolBatch(externalProgressSnapshot.lastToolBatchRevision);
+        }
+        const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(
+          externalProgressSnapshot,
+          Date.now(),
+        );
+        const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
+        if (!snapshot.responsePresent && externalProgressLive) {
+          domHealthTracker.clearMissingResponse();
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+          continue;
+        }
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
@@ -3190,15 +3293,36 @@ export class ChatGptBrowserWorker {
             running,
             currentText: snapshot.visibleText,
             completionActionVisible: snapshot.completionActionVisible,
+            externalProgressLive,
           });
           if (domError) throw new Error(domError);
-          if (completionTracker.update({
+          const completionReady = completionTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
             currentText: snapshot.visibleText,
             currentHtml: snapshot.fullHtml,
             completionActionVisible: snapshot.completionActionVisible,
-          })) {
+            externalToolCallsInFlight,
+          });
+          if (!completionReady) completionFenceRevision = undefined;
+          if (completionReady) {
+            if (turn.completionFence) {
+              if (completionFenceRevision === undefined) {
+                const revision = await turn.completionFence.begin();
+                if (revision === undefined) {
+                  await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+                  continue;
+                }
+                completionFenceRevision = revision;
+                await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+                continue;
+              }
+              if (!await turn.completionFence.commit(completionFenceRevision)) {
+                completionFenceRevision = undefined;
+                await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+                continue;
+              }
+            }
             if (snapshot.visibleText === "api_tool unavailable") {
               throw new Error("ChatGPT selected mode rejected the Codex Native MCP tool (api_tool unavailable)");
             }
@@ -3236,6 +3360,7 @@ export class ChatGptBrowserWorker {
             running,
             currentText: "",
             completionActionVisible: false,
+            externalProgressLive,
           });
           if (domError) throw new Error(domError);
         }

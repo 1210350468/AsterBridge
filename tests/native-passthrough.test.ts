@@ -290,14 +290,21 @@ test("forwards native Codex image generation and edit requests byte-for-byte", a
     let upstreamRequest: Request | undefined;
     const response = await forwardNativeCodexRequest(request, fixture.endpoint, async input => {
       upstreamRequest = input;
-      return Response.json({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
+      return new Response(JSON.stringify({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] }), {
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+        },
+      });
     });
 
     expect(upstreamRequest!.url).toBe(`https://chatgpt.com/backend-api/codex/${fixture.endpoint}`);
     expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
     expect(upstreamRequest!.headers.get("x-codex-test")).toBe("image-pass-through");
+    expect(upstreamRequest!.redirect).toBe("manual");
     expect(await upstreamRequest!.text()).toBe(fixture.body);
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBeNull();
     expect(await response.json()).toEqual({ data: [{ b64_json: "ZmFrZS1pbWFnZQ==" }] });
   }
 });

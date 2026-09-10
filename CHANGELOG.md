@@ -2,6 +2,24 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.36 - 2026-09-10
+
+### Image transport and MCP completion lifecycle
+
+- Fixed long-running native image generation/edit requests being cut off by Bun 1.4.0's roughly five-minute default `fetch()` deadline. Only `images/generations` and `images/edits` use the long-running native fetch path; the caller's AbortSignal remains authoritative, so explicit Codex/Launcher cancellation still terminates the request while ordinary native routes retain their existing timeout behavior.
+- Hardened native image passthrough with manual redirect handling for image POSTs and by removing an upstream `content-encoding` header after the runtime has already decompressed the body. This avoids unsafe POST replay across redirects and double-decoding of image JSON responses.
+- Fixed a separate Full-Harness race where ChatGPT could expose DOM completion while an outer Codex MCP call was still executing. The reproducer queued `image_gen__imagegen`, marked the browser turn complete roughly 43 seconds before the image edit actually returned HTTP 200, and therefore let ChatGPT preserve stale text claiming three 502 failures even though outer Codex later received and displayed the generated image.
+- Tool-capable browser turns now carry proven external MCP progress into completion tracking. Any unresolved tool call vetoes browser completion; each tool batch records the exact pre-tool answer boundary; once a result returns, that unchanged pre-tool answer cannot become final and ChatGPT must produce a post-tool answer before the normal completion settle window can succeed.
+- Added a revisioned TurnBroker completion fence. A browser completion candidate cannot begin while tool invocations are pending and cannot commit if broker activity changed after the candidate was observed, closing the race between the final DOM observation and a newly queued MCP action. Focused regression coverage also verifies pending tool calls, post-tool answer replacement, and completion-fence behavior.
+- Real installed-runtime IMG validation on Windows used an attached image through the production Codex route and reached `images/edits` successfully in **32,690 ms** with **HTTP 200** before Codex returned `IMG_E2E_OK`. A separate production MCP E2E executed a deliberately delayed 12-second `exec_command`, observed the real tool result `MCP_FENCE_E2E_OK`, and only then completed the Codex turn.
+
+### Windows upgrade/package integrity
+
+- Promoted this hotfix to **3.0.36** instead of relying on a same-version 3.0.35 overwrite. Package smoke now binds the installed packaged runtime to the candidate package's exact `bundleId`, so a stale same-version installation can no longer satisfy smoke merely because version/platform/arch still match.
+- Fixed Windows upgrade recovery for a partially damaged prior installation whose registry metadata and `AsterBridge.exe` remain but whose registered `Uninstall AsterBridge.exe` is missing. The NSIS recovery hook now clears only stale electron-builder install/uninstall registry metadata when neither the current nor legacy uninstaller exists; it never removes the launcher directory or `.codex-chatgpt-web` user data, allowing the new installer to repair the application in place.
+- Final rebuilt Windows package passes `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`. The installed application and durable production runtime both report **3.0.36** with bundle id **`4082ae140aa4701361a436343fb7f7aab9e60a95039e98a83a83ce3326c8ef80`**. Production `/healthz` returned `mode=full`, `accepting_turns=true`, and zero active HTTP/browser turns; the Codex route was active with no route errors and the configured RoxyBrowser session remained authenticated (`sol=true`, `pro=false`).
+- Validation: focused ChatGPT harness/broker coverage **62 pass / 0 fail / 8 existing skips**, Core **42 / 42** deterministic batches, Launcher **214 pass / 0 fail / 1 platform-inapplicable skip** (**215 total**), root and Launcher TypeScript PASS, renderer production build PASS, `RELOCATABLE_RUNTIME_SMOKE_OK`, package smoke PASS, and `git diff --check` PASS.
+
 ## 3.0.34 - 2026-09-09
 
 ### Bigger Context active-turn restart UX
