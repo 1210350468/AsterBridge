@@ -142,11 +142,13 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /Installer process exited without completing/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
   assert.match(packageSmoke, /WINDOWS_INSTALL_TIMEOUT_MS = 10 \* 60_000/);
+  assert.match(packageSmoke, /WINDOWS_INSTALLER_FINALIZATION_GRACE_MS = 60_000/);
   assert.match(packageSmoke, /PACKAGED_LAUNCHER_SMOKE_TIMEOUT_MS = 5 \* 60_000/);
   assert.match(packageSmoke, /installWindowsPackage\(installer\)/);
   assert.match(packageSmoke, /windowsInstallerProcessCount/);
   assert.match(packageSmoke, /detachedInstallerObserved/);
   assert.match(packageSmoke, /Windows installer process exited without completing/);
+  assert.match(packageSmoke, /after finalization grace/);
   assert.match(packageSmoke, /resources[\s\S]*runtime[\s\S]*bun\.exe/);
   assert.match(packageSmoke, /codex-chatgpt-web\.cmd/);
   assert.match(packageSmoke, /marker\.trayReady !== true/);

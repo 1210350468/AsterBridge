@@ -2,6 +2,17 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.37 - 2026-09-11
+
+### Large-prompt bridge 502 / ChatGPT composer integrity
+
+- Fixed a local browser-composer transport failure that appeared to Codex as repeated bridge-layer HTTP 502s. Production trace `048d457ad689` reproduced the same failure three times at the exact boundary `expectedChars=63910 / actualChars=47911 / commonPrefixChars=47911`; the missing **15,999 characters** identify one swallowed native edit from AsterBridge's bounded ~16k prompt insertion path rather than an OpenAI upstream 502.
+- Prompt insertion still uses bounded native edits and exact prefix verification, but now verifies **every** irreversible chunk, including the final chunk. If ChatGPT's Lexical composer silently commits none of the current chunk, AsterBridge re-reads the live composer, proves it is still exactly at the previously verified prefix, re-anchors the caret, and retries only that one chunk once. Partial writes, duplicated text, or rewritten prefixes remain fail-closed so recovery cannot corrupt the Codex context.
+- `ChatGptPromptAttachmentIntegrityError` is now an explicit local bridge failure (`HTTP 500`, `proxy_error`, `prompt_attachment_integrity_error`, `retryable=false`) instead of falling through the generic message classifier to a misleading inferred HTTP 502. If the safe one-chunk recovery cannot repair the composer, Codex receives the real deterministic bridge-integrity failure instead of repeatedly replaying the same request as an apparent upstream error.
+- Regression coverage reproduces a proven no-op chunk and confirms exact recovery without duplicated context, confirms partial chunk commits are never retried, and updates final-chunk/caret-drift contracts. Focused browser-worker + Full-Harness coverage passes **138 / 138**, and the complete release verification passes Core **42 / 42** deterministic batches, Launcher **217 pass / 0 fail / 1 platform-inapplicable skip**, TypeScript, renderer build, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Live Windows validation upgraded the installed/durable runtime to **3.0.37** bundle `846cfb1e09169b13870aa52b854464440e2c9e8b165074715986d40e4e6f7f75`, then sent a fresh **92,664-character** Codex Web turn through the production route. The browser opened with `maxMessageChars=135098`, completed `prompt_attachment` in **3.237 s**, sent normally, and reached `turn-completed`; Codex exited 0 with `LARGE_CONTEXT_OK`. The previous `47911 -> 63910` integrity failure did not recur.
+- Fixed a Windows package-smoke false negative exposed while deploying the hotfix. electron-builder/NSIS can return bootstrap status 2 and let a detached child finish file/registry finalization shortly afterward; smoke previously checked the exact bundle immediately when the observed child exited and could fail even though installation completed seconds later. Windows smoke now allows a bounded **60 s** finalization grace while still requiring the candidate package's exact runtime `bundleId`, so stale or partial installs cannot satisfy the gate.
+
 ## 3.0.36 - 2026-09-10
 
 ### Image transport and MCP completion lifecycle

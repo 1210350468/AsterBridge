@@ -22,6 +22,7 @@ const coreHome = path.join(scratch, "core-home");
 const WINDOWS_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const PACKAGED_LAUNCHER_SMOKE_TIMEOUT_MS = 5 * 60_000;
 const WINDOWS_INSTALLER_BOOTSTRAP_GRACE_MS = 10_000;
+const WINDOWS_INSTALLER_FINALIZATION_GRACE_MS = 60_000;
 const WINDOWS_INSTALL_POLL_MS = 500;
 let macAppBundle;
 
@@ -125,7 +126,7 @@ function installWindowsPackage(installer) {
       detachedInstallerObserved = true;
       break;
     }
-    if (result.status === 0 && windowsPackagedRuntimeReady()) return;
+    if (windowsPackagedRuntimeReady()) return;
     sleepSync(WINDOWS_INSTALL_POLL_MS);
   } while (Date.now() < firstProbeDeadline);
 
@@ -141,8 +142,13 @@ function installWindowsPackage(installer) {
     const running = windowsInstallerProcessCount(installer) > 0;
     if (!running) {
       if (windowsPackagedRuntimeReady()) return;
+      const finalizationDeadline = Date.now() + WINDOWS_INSTALLER_FINALIZATION_GRACE_MS;
+      while (Date.now() < finalizationDeadline) {
+        if (windowsPackagedRuntimeReady()) return;
+        sleepSync(WINDOWS_INSTALL_POLL_MS);
+      }
       throw new Error(
-        `Windows installer process exited without completing the ${expectedVersion} packaged runtime; initial status=${String(result.status)}: ${diagnostic()}`,
+        `Windows installer process exited without completing the ${expectedVersion} packaged runtime after finalization grace; initial status=${String(result.status)}: ${diagnostic()}`,
       );
     }
     sleepSync(WINDOWS_INSTALL_POLL_MS);

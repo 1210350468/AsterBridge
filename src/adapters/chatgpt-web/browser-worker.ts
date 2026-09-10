@@ -132,9 +132,14 @@ class ChatGptConnectorCatalogStaleError extends Error {
   }
 }
 
-export class ChatGptPromptAttachmentIntegrityError extends Error {
+export class ChatGptPromptAttachmentIntegrityError extends ChatGptWebAdapterError {
   constructor(message: string) {
-    super(message);
+    super(message, {
+      status: 500,
+      errorType: "proxy_error",
+      code: "prompt_attachment_integrity_error",
+      retryable: false,
+    });
     this.name = "ChatGptPromptAttachmentIntegrityError";
   }
 }
@@ -2415,13 +2420,35 @@ export class ChatGptBrowserWorker {
     for (let offset = 0; offset < text.length;) {
       throwIfPromptAttachmentAborted(abortSignal);
       const end = promptInsertChunkEnd(text, offset);
-      await page.keyboard.insertText(text.slice(offset, end));
-      throwIfPromptAttachmentAborted(abortSignal);
+      const chunk = text.slice(offset, end);
+      const previousPrefix = text.slice(0, offset).trimStart();
+      const expectedPrefix = text.slice(0, end).trimStart();
+      let retriedNoop = false;
+
+      for (;;) {
+        await page.keyboard.insertText(chunk);
+        throwIfPromptAttachmentAborted(abortSignal);
+        try {
+          // Verify every irreversible native edit, including the final chunk. ChatGPT's Lexical
+          // surface can occasionally accept Input.insertText while committing none of that chunk.
+          await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal);
+          break;
+        } catch (error) {
+          if (retriedNoop || !(error instanceof ChatGptPromptAttachmentIntegrityError)) throw error;
+          const observed = await this.attachedPromptText(page);
+          throwIfPromptAttachmentAborted(abortSignal);
+          // A retry is safe only when the failed native edit was a proven no-op. Any partial,
+          // duplicated, or rewritten chunk remains fail-closed because appending again could
+          // silently corrupt the Codex context.
+          if (!this.promptTextEquivalent(previousPrefix, observed)) throw error;
+          retriedNoop = true;
+          await this.reanchorPromptCaret(page, abortSignal);
+        }
+      }
+
       if (end < text.length) {
         // Lexical can rebuild the active block after an exact commit and move its native selection.
         // Re-anchor only after the verified prefix is stable, before the next irreversible edit.
-        const expectedPrefix = text.slice(0, end).trimStart();
-        await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal);
         await this.reanchorPromptCaret(page, abortSignal);
       }
       offset = end;
