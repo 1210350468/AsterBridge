@@ -105,6 +105,7 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
 }
 
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
+export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
@@ -432,14 +433,63 @@ export function resolveChatGptWebMultipartStagingMode(
   );
 }
 
-const browserStageTimeouts = {
+export const browserStageTimeouts = {
   browserPage: 60_000,
   temporaryChatPreparation: 150_000,
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
   send: 20_000,
+  multipartStageSend: 180_000,
+  multipartStageAcknowledgement: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
 } as const;
+
+/**
+ * Track long event-loop gaps as system suspension. This is intentionally platform-neutral: Windows
+ * sleep/Modern Standby can freeze both the browser and bridge just as macOS sleep can. Stage budgets
+ * should charge only awake execution time instead of cancelling a healthy turn immediately on wake.
+ */
+export class ChatGptSuspensionClock {
+  private suspendedTotalMs = 0;
+  private lastTickAt: number;
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(
+    private readonly tickIntervalMs = 1_000,
+    private readonly gapThresholdMs = 5_000,
+  ) {
+    this.lastTickAt = Date.now();
+  }
+
+  start(): void {
+    if (this.timer) return;
+    this.lastTickAt = Date.now();
+    this.timer = setInterval(() => this.tick(Date.now()), this.tickIntervalMs);
+    this.timer.unref?.();
+  }
+
+  tick(now: number): void {
+    const gap = now - this.lastTickAt;
+    this.lastTickAt = now;
+    if (gap >= this.gapThresholdMs) this.suspendedTotalMs += gap - this.tickIntervalMs;
+  }
+
+  suspendedMs(): number {
+    return this.suspendedTotalMs;
+  }
+}
+
+export const chatGptSuspensionClock = new ChatGptSuspensionClock();
+
+export function remainingStageBudgetMs(
+  timeoutMs: number,
+  elapsedMs: number,
+  suspendedMs: number,
+): number {
+  const awakeMs = elapsedMs - suspendedMs;
+  if (awakeMs >= timeoutMs) return 0;
+  return Math.max(250, timeoutMs - awakeMs);
+}
 
 export function chatGptFileAttachmentTimeoutMs(imageCount: number, totalBytes: number): number {
   if (imageCount <= 0 || totalBytes <= 0) return browserStageTimeouts.fileAttachment;
@@ -1394,18 +1444,32 @@ export class ChatGptBrowserWorker {
     stage: string,
     timeoutMs: number,
     action: (abortSignal: AbortSignal) => Promise<T>,
+    suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
   ): Promise<T> {
+    chatGptSuspensionClock.start();
     const startedAt = performance.now();
+    const suspendedAtStart = suspensionClock.suspendedMs();
     this.turnStages?.set(traceId, stage);
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, rejectTimeout) => {
-        timer = setTimeout(() => {
+        const fireOrRearm = () => {
+          const suspendedMs = suspensionClock.suspendedMs() - suspendedAtStart;
+          const remaining = remainingStageBudgetMs(
+            timeoutMs,
+            performance.now() - startedAt,
+            suspendedMs,
+          );
+          if (remaining > 0) {
+            timer = setTimeout(fireOrRearm, remaining);
+            return;
+          }
           rejectTimeout(new Error(`ChatGPT browser stage timed out: ${stage}`));
           controller.abort();
-        }, timeoutMs);
+        };
+        timer = setTimeout(fireOrRearm, timeoutMs);
       });
       const value = await Promise.race([action(controller.signal), timeout]);
       console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} completed durationMs=${Math.round(performance.now() - startedAt)}`);
@@ -1984,7 +2048,10 @@ export class ChatGptBrowserWorker {
     abortSignal?: AbortSignal,
   ): Promise<void> {
     const completionTracker = new ChatGptCompletionTracker();
-    const domHealthTracker = new ChatGptTurnDomHealthTracker();
+    const domHealthTracker = new ChatGptTurnDomHealthTracker(
+      CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+    );
+    let activeResponseTurn = responseTurn;
     for (;;) {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
       if (abortSignal?.aborted) {
@@ -1996,8 +2063,8 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT Bigger Context transaction timed out while awaiting a stage acknowledgement");
       }
       await throwIfChatGptSessionFailureAlert(page);
-      await throwIfChatGptTerminalErrorAlert(responseTurn);
-      const snapshot = await this.responseDomSnapshot(responseTurn);
+      await throwIfChatGptTerminalErrorAlert(activeResponseTurn);
+      let snapshot = await this.responseDomSnapshot(activeResponseTurn);
       const running = await page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last().isVisible().catch(() => false);
       const domError = domHealthTracker.update({
         responsePresent: snapshot.responsePresent,
@@ -2005,7 +2072,23 @@ export class ChatGptBrowserWorker {
         currentText: snapshot.visibleText,
         completionActionVisible: snapshot.completionActionVisible,
       });
-      if (domError) throw new Error(domError);
+      if (domError) {
+        // A delayed renderer wake or DOM virtualization can cross the grace while the exact ACK is
+        // already present. Re-query the live assistant surface once before declaring it missing.
+        // Only adopt a fresh node if its visible text is the transaction-bound acknowledgement or a
+        // prefix of it; this cannot silently bind an older retained answer.
+        const freshResponseTurn = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR).last();
+        const freshSnapshot = await this.responseDomSnapshot(freshResponseTurn);
+        const freshText = freshSnapshot.visibleText.trim();
+        if (freshSnapshot.responsePresent
+          && (freshText === stage.acknowledgement || stage.acknowledgement.startsWith(freshText))) {
+          activeResponseTurn = freshResponseTurn;
+          snapshot = freshSnapshot;
+          domHealthTracker.clearMissingResponse();
+        } else {
+          throw new Error(domError);
+        }
+      }
       if (completionTracker.update({
         responsePresent: snapshot.responsePresent,
         running,
@@ -2598,6 +2681,20 @@ export class ChatGptBrowserWorker {
   }
 
   private async responseDomSnapshot(responseTurn: Locator): Promise<ChatGptResponseDomSnapshot> {
+    const page = responseTurn.page();
+    if (page.isClosed()) throw chatGptBrowserTabClosedError();
+    let responseTurnCount: number;
+    try {
+      responseTurnCount = await responseTurn.count();
+    } catch (error) {
+      if (page.isClosed()) throw chatGptBrowserTabClosedError();
+      throw new ChatGptWebAdapterError(
+        `ChatGPT response DOM presence check failed: ${error instanceof Error ? error.message : String(error)}`,
+        { status: 500, errorType: "proxy_error", code: "response_dom_read_error", retryable: false },
+      );
+    }
+    if (responseTurnCount === 0) return absentResponseDomSnapshot();
+
     const snapshot = await responseTurn.evaluate((element, completionActionSelector) => {
       const root = element as HTMLElement;
       // Browser turn WebContents are intentionally allowed to run while their Electron view is
@@ -2775,11 +2872,12 @@ export class ChatGptBrowserWorker {
         completionActionVisible: completionAction !== undefined,
         traceBlocks,
       };
-    }, CHATGPT_COMPLETION_ACTION_SELECTOR, { timeout: 2_000 }).catch(() => {
-      if (responseTurn.page().isClosed()) {
-        throw chatGptBrowserTabClosedError();
-      }
-      return absentResponseDomSnapshot();
+    }, CHATGPT_COMPLETION_ACTION_SELECTOR, { timeout: 10_000 }).catch(error => {
+      if (page.isClosed()) throw chatGptBrowserTabClosedError();
+      throw new ChatGptWebAdapterError(
+        `ChatGPT response DOM exists but could not be inspected: ${error instanceof Error ? error.message : String(error)}`,
+        { status: 500, errorType: "proxy_error", code: "response_dom_read_error", retryable: false },
+      );
     });
     snapshot.traceBlocks = snapshot.traceBlocks
       .map(stripChatGptTraceControlSuffix)
@@ -3120,7 +3218,7 @@ export class ChatGptBrowserWorker {
           const evidence = await this.runStage(
             turn.traceId,
             `multipart_stage_${index + 1}_send`,
-            browserStageTimeouts.send,
+            browserStageTimeouts.multipartStageSend,
             stageSignal => this.sendAttachedPrompt(
               page,
               stageBaseline,
@@ -3132,12 +3230,17 @@ export class ChatGptBrowserWorker {
           console.info(
             `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length} submission accepted evidence=${evidence}`,
           );
-          await this.waitForMultipartAcknowledgement(
-            page,
-            responseTurn,
-            stage,
-            deadline,
-            turn.abortSignal,
+          await this.runStage(
+            turn.traceId,
+            `multipart_stage_${index + 1}_acknowledgement`,
+            browserStageTimeouts.multipartStageAcknowledgement,
+            stageSignal => this.waitForMultipartAcknowledgement(
+              page,
+              responseTurn,
+              stage,
+              deadline,
+              turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
+            ),
           );
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
         }

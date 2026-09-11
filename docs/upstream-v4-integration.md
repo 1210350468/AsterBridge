@@ -5,6 +5,10 @@ The stable `main` branch remains untouched until a phase is validated. AsterBrid
 must remain intact: `Codex Native3`, RoxyBrowser, Launcher proxy refresh, AsterBridge branding, and
 current Windows-first release behavior.
 
+> Upstream has since advanced to v5.x. New Windows-first delta work is tracked in
+> `docs/upstream-v5-windows-integration.md`. This v4 document remains the historical record of
+> capabilities AsterBridge already absorbed and must not be re-imported as if they were new.
+
 ## Rules
 
 - Do not merge `upstream/main` wholesale.

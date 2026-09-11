@@ -2,6 +2,18 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.38 - 2026-09-11
+
+### Remote compact multipart acknowledgement / response DOM detection
+
+- Fixed a production `/v1/responses/compact` failure that surfaced as `502 Bad Gateway: ChatGPT did not create a response DOM after the message was sent`. Fallback traces such as `ca66494833c1_fallback` successfully attached and sent multipart stage 1 (`submission accepted evidence=generation_running`) for a ~244k-token compact context, yet the generic turn-health path declared the assistant DOM missing before the staging acknowledgement was safely observed.
+- Production diagnostics proved the failure text was a false negative: the captured failed page had an empty composer, a completed-answer status, and one rendered assistant turn (`textChars=133`, `htmlChars=5537`). After auditing upstream v5.0.6, the temporary blanket 5-minute grace was replaced with the narrower upstream contract: ordinary first-response grace remains **60 s**, while multipart stage send and acknowledgement each receive a dedicated **180 s** budget.
+- Hardened response-DOM inspection so a locator that is truly absent still yields an absent snapshot, but a response element that already exists and then cannot be inspected no longer collapses into the same `responsePresent=false` state. Existing-response read failures now surface explicitly as local `HTTP 500 / proxy_error / response_dom_read_error / retryable=false`, preventing a browser/DOM read problem from masquerading as an upstream no-response 502.
+- Ported the Windows-relevant part of upstream's BrowserTurn suspension handling: long event-loop gaps are treated as system suspension and refunded from stage budgets, so Windows sleep / Modern Standby cannot consume a browser-stage timeout while both ChatGPT and the bridge are frozen. No macOS-only power blocker or passkey behavior is imported.
+- Before a multipart acknowledgement is declared missing, AsterBridge now performs one fresh global assistant lookup. It rebinds only if the visible text is the exact transaction acknowledgement or a prefix of it, so delayed DOM hydration can recover without allowing an older retained answer to satisfy a new transaction.
+- Added regression coverage for multipart send/acknowledgement budgets, suspension refunding, fresh acknowledgement observation, and the distinction between a genuinely absent assistant turn and a failed read of a proven existing turn. Focused Browser Worker + Full Harness coverage passes **140 / 140**; complete release verification passes Core **42 / 42** deterministic batches, Launcher **217 pass / 0 fail / 1 platform-inapplicable skip**, TypeScript, renderer build, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Live Windows/Roxy validation installed 3.0.38 bundle `d1e8bb58b7a56d6cf9e8c407e63e2b83a40e945af70c2f901627424376883ed0` and sent a **543,781-character** production-format `/v1/responses/compact` request. It completed **HTTP 200 in 54.85 s**; diagnostic trace `253e9048a6a7_fallback` recorded `multipart-stage-1-acknowledged`, `multipart-stage-2-acknowledged`, final send acceptance, `response-visible`, and `turn-completed` in order. The prior false no-response 502 did not recur.
+
 ## 3.0.37 - 2026-09-11
 
 ### Large-prompt bridge 502 / ChatGPT composer integrity

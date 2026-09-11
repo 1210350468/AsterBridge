@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -43,6 +43,58 @@ test("Bigger Context stages inert parts before the final task-bearing commit", (
   expect(runBrowserTurn).toContain("final_part_effort_selection");
   expect(acknowledgement).toContain("actual !== stage.acknowledgement");
   expect(acknowledgement).toContain('code: "multipart_protocol_violation"');
+  expect(acknowledgement).toContain("CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS");
+  expect(acknowledgement).toContain("freshResponseTurn");
+  expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBeGreaterThan(60_000);
+  expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBe(browserStageTimeouts.multipartStageSend);
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS);
+});
+
+ test("browser stage budgets refund system suspension instead of expiring on wake", () => {
+  const clock = new ChatGptSuspensionClock(1_000, 5_000);
+  clock.tick(1_000);
+  clock.tick(2_000);
+  clock.tick(12_000);
+  expect(clock.suspendedMs()).toBe(9_000);
+  expect(remainingStageBudgetMs(10_000, 12_000, clock.suspendedMs())).toBe(7_000);
+  expect(remainingStageBudgetMs(10_000, 20_000, clock.suspendedMs())).toBe(0);
+});
+
+test("response DOM inspection distinguishes absence from a failed read of an existing assistant turn", async () => {
+  const responseDomSnapshot = (ChatGptBrowserWorker.prototype as unknown as {
+    responseDomSnapshot(responseTurn: unknown): Promise<{ responsePresent: boolean }>;
+  }).responseDomSnapshot;
+  const page = { isClosed: () => false };
+
+  let absentEvaluateCalls = 0;
+  const absent = await responseDomSnapshot.call({}, {
+    page: () => page,
+    count: async () => 0,
+    evaluate: async () => {
+      absentEvaluateCalls += 1;
+      throw new Error("must not inspect an absent turn");
+    },
+  });
+  expect(absent.responsePresent).toBeFalse();
+  expect(absentEvaluateCalls).toBe(0);
+
+  let caught: unknown;
+  try {
+    await responseDomSnapshot.call({}, {
+      page: () => page,
+      count: async () => 1,
+      evaluate: async () => { throw new Error("simulated heavy DOM timeout"); },
+    });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toMatchObject({
+    status: 500,
+    errorType: "proxy_error",
+    code: "response_dom_read_error",
+    retryable: false,
+  });
+  expect((caught as Error).message).toContain("response DOM exists but could not be inspected");
 });
 
 test("browser turns run concurrently up to the five-tab limit", async () => {
