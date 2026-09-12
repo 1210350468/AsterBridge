@@ -79,6 +79,25 @@ test("Interrupt hook trust hash is deterministic and refuses modified owned defi
     installed.text.replace(MANAGED_INTERRUPT_HOOK_END, `approved = false\n${MANAGED_INTERRUPT_HOOK_END}`),
     installed.installed,
   )).toThrow("changed after setup");
+  for (const extension of [
+    '\n[[hooks.Interrupt.hooks]]\ntype = "command"\ncommand = "unexpected-command"\n',
+    `\n[hooks.state.${JSON.stringify(installed.installed.stateKey)}.unexpected]\nvalue = true\n`,
+  ]) {
+    expect(() => restoreCodexInterruptHook(
+      installed.text.replace(MANAGED_INTERRUPT_HOOK_END, extension + MANAGED_INTERRUPT_HOOK_END),
+      installed.installed,
+    )).toThrow("changed after setup");
+  }
+  const reordered = [
+    "[[hooks.Interrupt]]",
+    "[[hooks.Interrupt.hooks]]",
+    'type = "command"',
+    'command = "new-earlier-hook"',
+    "",
+    installed.text,
+  ].join("\n");
+  expect(() => restoreCodexInterruptHook(reordered, installed.installed))
+    .toThrow("order changed after setup");
   expect(() => installCodexInterruptHook(
     installed.text,
     "/Users/test/.codex/config.toml",
