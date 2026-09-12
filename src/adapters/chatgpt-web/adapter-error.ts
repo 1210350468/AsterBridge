@@ -3,6 +3,7 @@ export interface ChatGptWebAdapterErrorOptions {
   errorType: string;
   code: string;
   retryable: boolean;
+  cause?: unknown;
 }
 
 export class ChatGptWebAdapterError extends Error {
@@ -12,7 +13,7 @@ export class ChatGptWebAdapterError extends Error {
   readonly retryable: boolean;
 
   constructor(message: string, options: ChatGptWebAdapterErrorOptions) {
-    super(message);
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "ChatGptWebAdapterError";
     this.status = options.status;
     this.errorType = options.errorType;

@@ -1712,7 +1712,13 @@ export class ChatGptBrowserWorker {
           if (error instanceof ChatGptWebAdapterError) throw error;
           throw new ChatGptWebAdapterError(
             error instanceof Error ? error.message : String(error),
-            { status: 503, errorType: "server_error", code: "browser_unavailable", retryable: false },
+            {
+              status: 503,
+              errorType: "server_error",
+              code: "browser_unavailable",
+              retryable: false,
+              cause: error,
+            },
           );
         }
       }

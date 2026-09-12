@@ -2,6 +2,13 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.41 - WIP
+
+### Browser diagnostics / v5.0.6 selective audit
+
+- Started the post-3.0.40 v5.0.6 audit without importing the upstream launcher/Zero Risk rewrite. `ChatGptWebAdapterError` now preserves an optional native `cause`, and RoxyBrowser connection failures retain the underlying API/CDP/Playwright exception while still exposing the stable `503 browser_unavailable` contract to callers.
+- Confirmed that upstream `3b0ac80` does not require a backport in the current AsterBridge browser loop: ordinary response health already performs a fresh `responseDomSnapshot()` before the missing-response grace tracker can expire the turn. Upstream `9929638` path determinism is also already present via explicit `win32.resolve` / `posix.resolve` handling in the Interrupt hook.
+
 ## 3.0.40 - WIP
 
 ### Deterministic retained compaction handoff

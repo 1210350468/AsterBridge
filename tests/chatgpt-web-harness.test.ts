@@ -45,6 +45,20 @@ const environmentXml = `<environment_context>
 const toolCapabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
 const browserOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
 
+test("adapter errors preserve their underlying diagnostic cause", () => {
+  const cause = new Error("Roxy CDP handshake failed");
+  const error = new ChatGptWebAdapterError("Browser unavailable", {
+    status: 503,
+    errorType: "server_error",
+    code: "browser_unavailable",
+    retryable: false,
+    cause,
+  });
+  expect(error.cause).toBe(cause);
+  expect(error.message).toBe("Browser unavailable");
+  expect(error.code).toBe("browser_unavailable");
+});
+
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
     ? defaultBrokerEndpoint(join(tmpdir(), name), "win32")
