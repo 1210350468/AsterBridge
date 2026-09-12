@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
 import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -178,6 +179,55 @@ test("retained external pages must still answer a bounded DOM probe before reuse
     isClosed: () => false,
     evaluate: async () => await new Promise<never>(() => {}),
   } as never, 10)).resolves.toBeFalse();
+});
+
+test("a response DOM transport failure defers shared external-browser reset until the next sole turn", async () => {
+  let closes = 0;
+  const staleBrowser = {
+    isConnected: () => true,
+    close: async () => { closes += 1; },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: {
+      browserHost: "roxybrowser",
+      roxyBrowserProfileId: "profile",
+      roxyBrowserDataDir: "data",
+      roxyBrowserAutoOpen: false,
+      roxyBrowserApiHost: "http://127.0.0.1:50000",
+      roxyBrowserApiKeyFile: "key",
+    },
+    browser: staleBrowser,
+    context: {},
+    page: {},
+    managedBrowserReady: Promise.resolve({ browser: staleBrowser, context: {} }),
+    externalBrowserResetPending: false,
+    retainedExternalPages: new Map([["retained", {}]]),
+    activeRuns: new Map([["current", Promise.resolve("done")]]),
+  }) as unknown as {
+    externalBrowserResetPending: boolean;
+    markExternalBrowserConnectionSuspect(error: unknown): void;
+    resetSuspectExternalBrowserConnectionIfSafe(): Promise<boolean>;
+  };
+  worker.markExternalBrowserConnectionSuspect(new ChatGptWebAdapterError("DOM stalled", {
+    status: 500,
+    errorType: "proxy_error",
+    code: "response_dom_read_error",
+    retryable: false,
+  }));
+  expect(worker.externalBrowserResetPending).toBeTrue();
+
+  // A second concurrent owner means the shared transport must remain untouched.
+  (worker as unknown as { activeRuns: Map<string, Promise<string>> }).activeRuns.set("other", Promise.resolve("done"));
+  await expect(worker.resetSuspectExternalBrowserConnectionIfSafe()).resolves.toBeFalse();
+  expect(closes).toBe(0);
+  expect(worker.externalBrowserResetPending).toBeTrue();
+
+  // The next sole owner may safely disconnect the stale Playwright transport before rediscovery.
+  (worker as unknown as { activeRuns: Map<string, Promise<string>> }).activeRuns.delete("other");
+  await expect(worker.resetSuspectExternalBrowserConnectionIfSafe()).resolves.toBeTrue();
+  expect(closes).toBe(1);
+  expect(worker.externalBrowserResetPending).toBeFalse();
+  expect((worker as unknown as { retainedExternalPages: Map<string, unknown> }).retainedExternalPages.size).toBe(0);
 });
 
 test("multi-image stages receive bounded adaptive upload and submission budgets", () => {

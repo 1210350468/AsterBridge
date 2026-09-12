@@ -8,6 +8,7 @@ All notable AsterBridge changes are documented here.
 
 - Started the post-3.0.40 v5.0.6 audit without importing the upstream launcher/Zero Risk rewrite. `ChatGptWebAdapterError` now preserves an optional native `cause`, and RoxyBrowser connection failures retain the underlying API/CDP/Playwright exception while still exposing the stable `503 browser_unavailable` contract to callers.
 - Bounded the assistant-response DOM **presence** read itself. The later DOM `evaluate` already had a 10-second Playwright timeout, but `Locator.count()` could otherwise wait indefinitely on a stalled renderer/CDP transport; it now fails through the existing `response_dom_read_error` contract with the original timeout cause preserved.
+- External Roxy/system-browser connections now mark their shared CDP transport as suspect after a proven response-DOM read failure. The failing turn still terminates normally, and concurrent turns are not disconnected; the next turn that is the sole active owner first drops the stale Playwright transport and retained page handles, then performs ordinary endpoint rediscovery instead of reusing a zombie `managedBrowserReady` connection.
 - Confirmed that upstream `3b0ac80` does not require a backport in the current AsterBridge browser loop: ordinary response health already performs a fresh `responseDomSnapshot()` before the missing-response grace tracker can expire the turn. Upstream `9929638` path determinism is also already present via explicit `win32.resolve` / `posix.resolve` handling in the Interrupt hook.
 
 ## 3.0.40 - WIP

@@ -1213,6 +1213,7 @@ export class ChatGptBrowserWorker {
   private context?: BrowserContext;
   private page?: Page;
   private managedBrowserReady?: Promise<{ browser: Browser; context: BrowserContext }>;
+  private externalBrowserResetPending = false;
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
@@ -1657,6 +1658,7 @@ export class ChatGptBrowserWorker {
   }
 
   private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+    await this.resetSuspectExternalBrowserConnectionIfSafe();
     if ((this.config.browserHost === "system-browser" || this.config.browserHost === "roxybrowser") && this.browser && !this.browser.isConnected()) {
       this.browser = undefined;
       this.context = undefined;
@@ -1744,6 +1746,34 @@ export class ChatGptBrowserWorker {
       if (this.managedBrowserReady === opening) this.managedBrowserReady = undefined;
       throw error;
     }
+  }
+
+  private async resetSuspectExternalBrowserConnectionIfSafe(): Promise<boolean> {
+    if ((this.config.browserHost !== "system-browser" && this.config.browserHost !== "roxybrowser")
+      || !this.externalBrowserResetPending
+      || this.activeRuns.size > 1) return false;
+    const staleBrowser = this.browser;
+    this.browser = undefined;
+    this.context = undefined;
+    this.page = undefined;
+    this.managedBrowserReady = undefined;
+    this.roxyOpenedByAutomation = false;
+    this.externalBrowserResetPending = false;
+    this.retainedExternalPages.clear();
+    if (staleBrowser) {
+      await staleBrowser.close().catch(error => {
+        console.warn(
+          `[chatgpt-web] failed to disconnect stale external browser transport before reconnect: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+    return true;
+  }
+
+  private markExternalBrowserConnectionSuspect(error: unknown): void {
+    if (this.config.browserHost !== "system-browser" && this.config.browserHost !== "roxybrowser") return;
+    if (!(error instanceof ChatGptWebAdapterError) || error.code !== "response_dom_read_error") return;
+    this.externalBrowserResetPending = true;
   }
 
   /**
@@ -3572,6 +3602,7 @@ export class ChatGptBrowserWorker {
       console.info(`[chatgpt-web] browser turn ${turn.traceId} completed (markdownChars=${finalText.length}, retained=${externalRetention && turn.retainConversation})`);
       return finalText;
     } catch (error) {
+      this.markExternalBrowserConnectionSuspect(error);
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);
       }
