@@ -237,9 +237,11 @@ export class ChatGptTurnSession {
   private outstandingPrelude: AdapterEvent[] = [];
   private finalPrelude: AdapterEvent[] = [];
   private settledBrowserOutcome?: ChatGptBrowserOutcome;
+  private attachedConversationKey: string | undefined;
   private tail: Promise<void> = Promise.resolve();
 
   constructor(readonly runtime: ChatGptTurnRuntime) {
+    this.attachedConversationKey = runtime.conversationKey;
     this.browserOutcome = runtime.browser
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
@@ -281,7 +283,13 @@ export class ChatGptTurnSession {
   }
 
   conversationKey(): string | undefined {
-    return this.runtime.conversationKey;
+    return this.attachedConversationKey;
+  }
+
+  detachConversation(conversationKey: string): boolean {
+    if (this.attachedConversationKey !== conversationKey) return false;
+    this.attachedConversationKey = undefined;
+    return true;
   }
 
   isActive(): boolean {
@@ -495,6 +503,29 @@ export class ChatGptTurnSessions {
   }
 
   async retireConversationAndWait(conversationKey: string): Promise<number> {
+    return this.closeConversationAndWait(conversationKey);
+  }
+
+  async retireConversationPreservingFinalResponse(
+    conversationKey: string,
+    preserved: ChatGptTurnSession,
+    preservedExecutionKey: string,
+  ): Promise<number> {
+    if (!preservedExecutionKey) throw new Error("Preserved ChatGPT response execution key is required");
+    const outcome = preserved.settledOutcome();
+    if (!outcome || outcome.type !== "final") {
+      throw new Error("Only a settled final ChatGPT response can survive retained-conversation retirement");
+    }
+    return this.closeConversationAndWait(conversationKey, {
+      session: preserved,
+      executionKey: preservedExecutionKey,
+    });
+  }
+
+  private async closeConversationAndWait(
+    conversationKey: string,
+    preserved?: { session: ChatGptTurnSession; executionKey: string },
+  ): Promise<number> {
     const pending = this.conversationRetirements.get(conversationKey);
     if (pending) {
       await pending;
@@ -502,6 +533,13 @@ export class ChatGptTurnSessions {
     }
     const matches = [...this.entries].filter(([, session]) => session.conversationKey() === conversationKey);
     if (matches.length === 0) return 0;
+    if (preserved && !matches.some(([, session]) => session === preserved.session)) {
+      throw new Error("The final ChatGPT response does not own the retained conversation being retired");
+    }
+    const target = preserved ? this.entries.get(preserved.executionKey) : undefined;
+    if (target && target !== preserved?.session) {
+      throw new Error("The compacted ChatGPT response execution key is already owned by another session");
+    }
     const head = this.conversationHeads.get(conversationKey);
     this.conversationHeads.delete(conversationKey);
     for (const [, session] of matches) {
@@ -509,9 +547,16 @@ export class ChatGptTurnSessions {
       if (threadId && this.threadHeads.get(threadId) === session) this.threadHeads.delete(threadId);
     }
     for (const [key, session] of matches) {
-      if (this.entries.get(key) === session) this.entries.delete(key);
+      if (this.entries.get(key) === session
+        && (session !== preserved?.session || key !== preserved.executionKey)) {
+        this.entries.delete(key);
+      }
       if (session.isActive()) session.cancel();
+      if (!session.detachConversation(conversationKey)) {
+        throw new Error("ChatGPT retained-conversation ownership changed during retirement");
+      }
     }
+    if (preserved) this.entries.set(preserved.executionKey, preserved.session);
     const release = head?.runtime.releaseRetainedConversation
       ?? matches.findLast(([, session]) => session.runtime.releaseRetainedConversation !== undefined)?.[1].runtime.releaseRetainedConversation;
     const retirement = Promise.all(matches.map(([, session]) => session.browserOutcome))

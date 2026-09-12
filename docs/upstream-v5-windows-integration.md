@@ -81,9 +81,17 @@ Implemented — exact Codex Interrupt ownership:
 - Windows packaging observation from the same deployment: NSIS bootstrap exit code `2` is not sufficient failure evidence on this machine. `/S` completed HKCU registration, the exact 3.0.39 bundle, launcher executable, and uninstaller despite returning `2`; package smoke and the public PowerShell installer now use a bounded 60-second finalization grace and verify complete installed state instead of trusting that bootstrap code alone.
 - Recovery after the DevPilot disconnect confirmed that the clean-install transaction had in fact finalized: Windows reports AsterBridge 3.0.39 installed, the launcher and uninstaller are present, the packaged manifest matches bundle `ddd2aab9c091b2e04c6bd3ed07d42d5483e23cb24b6f121e4e86d9febfa6e194`, and the durable 3.0.39 runtime contains the same manifest plus Bun and the CLI entrypoint. No second installer run was required.
 
+Implemented locally for **3.0.40 WIP** — deterministic retained compaction at the daemon/session boundary:
+
+- Active compaction no longer mutates an already-owned canonical tool result into a same-response checkpoint request. Canonical results are delivered unchanged; only a later, not-yet-executed tool request may receive the stop instruction.
+- The checkpoint now comes from exactly one dedicated structured retained-conversation handoff. The old browser-visible-text fallback is removed; missing structured submission fails closed under the bounded handoff deadline.
+- The handoff deadline spans transaction acquisition, structured submission, browser shutdown, and token cleanup. Exact duplicate compaction executions share one in-flight/result promise; failures are evicted so retries are not poisoned by a stale rejected cache entry.
+- Retained-conversation retirement can detach the browser epoch while preserving a terminal ordinary final response under the compacted source execution key, avoiding unnecessary regeneration when the ordinary response wins the race before any compaction instruction is delivered.
+- Focused validation currently passes TypeScript plus retained-compaction/lifecycle **16 pass / 0 fail / 8 existing skips**.
+
 Still pending in U5-W2:
 
-- retained-page / structured-compaction physical-settlement ownership delta (`bd535d8`, `a3a5083`) after the interrupt path is now independently proven;
+- helper/Launcher-level physical-settlement ownership and progress forwarding from the later `a3a5083` evolution; the current 3.0.40 WIP intentionally stops at the daemon/session boundary rather than importing that broader helper rewrite;
 - browser observation/rebind and Launcher lifecycle deltas from v5.0.5/v5.0.6 that remain applicable to RoxyBrowser/system-browser;
 - final audit of managed Codex config preservation across launcher update/reconnect transactions.
 

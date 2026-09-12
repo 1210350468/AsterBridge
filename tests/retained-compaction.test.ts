@@ -6,10 +6,12 @@ import type { ChatGptBrowserWorker, BrowserTurn } from "../src/adapters/chatgpt-
 import {
   boundedCompactionLatestUserPrompt,
   canonicalizeCompactionHandoff,
+  existingStructuredCompactionRun,
   LATEST_USER_PROMPT_MARKER,
   MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS,
   requestRetainedCompactionHandoff,
   runRetainedCompaction,
+  runStructuredCompactionOnce,
   settleActiveCompactionSource,
 } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -140,7 +142,7 @@ test("retained compaction uses the exact conversation and waits for structured h
   }
 }, 30_000);
 
-test("retained compaction falls back to the dedicated browser checkpoint when ChatGPT skips the structured MCP handoff", async () => {
+test("retained compaction fails closed when ChatGPT skips the structured MCP handoff", async () => {
   const socketPath = brokerTestEndpoint(`cgw-retained-compaction-text-${process.pid}-${Date.now()}`);
   const broker = TurnBroker.forSocket(socketPath);
   await broker.listen();
@@ -161,7 +163,7 @@ test("retained compaction falls back to the dedicated browser checkpoint when Ch
   } as unknown as ChatGptBrowserWorker;
 
   try {
-    const summary = await requestRetainedCompactionHandoff(
+    await expect(requestRetainedCompactionHandoff(
       worker,
       parsed,
       source,
@@ -169,10 +171,8 @@ test("retained compaction falls back to the dedicated browser checkpoint when Ch
       { localToolsEnabled: true, solAvailable: true, proAvailable: false },
       "trace-retained-compaction-text",
       undefined,
-      30_000,
-      10,
-    );
-    expect(summary).toBe("browser-only retained checkpoint");
+      25,
+    )).rejects.toThrow("timed out after 25ms");
     await expect(callTurnBroker(socketPath, {
       method: "submit_compaction_handoff",
       token,
@@ -184,7 +184,7 @@ test("retained compaction falls back to the dedicated browser checkpoint when Ch
   }
 }, 30_000);
 
-test("active tool-boundary compaction delivers the canonical result once and finishes the same browser response as checkpoint", async () => {
+test("active tool-boundary compaction delivers the canonical result unchanged before the retained checkpoint", async () => {
   const socketPath = brokerTestEndpoint(`cgw-active-compaction-${process.pid}-${Date.now()}`);
   const broker = TurnBroker.forSocket(socketPath);
   const environment = {
@@ -227,13 +227,17 @@ test("active tool-boundary compaction delivers the canonical result once and fin
     timestamp: 2,
   });
   const observedResult = invocation.then(result => {
-    expect(JSON.stringify(result.content)).toContain("CODEX_ACTIVE_COMPACTION_REQUEST");
-    resolveBrowser("active retained checkpoint");
+    expect(JSON.stringify(result.content)).not.toContain("CODEX_ACTIVE_COMPACTION_REQUEST");
+    expect(result.content).toEqual([{ type: "text", text: "canonical result" }]);
+    resolveBrowser("ordinary final after canonical result");
     return result;
   });
 
   try {
-    expect(await settleActiveCompactionSource(parsed, source, broker)).toBe("active retained checkpoint");
+    expect(await settleActiveCompactionSource(parsed, source, broker)).toEqual({
+      answer: "ordinary final after canonical result",
+      compactionInstructionDelivered: false,
+    });
     expect((await observedResult).isError).not.toBe(true);
     expect(source.outstanding()).toEqual([]);
   } finally {
@@ -241,6 +245,58 @@ test("active tool-boundary compaction delivers the canonical result once and fin
     await broker.close();
   }
 }, 30_000);
+
+test("retained conversation retirement can preserve an already committed final response under the compacted execution key", async () => {
+  const sessions = new ChatGptTurnSessions();
+  const conversationKey = "preserved-conversation";
+  let releases = 0;
+  let replacementStarts = 0;
+  const source = sessions.getOrCreate("source-execution", () => ({
+    mode: "read-only",
+    browser: Promise.resolve("ordinary final answer"),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    conversationKey,
+    releaseRetainedConversation: async () => { releases += 1; },
+    cancel: () => {},
+  }));
+  await source.browserOutcome;
+
+  expect(await sessions.retireConversationPreservingFinalResponse(
+    conversationKey,
+    source,
+    "compacted-source-execution",
+  )).toBe(1);
+  expect(releases).toBe(1);
+  expect(source.conversationKey()).toBeUndefined();
+  expect(sessions.findConversationHead(conversationKey)).toBeUndefined();
+  expect(sessions.getOrCreate("compacted-source-execution", () => {
+    replacementStarts += 1;
+    throw new Error("the committed final response must be replayed, not replaced");
+  })).toBe(source);
+  expect(replacementStarts).toBe(0);
+  sessions.clear();
+});
+
+test("a failed structured compaction run is evicted while a successful exact run remains replayable", async () => {
+  const key = `structured-retry-${Date.now()}-${Math.random()}`;
+  let starts = 0;
+  await expect(runStructuredCompactionOnce(key, async () => {
+    starts += 1;
+    throw new Error("first handoff failed");
+  })).rejects.toThrow("first handoff failed");
+  await Bun.sleep(0);
+  expect(existingStructuredCompactionRun(key)).toBeUndefined();
+
+  const retry = runStructuredCompactionOnce(key, async () => {
+    starts += 1;
+    return "recovered checkpoint";
+  });
+  expect(runStructuredCompactionOnce(key, async () => "must not start")).toBe(retry);
+  await expect(retry).resolves.toBe("recovered checkpoint");
+  await expect(existingStructuredCompactionRun(key)).resolves.toBe("recovered checkpoint");
+  expect(starts).toBe(2);
+});
 
 test("missing retained source rebuilds one canonical checkpoint from fresh Codex history", async () => {
   const socketPath = brokerTestEndpoint(`cgw-compaction-fallback-${process.pid}-${Date.now()}`);

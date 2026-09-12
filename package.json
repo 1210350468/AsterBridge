@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "3.0.39",
+  "version": "3.0.40",
   "private": true,
   "description": "AsterBridge: a local bridge from Codex to ChatGPT Web and native tools.",
   "repository": {

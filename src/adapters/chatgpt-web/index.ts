@@ -15,7 +15,7 @@ import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnExplicitlyCancelledError,
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import { chatGptConversationKey, retainedConversationResumeRequest } from "./conversation-key";
-import { runRetainedCompaction } from "./compaction-handoff";
+import { runRetainedCompaction, runStructuredCompactionOnce } from "./compaction-handoff";
 import { parseDirectToolBridgeResponse } from "./direct-tool-bridge";
 import { isDeferredSubagentWireName } from "./deferred-subagent-tools";
 import {
@@ -495,31 +495,34 @@ export function createChatGptWebAdapter(
             .update(`${compactionExecutionKey}:handoff`)
             .digest("hex")
             .slice(0, 12);
-          const summary = await runRetainedCompaction({
-            worker,
-            parsed,
-            sessions: chatGptTurnSessions,
-            broker,
-            capabilities: configuredCapabilities,
-            conversationKey: chatGptConversationKey(parsed, executionNamespace),
-            traceId: handoffTraceId,
-            signal: incoming.abortSignal,
-            timeoutMs,
-            freshFallback: async reason => {
-              console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
-              const fallbackRuntime = startRuntime(
-                parsed,
-                undefined,
-                `${handoffTraceId}_fallback`,
-                turnCapabilities,
-              );
-              try {
-                return await withAbort(fallbackRuntime.browser, incoming.abortSignal);
-              } finally {
-                fallbackRuntime.cancel();
-              }
-            },
-          });
+          const summary = await runStructuredCompactionOnce(compactionExecutionKey, () => (
+            runRetainedCompaction({
+              worker,
+              parsed,
+              sessions: chatGptTurnSessions,
+              broker,
+              capabilities: configuredCapabilities,
+              conversationKey: chatGptConversationKey(parsed, executionNamespace),
+              traceId: handoffTraceId,
+              signal: incoming.abortSignal,
+              timeoutMs,
+              compactedSourceExecutionKey: `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`,
+              freshFallback: async reason => {
+                console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
+                const fallbackRuntime = startRuntime(
+                  parsed,
+                  undefined,
+                  `${handoffTraceId}_fallback`,
+                  turnCapabilities,
+                );
+                try {
+                  return await withAbort(fallbackRuntime.browser, incoming.abortSignal);
+                } finally {
+                  fallbackRuntime.cancel();
+                }
+              },
+            })
+          ));
           emit({ type: "text_delta", text: summary, phase: "final_answer" });
           emitBrowserCompletion(
             { type: "final", answer: summary },

@@ -2,6 +2,17 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.40 - WIP
+
+### Deterministic retained compaction handoff
+
+- Backported the Windows-relevant daemon/session portion of upstream `bd535d8` without importing the surrounding v5 lifecycle rewrite. Active tool-boundary compaction now delivers already-owned canonical tool results unchanged; a compaction instruction is injected only if ChatGPT asks for another tool, and the checkpoint itself is always produced by one dedicated structured retained-conversation handoff.
+- Removed the ambiguous browser-text checkpoint fallback. A retained compaction that never submits the one-shot structured control handoff now fails closed under the bounded handoff deadline instead of accepting a second, unverified checkpoint source.
+- Added a single operation deadline across transaction acquisition, retained-browser handoff, and cleanup. Late transaction acquisition is explicitly aborted, the dedicated browser turn is closed after the structured checkpoint is accepted, and timeout/abort paths cannot leave the control token live.
+- Retained-conversation retirement can now detach the physical conversation epoch while preserving a terminal ordinary response under the compacted source execution key. This prevents a final answer that won the compaction race from being discarded and regenerated after compaction.
+- Exact structured compaction runs are now de-duplicated by execution key. Concurrent duplicates share one promise, successful results remain replayable for the bounded cache lifetime, and rejected runs are evicted so a retry can start cleanly.
+- Focused validation: TypeScript PASS; retained-compaction + turn lifecycle **16 pass / 0 fail / 8 existing process-level skips**. The helper/Launcher physical-settlement ownership additions from later upstream `a3a5083` remain intentionally separate and are not claimed complete here.
+
 ## 3.0.39 - 2026-09-12
 
 ### Windows Codex interrupt lifecycle

@@ -14,9 +14,45 @@ import type { ChatGptTurnSession, ChatGptTurnSessions } from "./turn-execution";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
-export const COMPACTION_STRUCTURED_HANDOFF_GRACE_MS = 1_500;
 export const MAX_COMPACTION_LATEST_USER_PROMPT_TOKENS = 1_024;
 const COMPACTION_LATEST_USER_OMISSION = "\n...[AsterBridge omitted the middle of an oversized latest user prompt during compaction]...\n";
+const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
+
+interface CachedCompactionRun {
+  createdAt: number;
+  promise: Promise<string>;
+}
+
+const structuredCompactionRuns = new Map<string, CachedCompactionRun>();
+
+function pruneStructuredCompactionRuns(): void {
+  const cutoff = Date.now() - STRUCTURED_COMPACTION_RUN_TTL_MS;
+  for (const [key, run] of structuredCompactionRuns) {
+    if (run.createdAt < cutoff) structuredCompactionRuns.delete(key);
+  }
+}
+
+export function existingStructuredCompactionRun(key: string): Promise<string> | undefined {
+  pruneStructuredCompactionRuns();
+  return structuredCompactionRuns.get(key)?.promise;
+}
+
+export function runStructuredCompactionOnce(
+  key: string,
+  start: () => Promise<string>,
+): Promise<string> {
+  pruneStructuredCompactionRuns();
+  const existing = structuredCompactionRuns.get(key);
+  if (existing) return existing.promise;
+  const promise = Promise.resolve().then(start);
+  structuredCompactionRuns.set(key, { createdAt: Date.now(), promise });
+  void promise.catch(() => {
+    if (structuredCompactionRuns.get(key)?.promise === promise) {
+      structuredCompactionRuns.delete(key);
+    }
+  });
+  return promise;
+}
 
 function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -50,19 +86,9 @@ function toolResult(message: CodexToolResultMessage): BrokerToolResult {
   };
 }
 
-function withActiveCompactionInstruction(result: BrokerToolResult): BrokerToolResult {
-  return {
-    ...result,
-    content: [
-      ...result.content,
-      { type: "text", text: activeCompactionToolResultInstruction() },
-    ],
-  };
-}
-
 function interruptedByActiveCompaction(): BrokerToolResult {
   return {
-    content: [{ type: "text", text: activeCompactionToolResultInstruction(false) }],
+    content: [{ type: "text", text: activeCompactionToolResultInstruction() }],
     isError: true,
   };
 }
@@ -173,50 +199,76 @@ function boundedCompactionTimeout(timeoutMs: number): number {
   return Math.min(timeoutMs, MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
 }
 
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("ChatGPT compaction handoff aborted", "AbortError");
+}
+
+function withCompactionAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
- * If compaction arrives while the retained agent is blocked on an MCP result, deliver the canonical
- * result together with an interrupt instruction and let that same visible response end as the
- * checkpoint. This avoids a second browser message and preserves exactly-once tool execution.
+ * If compaction arrives while the retained agent is blocked on MCP results, finish those canonical
+ * results unchanged. A compaction instruction is injected only if the agent asks for another tool;
+ * the checkpoint itself is always produced by the later dedicated retained handoff.
  */
 export async function settleActiveCompactionSource(
   parsed: CodexParsedRequest,
   source: ChatGptTurnSession,
   broker: TurnBroker,
-): Promise<string | undefined> {
-  if (!source.isActive() || source.runtime.mode !== "tools") {
-    throw new Error("The active ChatGPT compaction source has no MCP tool boundary");
-  }
-  const outstanding = source.outstanding();
-  const results = currentToolResults(parsed, source);
-  if (results.size !== outstanding.length) {
-    throw new Error(`Codex supplied ${results.size} of ${outstanding.length} required tool results for compaction`);
-  }
-  let token: string | undefined;
-  try {
-    token = await source.runtime.token;
-    const interruptedQueued = broker.requestCompaction(token, interruptedByActiveCompaction());
-    for (const [index, request] of outstanding.entries()) {
-      const result = results.get(request.callId)!;
-      const canonical = toolResult(result);
-      await broker.completeTool(
-        token,
-        request.callId,
-        interruptedQueued === 0 && index === outstanding.length - 1
-          ? withActiveCompactionInstruction(canonical)
-          : canonical,
-      );
-      source.markResultDelivered(request.callId);
+  signal?: AbortSignal,
+): Promise<{ answer: string; compactionInstructionDelivered: boolean }> {
+  return source.runExclusive(async () => {
+    if (signal?.aborted) {
+      source.cancel();
+      throw abortReason(signal);
     }
-    const browserOutcome = await source.browserOutcome;
-    if (browserOutcome.type === "error") throw browserOutcome.error;
-    const instructionDelivered = outstanding.length > 0 || broker.compactionDeliveryCount(token) > 0;
-    if (!instructionDelivered) return undefined;
-    const summary = browserOutcome.answer.trim();
-    if (!summary) throw new Error("The active ChatGPT response returned an empty compaction summary");
-    return summary;
-  } finally {
-    if (token) await broker.revoke(token);
-  }
+    if (!source.isActive() || source.runtime.mode !== "tools") {
+      throw new Error("The active ChatGPT compaction source has no MCP tool boundary");
+    }
+    const outstanding = source.outstanding();
+    const results = currentToolResults(parsed, source);
+    if (results.size !== outstanding.length) {
+      throw new Error(`Codex supplied ${results.size} of ${outstanding.length} required tool results for compaction`);
+    }
+    let token: string | undefined;
+    try {
+      token = await source.runtime.token;
+      broker.requestCompaction(token, interruptedByActiveCompaction());
+      for (const request of outstanding) {
+        const result = results.get(request.callId)!;
+        await broker.completeTool(token, request.callId, toolResult(result));
+        source.runtime.externalProgress?.recordToolResult();
+        source.markResultDelivered(request.callId);
+      }
+      const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
+      if (browserOutcome.type === "error") throw browserOutcome.error;
+      const compactionInstructionDelivered = broker.compactionDeliveryCount(token) > 0;
+      return { answer: browserOutcome.answer, compactionInstructionDelivered };
+    } catch (error) {
+      if (signal?.aborted) source.cancel();
+      throw error;
+    } finally {
+      if (token) await broker.revoke(token);
+    }
+  });
 }
 
 /**
@@ -233,22 +285,33 @@ export async function requestRetainedCompactionHandoff(
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
-  structuredHandoffGraceMs = COMPACTION_STRUCTURED_HANDOFF_GRACE_MS,
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
-  const transaction = await broker.beginCompactionTransaction(
-    traceId,
-    boundedCompactionTimeout(timeoutMs),
+  const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
+  const deadline = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
+    operationTimeoutMs,
   );
-  const instruction = structuredCompactionHandoffInstruction(transaction);
-  const prepare = async () => ({ text: instruction, images: [], release: () => {} });
+  deadlineTimer.unref?.();
+  const operationSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   const browserAbort = new AbortController();
-  const abortBrowser = () => browserAbort.abort(signal?.reason);
+  const abortBrowser = () => browserAbort.abort(operationSignal.reason);
+  let transaction: Awaited<ReturnType<TurnBroker["beginCompactionTransaction"]>> | undefined;
   let browser: Promise<string> | undefined;
-  if (signal?.aborted) abortBrowser();
-  else signal?.addEventListener("abort", abortBrowser, { once: true });
+  if (operationSignal.aborted) abortBrowser();
+  else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
+    const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs);
+    void transactionPromise.then(lateTransaction => {
+      if (operationSignal.aborted && transaction !== lateTransaction) {
+        broker.abortCompactionTransaction(lateTransaction.token);
+      }
+    }, () => {});
+    transaction = await withCompactionAbort(transactionPromise, operationSignal);
+    const instruction = structuredCompactionHandoffInstruction(transaction);
+    const prepare = async () => ({ text: instruction, images: [], release: () => {} });
     browser = worker.run({
       traceId,
       modelId: parsed.modelId,
@@ -264,31 +327,28 @@ export async function requestRetainedCompactionHandoff(
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
-    const structuredHandoff = broker.waitForCompactionHandoff(transaction.token, signal).then(
-      summary => ({ type: "summary" as const, summary }),
-      error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
+    const browserFailure = browser.then<never>(
+      () => new Promise<never>(() => {}),
+      error => { throw error; },
     );
-    const visibleSummary = (await browser).trim();
-    if (!visibleSummary) throw new Error("The retained compaction response returned an empty checkpoint");
-    const handoff = await Promise.race([
-      structuredHandoff,
-      new Promise<{ type: "grace_elapsed" }>(resolve => {
-        const timer = setTimeout(() => resolve({ type: "grace_elapsed" }), structuredHandoffGraceMs);
-        timer.unref?.();
-      }),
-    ]);
-    if (handoff.type === "summary") return handoff.summary;
-    if (handoff.type === "error") throw handoff.error;
-    broker.abortCompactionTransaction(transaction.token);
-    console.warn(
-      `[chatgpt-web] browser turn ${traceId} completed compaction without structured MCP handoff; using the dedicated retained-turn checkpoint`,
+    const summary = await withCompactionAbort(
+      Promise.race([
+        broker.waitForCompactionHandoff(transaction.token, operationSignal),
+        browserFailure,
+      ]),
+      operationSignal,
     );
-    return visibleSummary;
+    browserAbort.abort(new DOMException("Structured compaction handoff accepted", "AbortError"));
+    await withCompactionAbort(browser.then(() => undefined, () => undefined), operationSignal);
+    return summary;
   } finally {
     browserAbort.abort();
-    broker.abortCompactionTransaction(transaction.token);
-    if (browser) await browser.then(() => undefined, () => undefined);
-    signal?.removeEventListener("abort", abortBrowser);
+    if (transaction) broker.abortCompactionTransaction(transaction.token);
+    if (browser) {
+      await withCompactionAbort(browser.then(() => undefined, () => undefined), operationSignal).catch(() => {});
+    }
+    operationSignal.removeEventListener("abort", abortBrowser);
+    clearTimeout(deadlineTimer);
   }
 }
 
@@ -302,6 +362,7 @@ export async function runRetainedCompaction(options: {
   traceId: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  compactedSourceExecutionKey?: string;
   freshFallback: (reason: string) => Promise<string>;
 }): Promise<string> {
   const {
@@ -314,6 +375,7 @@ export async function runRetainedCompaction(options: {
     traceId,
     signal,
     timeoutMs,
+    compactedSourceExecutionKey,
     freshFallback,
   } = options;
   const source = conversationKey ? sessions.findConversationHead(conversationKey) : undefined;
@@ -321,28 +383,38 @@ export async function runRetainedCompaction(options: {
     return canonicalizeCompactionHandoff(parsed, await freshFallback("source_unavailable_before_handoff"));
   }
   try {
-    let rawSummary: string | undefined;
+    let preserveFinalResponse = !source.isActive() && source.settledOutcome()?.type === "final";
+    let rawSummary: string;
     if (source.isActive() && source.runtime.mode === "tools") {
-      rawSummary = await settleActiveCompactionSource(parsed, source, broker);
-    }
-    if (rawSummary === undefined) {
+      const settlement = await settleActiveCompactionSource(parsed, source, broker, signal);
+      preserveFinalResponse = !settlement.compactionInstructionDelivered;
+    } else {
       if (source.isActive()) {
-        const outcome = await source.browserOutcome;
+        const outcome = await withCompactionAbort(source.browserOutcome, signal);
         if (outcome.type === "error") throw outcome.error;
+        preserveFinalResponse = true;
       }
-      rawSummary = await requestRetainedCompactionHandoff(
-        worker,
-        parsed,
-        source,
-        broker,
-        capabilities,
-        traceId,
-        signal,
-        timeoutMs,
-      );
     }
+    rawSummary = await requestRetainedCompactionHandoff(
+      worker,
+      parsed,
+      source,
+      broker,
+      capabilities,
+      traceId,
+      signal,
+      timeoutMs,
+    );
     const summary = canonicalizeCompactionHandoff(parsed, rawSummary);
-    await sessions.retireConversationAndWait(conversationKey);
+    if (preserveFinalResponse && compactedSourceExecutionKey) {
+      await sessions.retireConversationPreservingFinalResponse(
+        conversationKey,
+        source,
+        compactedSourceExecutionKey,
+      );
+    } else {
+      await sessions.retireConversationAndWait(conversationKey);
+    }
     return summary;
   } catch (error) {
     await sessions.retireConversationAndWait(conversationKey).catch(() => {});
