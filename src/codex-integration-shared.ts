@@ -28,7 +28,35 @@ export interface PreviousFeatureAssignment extends PreviousAssignment {
   tableName?: "features" | "features.multi_agent_v2";
 }
 
+export interface InstalledCodexInterruptHook {
+  command: string;
+  groupIndex: number;
+  stateKey: string;
+  trustedHash: string;
+  fragment: string;
+}
+
 export interface CodexIntegrationJournal {
+  version: 10;
+  active: boolean;
+  configPath: string;
+  catalogPath: string;
+  catalogSha256: string;
+  installed: {
+    openai_base_url: string;
+    model_catalog_json: string;
+    remote_compaction_v2: false;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  interruptHook: InstalledCodexInterruptHook;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+export interface LegacyCodexIntegrationJournalV9 {
   version: 9;
   active: boolean;
   configPath: string;
@@ -161,6 +189,7 @@ export interface LegacyCodexIntegrationJournal {
 
 export type ManagedRouteJournal =
   | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV9
   | LegacyCodexIntegrationJournalV8
   | LegacyCodexIntegrationJournalV7
   | LegacyCodexIntegrationJournalV6

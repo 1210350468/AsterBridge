@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  restoreCodexInterruptHook,
+  verifyCodexInterruptHook,
+  verifyCodexInterruptHookRestored,
+} from "./codex-interrupt-hook";
+import {
   MANAGED_COMMENT,
   MANAGED_MULTI_AGENT_LINE,
   MANAGED_MULTI_AGENT_V2_LINE,
@@ -16,6 +21,7 @@ import type {
   LegacyCodexIntegrationJournalV6,
   LegacyCodexIntegrationJournalV7,
   LegacyCodexIntegrationJournalV8,
+  LegacyCodexIntegrationJournalV9,
   ManagedAssignmentKey,
   ManagedRouteJournal,
   PreviousAssignment,
@@ -43,7 +49,7 @@ import {
 
 function restoreOwnedManagedFeatures(text: string, journal: ManagedRouteJournal): string {
   let restored = text;
-  if (journal.version === 9) {
+  if (journal.version === 9 || journal.version === 10) {
     const compaction = findFeatureAssignment(splitLines(restored), "remote_compaction_v2");
     if (compaction.rawLine === MANAGED_REMOTE_COMPACTION_LINE && compaction.value === "false") {
       restored = restoreBooleanFeature(
@@ -136,11 +142,13 @@ export function replacementBaseline(
   if (!configExists) return "";
   if (!managedJournalIsActive(journal)) return currentText;
 
-  if (journal.version === 8 || journal.version === 9) {
-    // v8+ owns both the local Responses base URL and its generated static model catalog. v9 also
-    // owns the remote_compaction_v2 feature while connected; restore that feature before adopting
-    // an explicit replacement baseline so the user's original value is never mistaken for ours.
-    if (journal.version === 9) currentText = restoreOwnedManagedFeatures(currentText, journal);
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
+    // v8+ owns both the local Responses base URL and its generated static model catalog. v9+
+    // also own remote_compaction_v2 while connected; v10 additionally owns the interrupt hook.
+    if (journal.version === 9 || journal.version === 10) currentText = restoreOwnedManagedFeatures(currentText, journal);
+    if (journal.version === 10) {
+      currentText = restoreCodexInterruptHook(currentText, journal.interruptHook, { allowAbsent: true });
+    }
     // A managed route owns both the local Responses base URL and its generated static model catalog.
     // Explicit route replacement may adopt a newer user openai_base_url as the next baseline, but
     // it must never silently adopt a changed managed catalog assignment or a tampered catalog file.
@@ -247,11 +255,11 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
     throw new Error("Codex openai_base_url changed after setup; refusing to overwrite the user's newer value");
   }
-  if ((journal.version === 8 || journal.version === 9)
+  if ((journal.version === 8 || journal.version === 9 || journal.version === 10)
     && current.model_catalog_json.value !== journal.installed.model_catalog_json) {
     throw new Error("Codex model_catalog_json changed after setup; refusing to overwrite the user's newer value");
   }
-  if (journal.version === 9) {
+  if (journal.version === 9 || journal.version === 10) {
     verifyInstalledBooleanFeature(
       text,
       "remote_compaction_v2",
@@ -259,10 +267,11 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
       MANAGED_REMOTE_COMPACTION_LINE,
     );
   }
-  if (!lines.includes(MANAGED_COMMENT) && journal.version !== 7 && journal.version !== 8 && journal.version !== 9) {
+  if (journal.version === 10) verifyCodexInterruptHook(text, journal.interruptHook);
+  if (!lines.includes(MANAGED_COMMENT) && journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
-  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9) {
+  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10) {
     if (current.model_provider.present || current.model_catalog_json.present) {
       throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
     }
@@ -277,13 +286,13 @@ function previousAssignmentMatches(current: PreviousAssignment, previous: Previo
 
 export function verifyRestoredRoute(
   text: string,
-  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV8 | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8 | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
 ): void {
   const lines = splitLines(text);
   const current = assignments(lines);
   const keys = journal.version === 7
     ? (["openai_base_url"] as const)
-    : journal.version === 8 || journal.version === 9
+    : journal.version === 8 || journal.version === 9 || journal.version === 10
       ? (["openai_base_url", "model_catalog_json"] as const)
       : (["openai_base_url", "model_provider", "model_catalog_json"] as const);
   for (const key of keys) {
@@ -294,7 +303,7 @@ export function verifyRestoredRoute(
   if (lines.includes(MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker is present while the bridge is disconnected");
   }
-  if (journal.version === 9) {
+  if (journal.version === 9 || journal.version === 10) {
     const currentFeature = findFeatureAssignment(lines, "remote_compaction_v2");
     const previous = journal.previousRemoteCompactionV2;
     const matches = currentFeature.present === previous.present
@@ -306,6 +315,7 @@ export function verifyRestoredRoute(
       );
     }
   }
+  if (journal.version === 10) verifyCodexInterruptHookRestored(text);
   if (journal.version === 5 || journal.version === 6) {
     const previousFeatures: Array<readonly [string, PreviousFeatureAssignment]> = [
       ["remote_compaction_v2", journal.previousRemoteCompactionV2],
@@ -344,7 +354,7 @@ export function assertPreservedPreviousAssignments(
 }
 
 export function verifyManagedCatalog(journal: ManagedRouteJournal): void {
-  if (journal.version !== 8 && journal.version !== 9) return;
+  if (journal.version !== 8 && journal.version !== 9 && journal.version !== 10) return;
   if (!existsSync(journal.catalogPath)) {
     throw new Error(`Managed Codex model catalog is missing: ${journal.catalogPath}`);
   }
@@ -358,7 +368,10 @@ export function verifyManagedCatalog(journal: ManagedRouteJournal): void {
 
 export function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string {
   verifyInstalledRoute(text, journal);
-  const document = parseDocument(text);
+  const routeText = journal.version === 10
+    ? restoreCodexInterruptHook(text, journal.interruptHook)
+    : text;
+  const document = parseDocument(routeText);
   removeManagedComment(document);
   const restoreAssignment = (key: "openai_base_url" | "model_catalog_json"): void => {
     const current = findTopLevelAssignment(document.lines, key);
@@ -372,8 +385,8 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
     }
   };
   restoreAssignment("openai_base_url");
-  if (journal.version === 8 || journal.version === 9) restoreAssignment("model_catalog_json");
-  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9) {
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10) restoreAssignment("model_catalog_json");
+  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10) {
     const removedAssignments = (["model_provider", "model_catalog_json"] as const)
       .map(key => ({ key, previous: journal.previous[key] }))
       .filter(item => item.previous.present)
@@ -385,7 +398,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
     }
   }
   const restoredRoute = renderDocument(document);
-  if (journal.version === 9) {
+  if (journal.version === 9 || journal.version === 10) {
     return restoreBooleanFeature(
       restoredRoute,
       "remote_compaction_v2",

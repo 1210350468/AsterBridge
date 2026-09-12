@@ -65,19 +65,29 @@ Acceptance gate: **PASS**.
 
 ## U5-W2 — Windows turn lifecycle delta
 
-Status: **PLANNED**.
+Status: **IN PROGRESS**.
 
-Audit v5.0.5/v5.0.6 deltas for Windows-relevant behavior only:
+Audited upstream v5.0.5/v5.0.6 deltas are being split into independently verifiable Windows changes instead of importing the v5 lifecycle rewrite wholesale.
 
-- pause / cancel / interrupt ownership (`codex-interrupt-hook`), especially cases where Codex stops
-  while the retained ChatGPT page continues running;
-- retained-page ownership, browser rebind, and helper cleanup;
-- launcher restart / daemon drain / tunnel ownership;
-- Codex config preservation when setup modifies managed keys;
-- browser observation/rebind recovery that applies to RoxyBrowser/system-browser without importing
-  upstream connector or Electron-only assumptions.
+Implemented — exact Codex Interrupt ownership:
 
-Gate: focused lifecycle tests plus a real RoxyBrowser long-turn cancel/restart E2E.
+- Added exact native-turn cancellation keyed by trusted `thread_id + turn_id` for both the HTTP Responses owner and the matching retained ChatGPT browser session. Concurrent turns, including a newer turn on the same thread, remain untouched.
+- The HTTP lifecycle remembers an Interrupt that arrives before request parsing has bound the native identity; once that request later binds the same identity it is aborted immediately rather than escaping through a race.
+- Added the internal `hook interrupt` CLI command that validates Codex's `Interrupt` JSON from stdin and forwards the exact identity to the authenticated local `/admin/interrupt-turn` endpoint.
+- Added reversible Codex `[[hooks.Interrupt]]` ownership and journal **v10**. Existing v9 route/catalog/`remote_compaction_v2` state remains the baseline and migrates to v10 on Setup. Disconnect/uninstall removes only the owned hook and restores the previous route exactly.
+- Hook verification tolerates native Codex TOML rewrites that normalize line endings or insert unrelated tables before the trailing managed marker, while modified owned definitions, trust state, marker duplication, or hook reordering remain fail-closed.
+- Focused integration/hook/server/session tests: **66 pass / 0 fail / 8 existing process-level skips**; TypeScript PASS.
+- Windows/Roxy production gate: installed 3.0.39 bundle `ddd2aab9c091b2e04c6bd3ed07d42d5483e23cb24b6f121e4e86d9febfa6e194`; the production journal migrated to v10 and the managed hook command pointed at that durable runtime. A production-format long Responses turn reached `1 HTTP / 1 browser`; standard Codex Interrupt JSON returned `HOOK_EXIT=0`, health settled to `0/0`, the request terminated with HTTP **499**, and health remained `0/0` five seconds later with no retry resurrection. The exact Interrupt slice therefore passes its live gate.
+- Windows packaging observation from the same deployment: NSIS bootstrap exit code `2` is not sufficient failure evidence on this machine. `/S` completed HKCU registration, the exact 3.0.39 bundle, launcher executable, and uninstaller despite returning `2`; package smoke and the public PowerShell installer now use a bounded 60-second finalization grace and verify complete installed state instead of trusting that bootstrap code alone.
+- Recovery after the DevPilot disconnect confirmed that the clean-install transaction had in fact finalized: Windows reports AsterBridge 3.0.39 installed, the launcher and uninstaller are present, the packaged manifest matches bundle `ddd2aab9c091b2e04c6bd3ed07d42d5483e23cb24b6f121e4e86d9febfa6e194`, and the durable 3.0.39 runtime contains the same manifest plus Bun and the CLI entrypoint. No second installer run was required.
+
+Still pending in U5-W2:
+
+- retained-page / structured-compaction physical-settlement ownership delta (`bd535d8`, `a3a5083`) after the interrupt path is now independently proven;
+- browser observation/rebind and Launcher lifecycle deltas from v5.0.5/v5.0.6 that remain applicable to RoxyBrowser/system-browser;
+- final audit of managed Codex config preservation across launcher update/reconnect transactions.
+
+Gate: the exact Interrupt slice has passed focused tests and the Windows/RoxyBrowser long-turn E2E. Keep U5-W2 **IN PROGRESS** until the retained physical-settlement, browser rebind, Launcher lifecycle, and config-preservation deltas are separately audited and validated.
 
 ## U5-W3 — Capability delta
 

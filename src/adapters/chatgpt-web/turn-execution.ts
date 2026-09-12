@@ -417,6 +417,38 @@ export class ChatGptTurnSessions {
     return matches.length;
   }
 
+  cancelNativeTurn(
+    threadId: string,
+    turnId: string,
+  ): { cancelled: number; settlement: Promise<void> } {
+    this.prune();
+    const matches = [...this.entries].filter(([, session]) => (
+      session.threadId() === threadId && session.turnId() === turnId
+    ));
+    if (matches.length === 0) return { cancelled: 0, settlement: Promise.resolve() };
+
+    const cancelledAt = Date.now();
+    const releases = new Set<() => Promise<void>>();
+    for (const [key, session] of matches) {
+      this.explicitCancellationTombstones.set(key, cancelledAt);
+      if (this.entries.get(key) === session) this.entries.delete(key);
+      const release = this.forgetConversationHead(session);
+      if (release) releases.add(release);
+      session.cancel();
+    }
+    const maxTombstones = Math.max(this.maxEntries * 4, 256);
+    while (this.explicitCancellationTombstones.size > maxTombstones) {
+      const oldest = this.explicitCancellationTombstones.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.explicitCancellationTombstones.delete(oldest);
+    }
+    const settlement = Promise.all(matches.map(([, session]) => session.browserOutcome.then(() => undefined)))
+      .then(async () => {
+        await Promise.all([...releases].map(release => release()));
+      });
+    return { cancelled: matches.length, settlement };
+  }
+
   cancelAllExplicitly(): number {
     this.prune();
     const cancelledAt = Date.now();

@@ -80,14 +80,24 @@ function Wait-AsterBridgeInstallerCompletion {
   } while ([DateTime]::UtcNow -lt $BootstrapDeadline)
 
   if (-not $DetachedInstallerObserved -and $InitialExitCode -ne 0) {
-    throw "Installer exited with code $InitialExitCode and no continuing installer process was observed"
+    $FinalizationDeadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+      if (Test-AsterBridgeInstalledRuntime -Version $Version) { return }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $FinalizationDeadline)
+    throw "Installer exited with code $InitialExitCode and did not complete the AsterBridge $Version runtime after finalization grace"
   }
 
   $CompletionDeadline = [DateTime]::UtcNow.AddMinutes(10)
   while ([DateTime]::UtcNow -lt $CompletionDeadline) {
     if ((Get-AsterBridgeInstallerProcessCount -Installer $Installer) -eq 0) {
       if (Test-AsterBridgeInstalledRuntime -Version $Version) { return }
-      throw "Installer process exited without completing the AsterBridge $Version runtime"
+      $FinalizationDeadline = [DateTime]::UtcNow.AddSeconds(60)
+      do {
+        if (Test-AsterBridgeInstalledRuntime -Version $Version) { return }
+        Start-Sleep -Milliseconds 500
+      } while ([DateTime]::UtcNow -lt $FinalizationDeadline)
+      throw "Installer process exited without completing the AsterBridge $Version runtime after finalization grace"
     }
     Start-Sleep -Milliseconds 500
   }

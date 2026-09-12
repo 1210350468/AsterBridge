@@ -57,6 +57,55 @@ test("explicit cancellation tombstones the cancelled execution key without block
   sessions.clear();
 });
 
+test("native interrupt cancels only the exact Codex turn and tombstones its execution key", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let cancelledTarget = 0;
+  let rejectTarget!: (error: Error) => void;
+  const targetBrowser = new Promise<string>((_resolve, reject) => { rejectTarget = reject; });
+  sessions.getOrCreate("target-key", () => ({
+    mode: "read-only",
+    browser: targetBrowser,
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-a",
+    turnId: "turn-target",
+    cancel: () => {
+      cancelledTarget += 1;
+      rejectTarget(new DOMException("interrupted", "AbortError"));
+    },
+  }));
+  sessions.getOrCreate("newer-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-a",
+    turnId: "turn-newer",
+    cancel: () => {},
+  }));
+  sessions.getOrCreate("other-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-b",
+    turnId: "turn-other",
+    cancel: () => {},
+  }));
+
+  const cancellation = sessions.cancelNativeTurn("thread-a", "turn-target");
+  expect(cancellation.cancelled).toBe(1);
+  await cancellation.settlement;
+  expect(cancelledTarget).toBe(1);
+  expect(sessions.activeCount()).toBe(2);
+  expect(sessions.wasExplicitlyCancelled("target-key")).toBe(true);
+  expect(() => sessions.getOrCreate("target-key", () => {
+    throw new Error("interrupted turn must not restart");
+  })).toThrow("explicitly cancelled");
+  expect(sessions.cancelNativeTurn("thread-a", "turn-target").cancelled).toBe(0);
+  sessions.clear();
+});
+
 test("a newer native turn preempts only the older active browser turn on the same thread", async () => {
   const sessions = new ChatGptTurnSessions();
   let cancelledOld = 0;

@@ -139,6 +139,8 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /Wait-AsterBridgeInstallerCompletion/);
   assert.match(windowsInstaller, /Get-AsterBridgeInstallerProcessCount/);
   assert.match(windowsInstaller, /Test-AsterBridgeInstalledRuntime/);
+  assert.match(windowsInstaller, /AddSeconds\(60\)/);
+  assert.match(windowsInstaller, /after finalization grace/);
   assert.match(windowsInstaller, /Installer process exited without completing/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
   assert.match(packageSmoke, /WINDOWS_INSTALL_TIMEOUT_MS = 10 \* 60_000/);
@@ -147,6 +149,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(packageSmoke, /installWindowsPackage\(installer\)/);
   assert.match(packageSmoke, /windowsInstallerProcessCount/);
   assert.match(packageSmoke, /detachedInstallerObserved/);
+  assert.match(packageSmoke, /result\.status !== 0[\s\S]*WINDOWS_INSTALLER_FINALIZATION_GRACE_MS/);
   assert.match(packageSmoke, /Windows installer process exited without completing/);
   assert.match(packageSmoke, /after finalization grace/);
   assert.match(packageSmoke, /resources[\s\S]*runtime[\s\S]*bun\.exe/);

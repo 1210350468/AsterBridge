@@ -2,6 +2,19 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.39 - 2026-09-12
+
+### Windows Codex interrupt lifecycle
+
+- Added an exact native-turn cancellation path keyed by trusted Codex `thread_id + turn_id`. A Codex Interrupt no longer needs the coarse global `service cancel-turns` path: the daemon can cancel only the matching HTTP Responses owner and matching retained ChatGPT browser turn while leaving concurrent turns untouched.
+- Added the internal `hook interrupt` command and a reversible Codex `[[hooks.Interrupt]]` integration. The managed command is bound to the exact AsterBridge runtime/home, receives Codex's native Interrupt JSON over stdin, and forwards only validated `session_id / turn_id` identities to the local authenticated control endpoint.
+- Upgraded the managed Codex route journal from v9 to v10 by adding authenticated interrupt-hook ownership while retaining the existing managed model catalog and `remote_compaction_v2` baseline. v9 remains readable and migrates to v10 during Setup without changing the user's preserved route baseline.
+- Interrupt-hook verification is fail-closed but tolerant of Codex's own TOML editor normalizing line endings or inserting unrelated tables before the trailing managed comment. Modified owned hook definitions, duplicated markers, changed hook order, or altered trust state are never silently overwritten.
+- Focused route/hook/lifecycle coverage passes **66 pass / 0 fail / 8 existing process-level skips**. Complete release verification passes Core **43 / 43** deterministic batches, Launcher **217 pass / 0 fail / 1 platform-inapplicable skip**, TypeScript, renderer build, and `RELOCATABLE_RUNTIME_SMOKE_OK`.
+- Live Windows/Roxy validation installed 3.0.39 bundle `ddd2aab9c091b2e04c6bd3ed07d42d5483e23cb24b6f121e4e86d9febfa6e194`, migrated the production Codex integration journal to **v10**, and verified that the installed `[[hooks.Interrupt]]` command points at the 3.0.39 durable runtime. A production-format long `/v1/responses` turn reached `active_http_turns=1 / active_browser_turns=1`; sending the standard Codex Interrupt payload through the installed hook returned `HOOK_EXIT=0`, reduced health to `0/0`, terminated the HTTP request as **499**, and remained `0/0` after five seconds with no provider retry resurrection.
+- Fixed another Windows NSIS bootstrap false negative found during the same deployment. On this machine both `/S /currentuser` and `/S` can return bootstrap exit code **2** even though HKCU registration, the exact 3.0.39 packaged runtime bundle, `AsterBridge.exe`, and `Uninstall AsterBridge.exe` are finalized successfully. Package smoke and the public PowerShell installer now allow a bounded **60 s** finalization window even when no detached installer process was observed; success still requires complete installed-runtime evidence, and package smoke still requires the exact candidate `bundleId`.
+- Post-disconnect recovery confirmed that the final clean-install state did settle correctly without launching a second installer: the desktop package is registered as **AsterBridge 3.0.39**, `AsterBridge.exe` and its uninstaller are present, the packaged manifest reports the exact candidate bundle `ddd2aab9c091b2e04c6bd3ed07d42d5483e23cb24b6f121e4e86d9febfa6e194`, and the durable `~/.codex-chatgpt-web/versions/3.0.39-win32-x64` runtime contains the matching manifest, Bun runtime, and CLI entrypoint. This closes the installer-finalization uncertainty that remained when the DevPilot session terminated.
+
 ## 3.0.38 - 2026-09-11
 
 ### Remote compact multipart acknowledgement / response DOM detection

@@ -134,7 +134,14 @@ function installWindowsPackage(installer) {
   // process continues the same silent installation. Accept that boundary only when the exact
   // installer executable is observed still running; a naked non-zero exit remains a real failure.
   if (!detachedInstallerObserved && result.status !== 0) {
-    throw new Error(`${installer} failed with status ${result.status}: ${diagnostic()}`);
+    const finalizationDeadline = Date.now() + WINDOWS_INSTALLER_FINALIZATION_GRACE_MS;
+    while (Date.now() < finalizationDeadline) {
+      if (windowsPackagedRuntimeReady()) return;
+      sleepSync(WINDOWS_INSTALL_POLL_MS);
+    }
+    throw new Error(
+      `${installer} failed with status ${result.status} and did not complete the ${expectedVersion} packaged runtime after finalization grace: ${diagnostic()}`,
+    );
   }
 
   const completionDeadline = Date.now() + WINDOWS_INSTALL_TIMEOUT_MS;

@@ -18,11 +18,31 @@ import type {
   LegacyCodexIntegrationJournalV6,
   LegacyCodexIntegrationJournalV7,
   LegacyCodexIntegrationJournalV8,
+  LegacyCodexIntegrationJournalV9,
 } from "./codex-integration-shared";
 import { verifyManagedJournalState } from "./codex-integration-route";
 
 function parseJournal(path: string): AnyCodexIntegrationJournal {
   const value = JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))) as Record<string, unknown>;
+  if (value.version === 10
+    && typeof value.active === "boolean"
+    && value.installed
+    && value.previous
+    && value.previousRemoteCompactionV2
+    && value.interruptHook
+    && typeof value.configPath === "string"
+    && typeof value.catalogPath === "string"
+    && typeof value.catalogSha256 === "string") {
+    const hook = value.interruptHook as Record<string, unknown>;
+    if (typeof hook.command !== "string"
+      || !Number.isInteger(hook.groupIndex) || (hook.groupIndex as number) < 0
+      || typeof hook.stateKey !== "string"
+      || typeof hook.trustedHash !== "string"
+      || typeof hook.fragment !== "string") {
+      throw new Error(`Invalid Codex interrupt hook journal: ${path}`);
+    }
+    return value as unknown as CodexIntegrationJournal;
+  }
   if (value.version === 9
     && typeof value.active === "boolean"
     && value.installed
@@ -31,7 +51,7 @@ function parseJournal(path: string): AnyCodexIntegrationJournal {
     && typeof value.configPath === "string"
     && typeof value.catalogPath === "string"
     && typeof value.catalogSha256 === "string") {
-    return value as unknown as CodexIntegrationJournal;
+    return value as unknown as LegacyCodexIntegrationJournalV9;
   }
   if (value.version === 8
     && typeof value.active === "boolean"

@@ -37,6 +37,60 @@ test("HTTP turn tracking follows the response stream instead of Bun's global req
   await waitForTurnCount(turns, 0);
 });
 
+test("native interrupt cancels only the exact HTTP turn and remembers an early interrupt", async () => {
+  const turns = new HttpTurnCounter();
+  const targetIdentity = { threadId: "thread-target", turnId: "turn-target" };
+  const otherIdentity = { threadId: "thread-other", turnId: "turn-other" };
+  let targetAborted = false;
+  let otherAborted = false;
+
+  const target = turns.track(async (signal, bindIdentity) => {
+    bindIdentity(targetIdentity);
+    await new Promise<void>(resolve => {
+      if (signal.aborted) return resolve();
+      signal.addEventListener("abort", () => {
+        targetAborted = true;
+        resolve();
+      }, { once: true });
+    });
+    return new Response(null);
+  });
+  const other = turns.track(async (signal, bindIdentity) => {
+    bindIdentity(otherIdentity);
+    await new Promise<void>(resolve => {
+      if (signal.aborted) return resolve();
+      signal.addEventListener("abort", () => {
+        otherAborted = true;
+        resolve();
+      }, { once: true });
+    });
+    return new Response(null);
+  });
+
+  await waitForTurnCount(turns, 2);
+  const cancellation = turns.beginCancelTurn(targetIdentity);
+  expect(cancellation.cancelled).toBe(1);
+  await cancellation.settlement;
+  expect(targetAborted).toBe(true);
+  expect(otherAborted).toBe(false);
+  expect(turns.count()).toBe(1);
+
+  await turns.cancelAll();
+  await Promise.all([target, other]);
+  expect(otherAborted).toBe(true);
+  expect(turns.count()).toBe(0);
+
+  const earlyIdentity = { threadId: "thread-early", turnId: "turn-early" };
+  expect(turns.beginCancelTurn(earlyIdentity).cancelled).toBe(0);
+  let earlyAborted = false;
+  await turns.track(async (signal, bindIdentity) => {
+    bindIdentity(earlyIdentity);
+    earlyAborted = signal.aborted;
+    return new Response(null);
+  });
+  expect(earlyAborted).toBe(true);
+});
+
 test("HTTP turn tracking releases a cancelled response stream", async () => {
   const turns = new HttpTurnCounter();
   const request = new AbortController();

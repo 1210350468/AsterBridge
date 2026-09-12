@@ -17,6 +17,7 @@ import {
   uninstallCodexIntegration,
 } from "../src/codex-integration";
 import { defaultConfig } from "../src/config";
+import { restoreCodexInterruptHook } from "../src/codex-interrupt-hook";
 import {
   buildManagedCodexModelCatalog,
   codexBundledCatalogExecutableCandidates,
@@ -146,7 +147,11 @@ describe("reversible native Codex route integration", () => {
 
     const journal = installCodexIntegration(defaultConfig("browser-only"));
     const installed = readFileSync(configPath, "utf8");
-    expect(journal.version).toBe(9);
+    expect(journal.version).toBe(10);
+    expect(installed).toContain("# Managed by AsterBridge: release the exact Responses request when its Codex turn is interrupted.");
+    expect(installed).toContain("[[hooks.Interrupt]]");
+    expect(journal.interruptHook.command).toContain("hook");
+    expect(journal.interruptHook.command).toContain("interrupt");
     expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
     expect(installed).toContain(`model_catalog_json = ${JSON.stringify(getCodexManagedCatalogPath())}`);
     expect(existsSync(getCodexManagedCatalogPath())).toBe(true);
@@ -642,11 +647,36 @@ describe("reversible native Codex route integration", () => {
     deactivateCodexIntegration();
 
     expect(JSON.parse(readFileSync(getCodexJournalPath(), "utf8"))).toMatchObject({
-      version: 9,
+      version: 10,
       active: false,
     });
     expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: false, errors: [] });
     expect(readFileSync(configPath, "utf8")).toBe('model = "gpt-5.6-sol"\n');
+  });
+
+  test("upgrades an active v9 route journal to v10 without changing the preserved baseline", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n';
+    writeFileSync(configPath, original);
+    installCodexIntegration(defaultConfig("browser-only"));
+
+    const legacy = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
+    const legacyInstalled = restoreCodexInterruptHook(readFileSync(configPath, "utf8"), legacy.interruptHook);
+    delete legacy.interruptHook;
+    legacy.version = 9;
+    const legacyJournal = `${JSON.stringify(legacy, null, 2)}\n`;
+    writeFileSync(configPath, legacyInstalled);
+    writeFileSync(getCodexJournalPath(), legacyJournal);
+    writeFileSync(getCodexJournalRecoveryPath(), legacyJournal);
+
+    const upgraded = installCodexIntegration(defaultConfig("browser-only"));
+    expect(upgraded.version).toBe(10);
+    expect(upgraded.previous.openai_base_url.present).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toContain("[[hooks.Interrupt]]");
+    expect(readFileSync(configPath, "utf8")).toContain("goals = true");
+    expect(uninstallCodexIntegration()).toEqual({ changed: true });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
   });
 
   test("upgrades an existing v3 route journal when it is disconnected for the first time", () => {
@@ -656,11 +686,15 @@ describe("reversible native Codex route integration", () => {
     writeFileSync(configPath, original);
     installCodexIntegration(defaultConfig("browser-only"));
     const previous = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
-    const legacyInstalled = readFileSync(configPath, "utf8")
+    const legacyInstalled = restoreCodexInterruptHook(
+      readFileSync(configPath, "utf8"),
+      previous.interruptHook,
+    )
       .replace(/^model_catalog_json\s*=.*\n/gm, "")
       .replace(/^(?:remote_compaction_v2 = false|multi_agent = true|multi_agent_v2 = false).*\n/gm, "");
     writeFileSync(configPath, legacyInstalled);
     delete previous.active;
+    delete previous.interruptHook;
     delete previous.previousRemoteCompactionV2;
     delete previous.previousMultiAgent;
     delete previous.previousMultiAgentV2;
@@ -689,6 +723,8 @@ describe("reversible native Codex route integration", () => {
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n');
     installCodexIntegration(defaultConfig("browser-only"));
     const legacy = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
+    const legacyInstalled = restoreCodexInterruptHook(readFileSync(configPath, "utf8"), legacy.interruptHook);
+    delete legacy.interruptHook;
     delete legacy.previousRemoteCompactionV2;
     delete legacy.previousMultiAgent;
     delete legacy.previousMultiAgentV2;
@@ -704,7 +740,7 @@ describe("reversible native Codex route integration", () => {
     writeFileSync(getCodexJournalRecoveryPath(), legacyJournal);
     writeFileSync(
       configPath,
-      readFileSync(configPath, "utf8")
+      legacyInstalled
         .replace(/^model_catalog_json\s*=.*\n/gm, "")
         .replace(/^(?:remote_compaction_v2 = false|multi_agent = true|multi_agent_v2 = false).*\n/gm, ""),
     );
@@ -713,7 +749,7 @@ describe("reversible native Codex route integration", () => {
     writeFileSync(getCodexModelsCachePath(), readFileSync(getCodexManagedCatalogPath(), "utf8"));
 
     const upgraded = installCodexIntegration(defaultConfig("browser-only"));
-    expect(upgraded.version).toBe(9);
+    expect(upgraded.version).toBe(10);
     expect(readFileSync(configPath, "utf8")).toContain("goals = true");
     expect(readFileSync(configPath, "utf8")).toContain("remote_compaction_v2 = false # Managed by codex-chatgpt-web");
     expect(readFileSync(configPath, "utf8")).not.toContain("multi_agent");

@@ -6,6 +6,7 @@ import {
   type TrustedManagedCatalogSource,
 } from "./codex-managed-model-catalog";
 import { atomicWriteFile } from "./config";
+import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   getCodexConfigPath,
   getCodexJournalPath,
@@ -27,6 +28,7 @@ import type {
   LegacyCodexIntegrationJournalV6,
   LegacyCodexIntegrationJournalV7,
   LegacyCodexIntegrationJournalV8,
+  LegacyCodexIntegrationJournalV9,
   SetCodexIntegrationActiveResult,
   UninstallCodexIntegrationResult,
 } from "./codex-integration-shared";
@@ -68,7 +70,7 @@ export type {
 } from "./codex-integration-shared";
 
 function trustedManagedCatalogSource(journal: AnyCodexIntegrationJournal | undefined): TrustedManagedCatalogSource | undefined {
-  return journal && (journal.version === 8 || journal.version === 9)
+  return journal && (journal.version === 8 || journal.version === 9 || journal.version === 10)
     ? { path: journal.catalogPath, sha256: journal.catalogSha256 }
     : undefined;
 }
@@ -76,7 +78,7 @@ function trustedManagedCatalogSource(journal: AnyCodexIntegrationJournal | undef
 function refreshActiveManagedCatalog(
   config: AppConfig,
   current: string,
-  existing: CodexIntegrationJournal | LegacyCodexIntegrationJournalV8,
+  existing: CodexIntegrationJournal | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8,
 ): SetCodexIntegrationActiveResult {
   verifyManagedJournalState(current, existing);
   const refreshed = buildManagedCodexModelCatalog(
@@ -208,6 +210,7 @@ export function installCodexIntegration(
     installed,
     existing && existing.version !== 2 ? true : options.replaceExistingRoute === true,
   );
+  const hooked = installCodexInterruptHook(patched.text, configPath, config);
   const catalog = buildManagedCodexModelCatalog(
     config,
     baseline,
@@ -224,19 +227,21 @@ export function installCodexIntegration(
     assertPreservedPreviousAssignments(
       patched.previous,
       existing.previous,
-      existing.version === 8 || existing.version === 9,
+      existing.version === 8 || existing.version === 9 || existing.version === 10,
     );
   }
   const previous = existing && existing.version !== 2 && preservePrevious
-    ? existing.version === 8 || existing.version === 9
+    ? existing.version === 8 || existing.version === 9 || existing.version === 10
       ? existing.previous
       : { ...patched.previous, openai_base_url: existing.previous.openai_base_url }
     : patched.previous;
-  const previousRemoteCompactionV2 = existing && existing.version === 9 && preservePrevious
+  const previousRemoteCompactionV2 = existing
+    && (existing.version === 9 || existing.version === 10)
+    && preservePrevious
     ? existing.previousRemoteCompactionV2
     : patched.previousRemoteCompactionV2;
   const journal: CodexIntegrationJournal = {
-    version: 9,
+    version: 10,
     active: true,
     configPath,
     catalogPath: catalog.path,
@@ -244,6 +249,7 @@ export function installCodexIntegration(
     installed,
     previous,
     previousRemoteCompactionV2,
+    interruptHook: hooked.installed,
     ...(existing && existing.version !== 2 && existing.format
       ? { format: existing.format }
       : { format: textFormat(baseline) }),
@@ -252,7 +258,7 @@ export function installCodexIntegration(
   if (existing?.version === 2 && existing.catalogPath !== catalog.path) removals.push(existing.catalogPath);
   writeIntegrationState(
     journal,
-    { path: configPath, data: patched.text },
+    { path: configPath, data: hooked.text },
     removals,
     [{ path: catalog.path, data: catalog.data }],
   );
@@ -275,11 +281,13 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
   const restored = restoreManagedRoute(current, existing);
   const disconnected:
     | CodexIntegrationJournal
+    | LegacyCodexIntegrationJournalV9
     | LegacyCodexIntegrationJournalV8
     | LegacyCodexIntegrationJournalV7
     | LegacyCodexIntegrationJournalV6
     | LegacyCodexIntegrationJournalV5
-    | LegacyCodexIntegrationJournalV4 = existing.version === 9
+    | LegacyCodexIntegrationJournalV4 = existing.version === 10
+      || existing.version === 9
       || existing.version === 8
       || existing.version === 7
       || existing.version === 6
@@ -299,6 +307,53 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
   assertJournalTargetsConfig(existing, getCodexConfigPath());
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
+  if (existing.version === 10) {
+    if (existing.active) {
+      if (!config) {
+        verifyManagedJournalState(current, existing);
+        return { changed: false, active: true };
+      }
+      return refreshActiveManagedCatalog(config, current, existing);
+    }
+    verifyRestoredRoute(current, existing);
+    verifyManagedCatalog(existing);
+    const refreshedCatalog = config
+      ? buildManagedCodexModelCatalog(
+          config,
+          current,
+          readCodexModelContextOverride(),
+          trustedManagedCatalogSource(existing),
+          { supplementBundled: true },
+        )
+      : undefined;
+    if (refreshedCatalog && refreshedCatalog.path !== existing.catalogPath) {
+      throw new Error("Refreshed Codex model catalog resolved to an unexpected path");
+    }
+    const route = installRoute(current, existing.installed, true);
+    assertPreservedPreviousAssignments(route.previous, existing.previous, true);
+    if (!route.previousRemoteCompactionV2
+      || route.previousRemoteCompactionV2.present !== existing.previousRemoteCompactionV2.present
+      || route.previousRemoteCompactionV2.rawLine !== existing.previousRemoteCompactionV2.rawLine
+      || route.previousRemoteCompactionV2.tablePresent !== existing.previousRemoteCompactionV2.tablePresent) {
+      throw new Error("Codex remote_compaction_v2 changed while the bridge was disconnected; refusing to replace it");
+    }
+    const hooked = config
+      ? installCodexInterruptHook(route.text, existing.configPath, config)
+      : installCodexInterruptHookCommand(route.text, existing.configPath, existing.interruptHook.command);
+    const connected: CodexIntegrationJournal = {
+      ...existing,
+      active: true,
+      interruptHook: hooked.installed,
+      ...(refreshedCatalog ? { catalogSha256: sha256(refreshedCatalog.data) } : {}),
+    };
+    writeIntegrationState(
+      connected,
+      { path: existing.configPath, data: hooked.text },
+      [getCodexModelsCachePath()],
+      refreshedCatalog ? [{ path: refreshedCatalog.path, data: refreshedCatalog.data }] : [],
+    );
+    return { changed: true, active: true };
+  }
   if (existing.version === 9) {
     if (existing.active) {
       if (!config) {
@@ -329,7 +384,7 @@ export function activateCodexIntegration(config?: AppConfig): SetCodexIntegratio
       || route.previousRemoteCompactionV2.tablePresent !== existing.previousRemoteCompactionV2.tablePresent) {
       throw new Error("Codex remote_compaction_v2 changed while the bridge was disconnected; refusing to replace it");
     }
-    const connected: CodexIntegrationJournal = refreshedCatalog
+    const connected: LegacyCodexIntegrationJournalV9 = refreshedCatalog
       ? { ...existing, active: true, catalogSha256: sha256(refreshedCatalog.data) }
       : { ...existing, active: true };
     writeIntegrationState(
@@ -422,12 +477,12 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
   } else {
     restored = restoreManagedRoute(current, journal);
   }
-  if ((journal.version === 8 || journal.version === 9) && existsSync(journal.catalogPath)
+  if ((journal.version === 8 || journal.version === 9 || journal.version === 10) && existsSync(journal.catalogPath)
     && sha256(readFileSync(journal.catalogPath)) !== journal.catalogSha256) {
     throw new Error(`Managed Codex model catalog changed after setup: ${journal.catalogPath}`);
   }
   const configSnapshot = snapshotFile(journal.configPath);
-  const catalogSnapshot = journal.version === 2 || journal.version === 8 || journal.version === 9
+  const catalogSnapshot = journal.version === 2 || journal.version === 8 || journal.version === 9 || journal.version === 10
     ? snapshotFile(journal.catalogPath)
     : undefined;
   const modelsCacheSnapshot = snapshotFile(getCodexModelsCachePath());
@@ -481,7 +536,7 @@ export function inspectCodexIntegration(): {
         if (!text.includes(journal.providerBlock)) errors.push("Managed legacy Codex provider block no longer matches this installation");
       } else if (journal.version !== 3 && !journal.active) {
         verifyRestoredRoute(text, journal);
-        if (journal.version === 8 || journal.version === 9) verifyManagedCatalog(journal);
+        if (journal.version === 8 || journal.version === 9 || journal.version === 10) verifyManagedCatalog(journal);
       } else {
         verifyManagedJournalState(text, journal);
       }
