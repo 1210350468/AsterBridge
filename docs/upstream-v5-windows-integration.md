@@ -87,12 +87,14 @@ Implemented locally for **3.0.40 WIP** — deterministic retained compaction at 
 - The checkpoint now comes from exactly one dedicated structured retained-conversation handoff. The old browser-visible-text fallback is removed; missing structured submission fails closed under the bounded handoff deadline.
 - The handoff deadline spans transaction acquisition, structured submission, browser shutdown, and token cleanup. Exact duplicate compaction executions share one in-flight/result promise; failures are evicted so retries are not poisoned by a stale rejected cache entry.
 - Retained-conversation retirement can detach the browser epoch while preserving a terminal ordinary final response under the compacted source execution key, avoiding unnecessary regeneration when the ordinary response wins the race before any compaction instruction is delivered.
-- Focused validation currently passes TypeScript plus retained-compaction/lifecycle **16 pass / 0 fail / 8 existing skips**.
+- `a3a5083` was audited as the next candidate but its helper/Launcher cleanup ownership depends on the newer cross-process helper protocol. That protocol is intentionally deferred rather than partially imported into the current Roxy/system-browser production path.
+- Retained external pages now have a bounded **5 s** observability gate before reuse. A Roxy/system-browser page can remain `isClosed() === false` after its CDP/DOM transport has stalled; such a page is now evicted and closed before `requireRetainedConversation` is evaluated, which turns the stale epoch into the existing `compaction_source_unavailable` recovery instead of a late browser-stage timeout.
+- Focused validation currently passes TypeScript plus browser-worker contract/retained-compaction **93 pass / 0 fail**.
 
 Still pending in U5-W2:
 
 - helper/Launcher-level physical-settlement ownership and progress forwarding from the later `a3a5083` evolution; the current 3.0.40 WIP intentionally stops at the daemon/session boundary rather than importing that broader helper rewrite;
-- browser observation/rebind and Launcher lifecycle deltas from v5.0.5/v5.0.6 that remain applicable to RoxyBrowser/system-browser;
+- deeper in-turn browser observation/rebind and Launcher lifecycle deltas from v5.0.5/v5.0.6; the stale retained-page admission boundary is now covered, but live-page rebind after a mid-turn observation stall remains a separate slice;
 - final audit of managed Codex config preservation across launcher update/reconnect transactions.
 
 Gate: the exact Interrupt slice has passed focused tests and the Windows/RoxyBrowser long-turn E2E. Keep U5-W2 **IN PROGRESS** until the retained physical-settlement, browser rebind, Launcher lifecycle, and config-preservation deltas are separately audited and validated.

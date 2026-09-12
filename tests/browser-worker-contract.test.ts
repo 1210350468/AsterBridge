@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -141,6 +141,23 @@ test("retained surface eviction selects the oldest idle conversation only", () =
   });
   expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a"], "d")).toBe("b");
   expect(chatGptRetainedSurfaceEvictionCandidate(["a", "b", "c"], ["a", "b", "c"], "d")).toBeUndefined();
+});
+
+test("retained external pages must still answer a bounded DOM probe before reuse", async () => {
+  await expect(chatGptRetainedPageIsObservable({
+    isClosed: () => false,
+    evaluate: async () => "complete",
+  } as never, 25)).resolves.toBeTrue();
+
+  await expect(chatGptRetainedPageIsObservable({
+    isClosed: () => true,
+    evaluate: async () => { throw new Error("must not evaluate a closed page"); },
+  } as never, 25)).resolves.toBeFalse();
+
+  await expect(chatGptRetainedPageIsObservable({
+    isClosed: () => false,
+    evaluate: async () => await new Promise<never>(() => {}),
+  } as never, 10)).resolves.toBeFalse();
 });
 
 test("multi-image stages receive bounded adaptive upload and submission budgets", () => {

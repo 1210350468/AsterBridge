@@ -106,6 +106,7 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
 
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
+export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
@@ -121,6 +122,31 @@ export const CHATGPT_UI_SETTLE_MS = 250;
 const settleChatGptUi = (): Promise<void> => (
   new Promise(resolveSettle => setTimeout(resolveSettle, CHATGPT_UI_SETTLE_MS))
 );
+
+export async function chatGptRetainedPageIsObservable(
+  page: Pick<Page, "isClosed" | "evaluate">,
+  timeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  if (page.isClosed()) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      page.evaluate(() => document.readyState),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`ChatGPT retained-page observation timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 class ChatGptConnectorCatalogStaleError extends Error {
   constructor(
@@ -3045,6 +3071,10 @@ export class ChatGptBrowserWorker {
     let retainedPage = externalRetention ? this.retainedExternalPages.get(turn.conversationKey!) : undefined;
     if (retainedPage?.isClosed()) {
       this.retainedExternalPages.delete(turn.conversationKey!);
+      retainedPage = undefined;
+    } else if (retainedPage && !await chatGptRetainedPageIsObservable(retainedPage)) {
+      this.retainedExternalPages.delete(turn.conversationKey!);
+      await retainedPage.close().catch(() => {});
       retainedPage = undefined;
     } else if (retainedPage && turn.conversationKey) {
       this.retainedExternalPages.delete(turn.conversationKey);
