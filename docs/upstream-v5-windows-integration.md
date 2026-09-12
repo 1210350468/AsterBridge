@@ -67,7 +67,7 @@ Acceptance gate: **PASS**.
 
 Status: **IN PROGRESS**.
 
-3.0.41 WIP follow-up: the v5.0.6 audit is continuing as selective deltas. Roxy `browser_unavailable` wrappers now retain their native `cause` for diagnostics. The upstream fresh-assistant-before-grace fix (`3b0ac80`) is already structurally satisfied by AsterBridge's snapshot-first DOM health loop, and the Interrupt path determinism change (`9929638`) is already present, so neither is duplicated as a second implementation.
+3.0.41 WIP follow-up: the v5.0.6 audit is continuing as selective deltas. Roxy `browser_unavailable` wrappers now retain their native `cause` for diagnostics, and assistant-response presence observation is bounded so a stalled `Locator.count()` cannot hang the browser loop before the existing DOM-health machinery can react. The upstream fresh-assistant-before-grace fix (`3b0ac80`) is already structurally satisfied by AsterBridge's snapshot-first DOM health loop, and the Interrupt path determinism change (`9929638`) is already present, so neither is duplicated as a second implementation.
 
 Audited upstream v5.0.5/v5.0.6 deltas are being split into independently verifiable Windows changes instead of importing the v5 lifecycle rewrite wholesale.
 

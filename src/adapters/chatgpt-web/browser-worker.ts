@@ -2712,18 +2712,39 @@ export class ChatGptBrowserWorker {
     throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
   }
 
-  private async responseDomSnapshot(responseTurn: Locator): Promise<ChatGptResponseDomSnapshot> {
+  private async responseDomSnapshot(
+    responseTurn: Locator,
+    presenceTimeoutMs = 10_000,
+  ): Promise<ChatGptResponseDomSnapshot> {
     const page = responseTurn.page();
     if (page.isClosed()) throw chatGptBrowserTabClosedError();
     let responseTurnCount: number;
+    let presenceTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      responseTurnCount = await responseTurn.count();
+      responseTurnCount = await Promise.race([
+        responseTurn.count(),
+        new Promise<never>((_resolve, reject) => {
+          presenceTimer = setTimeout(
+            () => reject(new Error(`ChatGPT response DOM presence check timed out after ${presenceTimeoutMs}ms`)),
+            presenceTimeoutMs,
+          );
+          presenceTimer.unref?.();
+        }),
+      ]);
     } catch (error) {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
       throw new ChatGptWebAdapterError(
         `ChatGPT response DOM presence check failed: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500, errorType: "proxy_error", code: "response_dom_read_error", retryable: false },
+        {
+          status: 500,
+          errorType: "proxy_error",
+          code: "response_dom_read_error",
+          retryable: false,
+          cause: error,
+        },
       );
+    } finally {
+      if (presenceTimer) clearTimeout(presenceTimer);
     }
     if (responseTurnCount === 0) return absentResponseDomSnapshot();
 
@@ -2908,7 +2929,13 @@ export class ChatGptBrowserWorker {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
       throw new ChatGptWebAdapterError(
         `ChatGPT response DOM exists but could not be inspected: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500, errorType: "proxy_error", code: "response_dom_read_error", retryable: false },
+        {
+          status: 500,
+          errorType: "proxy_error",
+          code: "response_dom_read_error",
+          retryable: false,
+          cause: error,
+        },
       );
     });
     snapshot.traceBlocks = snapshot.traceBlocks

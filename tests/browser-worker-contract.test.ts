@@ -62,7 +62,7 @@ test("Bigger Context stages inert parts before the final task-bearing commit", (
 
 test("response DOM inspection distinguishes absence from a failed read of an existing assistant turn", async () => {
   const responseDomSnapshot = (ChatGptBrowserWorker.prototype as unknown as {
-    responseDomSnapshot(responseTurn: unknown): Promise<{ responsePresent: boolean }>;
+    responseDomSnapshot(responseTurn: unknown, presenceTimeoutMs?: number): Promise<{ responsePresent: boolean }>;
   }).responseDomSnapshot;
   const page = { isClosed: () => false };
 
@@ -95,6 +95,26 @@ test("response DOM inspection distinguishes absence from a failed read of an exi
     retryable: false,
   });
   expect((caught as Error).message).toContain("response DOM exists but could not be inspected");
+
+  const stalledPresence = new Promise<number>(() => {});
+  caught = undefined;
+  try {
+    await responseDomSnapshot.call({}, {
+      page: () => page,
+      count: async () => await stalledPresence,
+      evaluate: async () => { throw new Error("must not inspect before presence resolves"); },
+    }, 10);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toMatchObject({
+    status: 500,
+    errorType: "proxy_error",
+    code: "response_dom_read_error",
+    retryable: false,
+  });
+  expect((caught as Error).message).toContain("presence check timed out after 10ms");
+  expect((caught as Error).cause).toBeInstanceOf(Error);
 });
 
 test("browser turns run concurrently up to the five-tab limit", async () => {
