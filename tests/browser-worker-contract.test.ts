@@ -1617,6 +1617,10 @@ function dialogPage(text: string, buttonText = "Got it"): { page: Page; pressed:
     page: {
       locator: () => createDialog(),
       getByText: (hasText: string | RegExp) => createDialog().filter({ hasText }),
+      getByTestId: () => ({
+        last() { return this; },
+        isVisible: async () => false,
+      }),
     } as unknown as Page,
     pressed,
   };
@@ -1697,6 +1701,29 @@ test("the known terminal ChatGPT error alert returns a structured retryable fail
     retryable: true,
   });
   expect(fixture.pressed).toEqual([]);
+});
+
+test("the structural ChatGPT regenerate error control returns the same retryable terminal failure", async () => {
+  const hidden = {
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const regenerate = {
+    last() { return this; },
+    isVisible: async () => true,
+  };
+  const scope = {
+    getByTestId: (testId: string) => testId === "regenerate-thread-error-button" ? regenerate : hidden,
+    getByText: () => hidden,
+  } as unknown as Page;
+
+  await expect(throwIfChatGptTerminalErrorAlert(scope)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 502,
+    errorType: "server_error",
+    code: "upstream_server_error",
+    retryable: true,
+  });
 });
 
 test("a failed subscription fetch is retryable and does not falsely invalidate ChatGPT login", async () => {
