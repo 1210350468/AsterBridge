@@ -1873,8 +1873,14 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   });
 });
 
-test("terminal model errors are scoped to the new assistant turn instead of global page alerts", () => {
+test("terminal model errors are checked only after the new assistant turn is bound", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const submissionAcceptance = workerSource.slice(
+    workerSource.indexOf("  private async waitForSubmissionAccepted("),
+    workerSource.indexOf("  private async currentSubmissionEvidence("),
+  );
+  expect(submissionAcceptance).not.toContain("throwIfChatGptTerminalErrorAlert(");
+  expect(workerSource).toContain("throwIfChatGptTerminalErrorAlert(activeResponseTurn)");
   expect(workerSource).toContain("throwIfChatGptTerminalErrorAlert(responseTurn)");
   expect(workerSource).not.toContain("throwIfChatGptTerminalErrorAlert(page)");
 });
@@ -1885,7 +1891,6 @@ test("submission acceptance stops when its stage is aborted", async () => {
       page: Page,
       userTurns: unknown,
       responseTurns: unknown,
-      responseTurn: unknown,
       initialUserTurnCount: number,
       initialResponseTurnCount: number,
       signal: AbortSignal,
@@ -1897,7 +1902,6 @@ test("submission acceptance stops when its stage is aborted", async () => {
   await expect(waitForSubmissionAccepted.call(
     {},
     {} as Page,
-    {},
     {},
     {},
     0,

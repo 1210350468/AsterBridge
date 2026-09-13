@@ -2021,7 +2021,6 @@ export class ChatGptBrowserWorker {
     page: Page,
     userTurns: Locator,
     responseTurns: Locator,
-    responseTurn: Locator,
     initialUserTurnCount: number,
     initialResponseTurnCount: number,
     signal?: AbortSignal,
@@ -2030,7 +2029,9 @@ export class ChatGptBrowserWorker {
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       await throwIfChatGptSessionFailureAlert(page);
-      await throwIfChatGptTerminalErrorAlert(responseTurn);
+      // Until submission evidence binds the new assistant turn, this locator may still resolve
+      // ambiguously around a historical failed response. Terminal response errors are checked
+      // against the bound current turn in the acknowledgement/observation loops below.
       const evidence = await this.currentSubmissionEvidence(
         page,
         userTurns,
@@ -2090,12 +2091,10 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await sendButton.press("Enter");
-    const responseTurn = baseline.responseTurns.nth(baseline.initialResponseTurnCount);
     return await this.waitForSubmissionAccepted(
       page,
       baseline.userTurns,
       baseline.responseTurns,
-      responseTurn,
       baseline.initialUserTurnCount,
       baseline.initialResponseTurnCount,
       signal,
