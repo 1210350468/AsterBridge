@@ -2,7 +2,7 @@
 
 All notable AsterBridge changes are documented here.
 
-## 3.0.41 - WIP
+## 3.0.41 - 2026-09-14
 
 ### Browser diagnostics / v5.0.6 selective audit
 
@@ -14,8 +14,9 @@ All notable AsterBridge changes are documented here.
 - Added the final v5.0.6 `Stopped thinking` contract without the superseded early grace-window tracker. Only a visible status inside the bound response can terminate the turn; answer/commentary content and `pre`/`code`/`blockquote` quotations are excluded. A real status now fails explicitly as non-retryable `502 chatgpt_stopped_thinking` with a conservative “usage limit may have been reached” explanation instead of hanging until generic completion/DOM health expires.
 - Browser diagnostic snapshots now include structural effort-slider ARIA values, canonical user-turn counts, visible stop-button counts, and per-assistant Markdown/streaming/completion-action counts. This keeps future ChatGPT UI regressions debuggable without depending on localized labels. The existing 30-second stalled-response capture is intentionally retained: it is an observation checkpoint, not a failure deadline, and earlier evidence is more useful for Windows/Roxy incidents.
 - Confirmed that upstream `3b0ac80` does not require a backport in the current AsterBridge browser loop: ordinary response health already performs a fresh `responseDomSnapshot()` before the missing-response grace tracker can expire the turn. Upstream `9929638` path determinism is also already present via explicit `win32.resolve` / `posix.resolve` handling in the Interrupt hook.
+- Final focused validation: browser-worker contract + Full Harness **146 pass / 0 fail / 789 assertions**; TypeScript PASS; version/docs contracts PASS; `git diff --check` PASS. Final candidate `35e0605` passed all five CI jobs including Windows, Ubuntu, macOS, audit, and actionlint.
 
-## 3.0.40 - WIP
+## 3.0.40 - 2026-09-14
 
 ### Deterministic retained compaction handoff
 
