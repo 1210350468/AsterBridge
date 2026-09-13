@@ -2168,6 +2168,21 @@ test("routine browser diagnostics avoid screenshots unless full capture is reque
   expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
 });
 
+test("browser diagnostics capture structural turn and effort evidence without localized labels", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const diagnostics = workerSource.slice(
+    workerSource.indexOf("class ChatGptBrowserDiagnostics"),
+    workerSource.indexOf("export function resolveBrowserConfig"),
+  );
+  expect(diagnostics).toContain("effortSliderSelector: CHATGPT_EFFORT_SLIDER_SELECTOR");
+  expect(diagnostics).toContain("userTurnSelector: CHATGPT_USER_TURN_SELECTOR");
+  expect(diagnostics).toContain("stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR");
+  expect(diagnostics).toContain("completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR");
+  expect(diagnostics).toContain("renderedCompletionActionCount");
+  expect(diagnostics).toContain("streamingStatusCount");
+  expect(diagnostics).toContain("aria-valuenow");
+});
+
 test("visible DOM trace interleaves statuses and explicit intermediate commentary", () => {
   const tracker = new ChatGptVisibleTraceTracker(100);
   const initialBlocks = [

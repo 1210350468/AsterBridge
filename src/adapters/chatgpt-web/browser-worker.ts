@@ -1019,7 +1019,16 @@ class ChatGptBrowserDiagnostics {
         includeScreenshot
           ? page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" })
           : Promise.resolve(undefined),
-        page.evaluate(({ composerSelector, effortControlSelector, effortItemSelector, assistantTurnSelector }) => {
+        page.evaluate(({
+          composerSelector,
+          effortControlSelector,
+          effortItemSelector,
+          effortSliderSelector,
+          assistantTurnSelector,
+          userTurnSelector,
+          stopButtonSelector,
+          completionActionSelector,
+        }) => {
           const rendered = (element: Element): boolean => {
             const candidate = element as HTMLElement;
             const style = getComputedStyle(candidate);
@@ -1052,6 +1061,12 @@ class ChatGptBrowserDiagnostics {
                 text: boundedText(element),
               };
             });
+          const integerAttribute = (element: Element, name: string): number | null => {
+            const raw = element.getAttribute(name);
+            return raw !== null && /^-?\d+$/.test(raw) && Number.isSafeInteger(Number(raw))
+              ? Number(raw)
+              : null;
+          };
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           return {
@@ -1068,14 +1083,28 @@ class ChatGptBrowserDiagnostics {
             },
             effortControls: rows(effortControlSelector, 10),
             effortItems: rows(effortItemSelector, 20),
+            effortSliders: [...document.querySelectorAll(effortSliderSelector)]
+              .filter(rendered)
+              .slice(-10)
+              .map(element => ({
+                min: integerAttribute(element, "aria-valuemin"),
+                max: integerAttribute(element, "aria-valuemax"),
+                value: integerAttribute(element, "aria-valuenow"),
+              })),
             menus: rows('[role="menu"], [role="listbox"], [data-testid="composer-intelligence-picker-content"]', 20),
             connectorRows: rows('.__menu-item[tabindex="0"]', 40),
             overlays: rows('[role="dialog"], [role="alert"], [role="status"]', 30),
             turns: {
-              user: document.querySelectorAll('[data-testid^="conversation-turn-"][data-message-author-role="user"]').length,
+              user: document.querySelectorAll(userTurnSelector).length,
+              stopButtonCount: [...document.querySelectorAll(stopButtonSelector)].filter(rendered).length,
               assistant: assistantTurns.map(element => ({
                 textChars: (element.textContent ?? "").length,
                 htmlChars: (element as HTMLElement).innerHTML.length,
+                markdownCount: element.querySelectorAll(".markdown").length,
+                streamingStatusCount: element.querySelectorAll("[data-streaming-response-status]").length,
+                completionActionCount: element.querySelectorAll(completionActionSelector).length,
+                renderedCompletionActionCount: [...element.querySelectorAll(completionActionSelector)]
+                  .filter(rendered).length,
               })),
             },
           };
@@ -1083,7 +1112,11 @@ class ChatGptBrowserDiagnostics {
           composerSelector: CHATGPT_COMPOSER_SELECTOR,
           effortControlSelector: CHATGPT_EFFORT_CONTROL_SELECTOR,
           effortItemSelector: CHATGPT_EFFORT_ITEM_SELECTOR,
+          effortSliderSelector: CHATGPT_EFFORT_SLIDER_SELECTOR,
           assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
+          userTurnSelector: CHATGPT_USER_TURN_SELECTOR,
+          stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
+          completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
         }),
       ]);
       const capturedAt = new Date().toISOString();
