@@ -75,7 +75,7 @@ import {
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
-import { ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "./adapter-error";
 import { selectDirectToolBridgeTransportText } from "./direct-tool-bridge";
 import {
   ChatGptLunaCheckpointStream,
@@ -875,6 +875,7 @@ interface ChatGptResponseDomSnapshot {
   fullHtml: string;
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
+  stoppedThinkingVisible: boolean;
   traceBlocks: ChatGptVisibleTraceBlock[];
 }
 
@@ -884,6 +885,7 @@ const absentResponseDomSnapshot = (): ChatGptResponseDomSnapshot => ({
   fullHtml: "",
   markdownSegments: [],
   completionActionVisible: false,
+  stoppedThinkingVisible: false,
   traceBlocks: [],
 });
 
@@ -2132,6 +2134,7 @@ export class ChatGptBrowserWorker {
       await throwIfChatGptSessionFailureAlert(page);
       await throwIfChatGptTerminalErrorAlert(activeResponseTurn);
       let snapshot = await this.responseDomSnapshot(activeResponseTurn);
+      if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
       const running = await page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last().isVisible().catch(() => false);
       const domError = domHealthTracker.update({
         responsePresent: snapshot.responsePresent,
@@ -2952,12 +2955,35 @@ export class ChatGptBrowserWorker {
         ...block,
         ...(block.kind === "commentary" ? { complete: index < blocks.length - 1 } : {}),
       }));
+      const stoppedThinkingVisible = (() => {
+        // Only ChatGPT UI in the bound response may terminate the turn. A model quoting this
+        // phrase in its answer/reasoning is ordinary content, not a stopped-thinking status.
+        const isStatus = (candidate: HTMLElement): boolean => {
+          if (overlapsRenderedAnswer(candidate) || overlapsCommentary(candidate)
+            || candidate.closest("pre, code, blockquote")) return false;
+          for (let element: HTMLElement | null = candidate; element; element = element.parentElement) {
+            if (!renderedInDom(element)) return false;
+          }
+          return true;
+        };
+        const ariaMatch = [...root.querySelectorAll<HTMLElement>('[aria-label="Stopped thinking"]')]
+          .some(isStatus);
+        if (ariaMatch) return true;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.textContent?.replace(/\s+/g, " ").trim() !== "Stopped thinking") continue;
+          const parent = node.parentElement;
+          if (parent && isStatus(parent)) return true;
+        }
+        return false;
+      })();
       return {
         responsePresent: true,
         visibleText: renderedRoots.map(candidate => candidate.innerText.trim()).filter(Boolean).join("\n\n"),
         fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join(""),
         markdownSegments,
         completionActionVisible: completionAction !== undefined,
+        stoppedThinkingVisible,
         traceBlocks,
       };
     }, CHATGPT_COMPLETION_ACTION_SELECTOR, { timeout: 10_000 }).catch(error => {
@@ -3475,6 +3501,7 @@ export class ChatGptBrowserWorker {
         }
 
         const snapshot = await this.responseDomSnapshot(responseTurn);
+        if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
         const externalProgressSnapshot = turn.externalProgress?.snapshot();
         if (turn.externalProgress
           && externalProgressSnapshot

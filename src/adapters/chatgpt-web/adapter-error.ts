@@ -21,3 +21,16 @@ export class ChatGptWebAdapterError extends Error {
     this.retryable = options.retryable;
   }
 }
+
+export function chatGptStoppedThinkingError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT displayed 'Stopped thinking' and could not continue this response. "
+    + "A ChatGPT Web usage limit may have been reached. Check the ChatGPT tab for the exact reason before retrying.",
+    {
+      status: 502,
+      errorType: "server_error",
+      code: "chatgpt_stopped_thinking",
+      retryable: false,
+    },
+  );
+}
