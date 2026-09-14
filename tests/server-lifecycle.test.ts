@@ -234,6 +234,7 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   chatGptTurnSessions.getOrCreate("orphan", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     cancel: () => { cancelled += 1; },

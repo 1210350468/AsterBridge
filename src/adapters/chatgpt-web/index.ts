@@ -265,7 +265,7 @@ export function createChatGptWebAdapter(
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
     if (!mode.localTools) {
-      const browser = finalizeCheckpoint(worker.run({
+      const browserRun = worker.run({
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
@@ -288,10 +288,13 @@ export function createChatGptWebAdapter(
           captureLunaCheckpoint: true,
           onLunaCheckpoint: captureCheckpoint,
         } : {}),
-      }));
+      });
+      const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+      const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "read-only",
         browser,
+        physicalSettlement,
         trace,
         text,
         ...(identity.threadId ? { threadId: identity.threadId } : {}),
@@ -311,7 +314,7 @@ export function createChatGptWebAdapter(
         ),
         release: () => {},
       });
-      const browser = finalizeCheckpoint(worker.run({
+      const browserRun = worker.run({
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
@@ -323,11 +326,14 @@ export function createChatGptWebAdapter(
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
-      }));
+      });
+      const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+      const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "direct-tools",
         binding: directToolBinding,
         browser,
+        physicalSettlement,
         trace,
         text,
         ...(identity.threadId ? { threadId: identity.threadId } : {}),
@@ -395,7 +401,7 @@ export function createChatGptWebAdapter(
         throw error;
       }
     };
-    const browser = finalizeCheckpoint(worker.run({
+    const browserRun = worker.run({
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
@@ -414,7 +420,9 @@ export function createChatGptWebAdapter(
         captureLunaCheckpoint: true,
         onLunaCheckpoint: captureCheckpoint,
       } : {}),
-    }));
+    });
+    const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+    const browser = finalizeCheckpoint(browserRun);
     void browser.catch(error => {
       if (!tokenSettled) {
         tokenSettled = true;
@@ -426,6 +434,7 @@ export function createChatGptWebAdapter(
       token: token.promise,
       ...(externalProgress ? { externalProgress } : {}),
       browser,
+      physicalSettlement,
       trace,
       text,
       ...(identity.threadId ? { threadId: identity.threadId } : {}),
@@ -495,7 +504,7 @@ export function createChatGptWebAdapter(
             .update(`${compactionExecutionKey}:handoff`)
             .digest("hex")
             .slice(0, 12);
-          const summary = await runStructuredCompactionOnce(compactionExecutionKey, () => (
+          const summary = await runStructuredCompactionOnce(compactionExecutionKey, retainOwnershipUntil => (
             runRetainedCompaction({
               worker,
               parsed,
@@ -506,6 +515,7 @@ export function createChatGptWebAdapter(
               traceId: handoffTraceId,
               signal: incoming.abortSignal,
               timeoutMs,
+              retainOwnershipUntil,
               compactedSourceExecutionKey: `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`,
               freshFallback: async reason => {
                 console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
@@ -515,6 +525,7 @@ export function createChatGptWebAdapter(
                   `${handoffTraceId}_fallback`,
                   turnCapabilities,
                 );
+                retainOwnershipUntil(fallbackRuntime.physicalSettlement);
                 try {
                   return await withAbort(fallbackRuntime.browser, incoming.abortSignal);
                 } finally {

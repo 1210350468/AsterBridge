@@ -2,6 +2,15 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.42 - WIP
+
+### Physical browser settlement ownership
+
+- Started the remaining U5-W2 helper/Launcher ownership work by separating a browser turn's logical result from its physical cleanup contract. Every production runtime now exposes `physicalSettlement`; retained-conversation retirement, superseded-turn preemption, exact native Interrupt settlement, and retained-page release wait for that physical gate rather than assuming `browserOutcome` proves the underlying page/helper has already been released.
+- The current same-process Roxy/system-browser path preserves existing behavior by binding `physicalSettlement` to the raw `ChatGptBrowserWorker.run()` completion before Luna/result post-processing. This is intentionally a compatibility foundation for the later Launcher-helper protocol, where a logical error/result may precede process/page teardown.
+- Structured compaction de-duplication now retains a failed run until every registered physical browser owner has settled. Retained handoff turns and fresh compaction fallbacks register their cleanup promises, so an immediate logical timeout/failure cannot evict the de-duplication key and launch a competing retry on a surface that is still unwinding.
+- Regression coverage proves exact Interrupt settlement remains pending after the logical browser result until physical cleanup completes, and proves a failed structured compaction blocks duplicate restart until its registered physical settlement releases. Focused lifecycle/retained-compaction/Full-Harness coverage passes with no failures.
+
 ## 3.0.41 - 2026-09-14
 
 ### Browser diagnostics / v5.0.6 selective audit

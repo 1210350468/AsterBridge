@@ -54,6 +54,7 @@ function sourceSession(conversationKey = "retained-conversation"): ChatGptTurnSe
   return new ChatGptTurnSession({
     mode: "read-only",
     browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey,
@@ -211,6 +212,7 @@ test("active tool-boundary compaction delivers the canonical result unchanged be
     mode: "tools",
     token: Promise.resolve(token),
     browser,
+    physicalSettlement: browser.then(() => undefined, () => undefined),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey: "active-conversation",
@@ -254,6 +256,7 @@ test("retained conversation retirement can preserve an already committed final r
   const source = sessions.getOrCreate("source-execution", () => ({
     mode: "read-only",
     browser: Promise.resolve("ordinary final answer"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey,
@@ -298,6 +301,36 @@ test("a failed structured compaction run is evicted while a successful exact run
   expect(starts).toBe(2);
 });
 
+test("a failed structured compaction keeps ownership until physical cleanup settles", async () => {
+  const key = `structured-physical-${Date.now()}-${Math.random()}`;
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
+  let retryStarts = 0;
+  const first = runStructuredCompactionOnce(key, async retainOwnershipUntil => {
+    retainOwnershipUntil(physicalSettlement);
+    throw new Error("logical compaction failure");
+  });
+  await expect(first).rejects.toThrow("logical compaction failure");
+
+  const blockedRetry = runStructuredCompactionOnce(key, async () => {
+    retryStarts += 1;
+    return "must not start before cleanup";
+  });
+  expect(blockedRetry).toBe(first);
+  expect(retryStarts).toBe(0);
+
+  releasePhysical();
+  await physicalSettlement;
+  await Bun.sleep(0);
+  expect(existingStructuredCompactionRun(key)).toBeUndefined();
+
+  await expect(runStructuredCompactionOnce(key, async () => {
+    retryStarts += 1;
+    return "retry after cleanup";
+  })).resolves.toBe("retry after cleanup");
+  expect(retryStarts).toBe(1);
+});
+
 test("missing retained source rebuilds one canonical checkpoint from fresh Codex history", async () => {
   const socketPath = brokerTestEndpoint(`cgw-compaction-fallback-${process.pid}-${Date.now()}`);
   const broker = TurnBroker.forSocket(socketPath);
@@ -334,6 +367,7 @@ test("lost retained Roxy page retires the stale epoch before one fresh recovery 
   sessions.getOrCreate("source-turn", () => ({
     mode: "read-only",
     browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey: "lost-conversation",

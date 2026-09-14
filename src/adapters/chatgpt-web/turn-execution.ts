@@ -117,6 +117,8 @@ export class ChatGptTextFeed {
 
 interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
+  /** Physical browser/helper cleanup, which may outlive the logical browser result. */
+  physicalSettlement: Promise<void>;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
   /** Native Codex thread owning this browser runtime, when one is available. */
@@ -230,6 +232,7 @@ export class ChatGptTurnSession {
   readonly createdAt = Date.now();
   private lastTouchedAt = this.createdAt;
   readonly browserOutcome: Promise<ChatGptBrowserOutcome>;
+  readonly physicalSettlement: Promise<void>;
   private readonly outstandingById = new Map<string, BrokerToolRequest>();
   private readonly deliveredResultIds = new Set<string>();
   private outstandingReasoning: string[] = [];
@@ -242,6 +245,7 @@ export class ChatGptTurnSession {
 
   constructor(readonly runtime: ChatGptTurnRuntime) {
     this.attachedConversationKey = runtime.conversationKey;
+    this.physicalSettlement = runtime.physicalSettlement;
     this.browserOutcome = runtime.browser
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
@@ -420,7 +424,7 @@ export class ChatGptTurnSessions {
       if (release) releases.add(release);
       session.cancel();
     }
-    await Promise.all(matches.map(([, session]) => session.browserOutcome.then(() => undefined)));
+    await Promise.all(matches.map(([, session]) => session.physicalSettlement));
     await Promise.all([...releases].map(release => release()));
     return matches.length;
   }
@@ -450,7 +454,7 @@ export class ChatGptTurnSessions {
       if (!oldest) break;
       this.explicitCancellationTombstones.delete(oldest);
     }
-    const settlement = Promise.all(matches.map(([, session]) => session.browserOutcome.then(() => undefined)))
+    const settlement = Promise.all(matches.map(([, session]) => session.physicalSettlement))
       .then(async () => {
         await Promise.all([...releases].map(release => release()));
       });
@@ -476,7 +480,7 @@ export class ChatGptTurnSessions {
     for (const session of heads) {
       const release = session.runtime.releaseRetainedConversation;
       if (!release) continue;
-      void session.browserOutcome.then(() => release()).catch(error => {
+      void session.physicalSettlement.then(() => release()).catch(error => {
         console.error(`[chatgpt-web] failed to release explicitly cancelled retained conversation: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
@@ -559,7 +563,7 @@ export class ChatGptTurnSessions {
     if (preserved) this.entries.set(preserved.executionKey, preserved.session);
     const release = head?.runtime.releaseRetainedConversation
       ?? matches.findLast(([, session]) => session.runtime.releaseRetainedConversation !== undefined)?.[1].runtime.releaseRetainedConversation;
-    const retirement = Promise.all(matches.map(([, session]) => session.browserOutcome))
+    const retirement = Promise.all(matches.map(([, session]) => session.physicalSettlement))
       .then(async () => { await release?.(); });
     this.conversationRetirements.set(conversationKey, retirement);
     try {
@@ -588,8 +592,7 @@ export class ChatGptTurnSessions {
     this.entries.delete(key);
     const releaseConversation = this.forgetConversationHead(session);
     session.cancel();
-    const retirement = session.browserOutcome
-      .then(() => undefined)
+    const retirement = session.physicalSettlement
       .then(async () => { await releaseConversation?.(); });
     this.retirements.set(key, retirement);
     try {
@@ -606,7 +609,7 @@ export class ChatGptTurnSessions {
     const releaseConversation = this.forgetConversationHead(session);
     session.cancel();
     if (releaseConversation) {
-      void session.browserOutcome.then(() => releaseConversation()).catch(error => {
+      void session.physicalSettlement.then(() => releaseConversation()).catch(error => {
         console.error(`[chatgpt-web] failed to release retired retained conversation: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
@@ -625,7 +628,7 @@ export class ChatGptTurnSessions {
     for (const session of heads) {
       const release = session.runtime.releaseRetainedConversation;
       if (!release) continue;
-      void session.browserOutcome.then(() => release()).catch(error => {
+      void session.physicalSettlement.then(() => release()).catch(error => {
         console.error(`[chatgpt-web] failed to release cleared retained conversation: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
@@ -647,7 +650,7 @@ export class ChatGptTurnSessions {
       const releaseConversation = this.forgetConversationHead(session);
       session.cancel();
       if (releaseConversation) {
-        void session.browserOutcome.then(() => releaseConversation()).catch(error => {
+        void session.physicalSettlement.then(() => releaseConversation()).catch(error => {
           console.error(`[chatgpt-web] failed to release expired retained conversation: ${error instanceof Error ? error.message : String(error)}`);
         });
       }

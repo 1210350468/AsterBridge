@@ -839,6 +839,7 @@ describe("ChatGPT outer-native harness v4", () => {
         mode: "tools" as const,
         token: new Promise<string>(() => {}),
         browser: new Promise<string>(() => {}),
+        physicalSettlement: Promise.resolve(),
         trace: new ChatGptTraceFeed(),
         text: new ChatGptTextFeed(),
         cancel: () => {},
@@ -861,6 +862,7 @@ describe("ChatGPT outer-native harness v4", () => {
       return {
         mode: "read-only" as const,
         browser: Promise.reject(new Error("retryable upstream failure")),
+        physicalSettlement: Promise.resolve(),
         trace: new ChatGptTraceFeed(),
         text: new ChatGptTextFeed(),
         cancel: () => { cancellations += 1; },
@@ -1152,6 +1154,7 @@ describe("ChatGPT outer-native harness v4", () => {
     const original = sessions.getOrCreate("replace", () => ({
       mode: "read-only",
       browser,
+      physicalSettlement: browser.then(() => undefined, () => undefined),
       trace: new ChatGptTraceFeed(),
       text: new ChatGptTextFeed(),
       cancel: () => { cancellations += 1; },
@@ -1165,6 +1168,7 @@ describe("ChatGPT outer-native harness v4", () => {
       return {
         mode: "read-only" as const,
         browser: Promise.resolve("continued"),
+        physicalSettlement: Promise.resolve(),
         trace: new ChatGptTraceFeed(),
         text: new ChatGptTextFeed(),
         cancel: () => {},

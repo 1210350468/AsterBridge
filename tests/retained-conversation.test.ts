@@ -84,6 +84,7 @@ test("only the current conversation head may release a retained browser page", a
   const runtime = () => ({
     mode: "read-only" as const,
     browser: Promise.resolve("ok"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey: "conversation-a",
@@ -108,6 +109,7 @@ test("conversation retirement releases one retained page after all epoch session
   const runtime = () => ({
     mode: "read-only" as const,
     browser: Promise.resolve("ok"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey: "conversation-b",

@@ -20,7 +20,9 @@ const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
 
 interface CachedCompactionRun {
   createdAt: number;
+  active: boolean;
   promise: Promise<string>;
+  settlement: Promise<void>;
 }
 
 const structuredCompactionRuns = new Map<string, CachedCompactionRun>();
@@ -28,7 +30,7 @@ const structuredCompactionRuns = new Map<string, CachedCompactionRun>();
 function pruneStructuredCompactionRuns(): void {
   const cutoff = Date.now() - STRUCTURED_COMPACTION_RUN_TTL_MS;
   for (const [key, run] of structuredCompactionRuns) {
-    if (run.createdAt < cutoff) structuredCompactionRuns.delete(key);
+    if (!run.active && run.createdAt < cutoff) structuredCompactionRuns.delete(key);
   }
 }
 
@@ -39,18 +41,25 @@ export function existingStructuredCompactionRun(key: string): Promise<string> | 
 
 export function runStructuredCompactionOnce(
   key: string,
-  start: () => Promise<string>,
+  start: (retainOwnershipUntil: (settlement: Promise<void>) => void) => Promise<string>,
 ): Promise<string> {
   pruneStructuredCompactionRuns();
   const existing = structuredCompactionRuns.get(key);
   if (existing) return existing.promise;
-  const promise = Promise.resolve().then(start);
-  structuredCompactionRuns.set(key, { createdAt: Date.now(), promise });
-  void promise.catch(() => {
-    if (structuredCompactionRuns.get(key)?.promise === promise) {
+  const physicalSettlements: Promise<void>[] = [];
+  const promise = Promise.resolve().then(() => start(settlement => {
+    physicalSettlements.push(settlement);
+  }));
+  let run!: CachedCompactionRun;
+  const settlement = promise.then(() => false, () => true).then(async failed => {
+    await Promise.allSettled(physicalSettlements);
+    run.active = false;
+    if (failed && structuredCompactionRuns.get(key) === run) {
       structuredCompactionRuns.delete(key);
     }
   });
+  run = { createdAt: Date.now(), active: true, promise, settlement };
+  structuredCompactionRuns.set(key, run);
   return promise;
 }
 
@@ -285,6 +294,7 @@ export async function requestRetainedCompactionHandoff(
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  retainOwnershipUntil?: (settlement: Promise<void>) => void,
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
@@ -327,6 +337,7 @@ export async function requestRetainedCompactionHandoff(
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
+    retainOwnershipUntil?.(browser.then(() => undefined, () => undefined));
     const browserFailure = browser.then<never>(
       () => new Promise<never>(() => {}),
       error => { throw error; },
@@ -364,6 +375,7 @@ export async function runRetainedCompaction(options: {
   timeoutMs?: number;
   compactedSourceExecutionKey?: string;
   freshFallback: (reason: string) => Promise<string>;
+  retainOwnershipUntil?: (settlement: Promise<void>) => void;
 }): Promise<string> {
   const {
     worker,
@@ -377,6 +389,7 @@ export async function runRetainedCompaction(options: {
     timeoutMs,
     compactedSourceExecutionKey,
     freshFallback,
+    retainOwnershipUntil,
   } = options;
   const source = conversationKey ? sessions.findConversationHead(conversationKey) : undefined;
   if (!source || !conversationKey) {
@@ -404,6 +417,7 @@ export async function runRetainedCompaction(options: {
       traceId,
       signal,
       timeoutMs,
+      retainOwnershipUntil,
     );
     const summary = canonicalizeCompactionHandoff(parsed, rawSummary);
     if (preserveFinalResponse && compactedSourceExecutionKey) {

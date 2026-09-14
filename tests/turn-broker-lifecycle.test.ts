@@ -13,6 +13,7 @@ test("explicit browser-turn cancellation aborts and removes every registered ses
   const replayable = sessions.getOrCreate("turn-a", () => ({
     mode: "read-only",
     browser: Promise.resolve("done"),
+    physicalSettlement: Promise.resolve(),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     cancel: () => { cancelled += 1; },
@@ -21,6 +22,7 @@ test("explicit browser-turn cancellation aborts and removes every registered ses
   sessions.getOrCreate("turn-b", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     cancel: () => { cancelled += 1; },
@@ -40,6 +42,7 @@ test("explicit cancellation tombstones the cancelled execution key without block
     return {
       mode: "read-only" as const,
       browser: new Promise<string>(() => {}),
+      physicalSettlement: new Promise<void>(() => {}),
       trace: new ChatGptTraceFeed(),
       text: new ChatGptTextFeed(),
       cancel: () => {},
@@ -65,6 +68,7 @@ test("native interrupt cancels only the exact Codex turn and tombstones its exec
   sessions.getOrCreate("target-key", () => ({
     mode: "read-only",
     browser: targetBrowser,
+    physicalSettlement: targetBrowser.then(() => undefined, () => undefined),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     threadId: "thread-a",
@@ -77,6 +81,7 @@ test("native interrupt cancels only the exact Codex turn and tombstones its exec
   sessions.getOrCreate("newer-key", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     threadId: "thread-a",
@@ -86,6 +91,7 @@ test("native interrupt cancels only the exact Codex turn and tombstones its exec
   sessions.getOrCreate("other-key", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     threadId: "thread-b",
@@ -106,6 +112,34 @@ test("native interrupt cancels only the exact Codex turn and tombstones its exec
   sessions.clear();
 });
 
+test("native interrupt settlement waits for physical cleanup after the logical browser result", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
+  const session = sessions.getOrCreate("physical-owner", () => ({
+    mode: "read-only",
+    browser: Promise.resolve("logical result already available"),
+    physicalSettlement,
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    threadId: "thread-physical",
+    turnId: "turn-physical",
+    cancel: () => {},
+  }));
+  await session.browserOutcome;
+
+  const cancellation = sessions.cancelNativeTurn("thread-physical", "turn-physical");
+  expect(cancellation.cancelled).toBe(1);
+  let settled = false;
+  void cancellation.settlement.then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBeFalse();
+
+  releasePhysical();
+  await cancellation.settlement;
+  expect(settled).toBeTrue();
+});
+
 test("a newer native turn preempts only the older active browser turn on the same thread", async () => {
   const sessions = new ChatGptTurnSessions();
   let cancelledOld = 0;
@@ -114,6 +148,7 @@ test("a newer native turn preempts only the older active browser turn on the sam
   sessions.getOrCreate("old-turn-key", () => ({
     mode: "read-only",
     browser: oldBrowser,
+    physicalSettlement: oldBrowser.then(() => undefined, () => undefined),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     threadId: "thread-a",
@@ -126,6 +161,7 @@ test("a newer native turn preempts only the older active browser turn on the sam
   sessions.getOrCreate("other-thread-key", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     threadId: "thread-b",
@@ -151,6 +187,7 @@ test("session cache expiry never cancels a still-active long browser turn", asyn
   const active = sessions.getOrCreate("long-turn", () => ({
     mode: "read-only",
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     cancel: () => { cancelled += 1; },
@@ -171,6 +208,7 @@ test("five active turns coexist and a sixth fails closed", () => {
   const runtime = () => ({
     mode: "read-only" as const,
     browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     cancel: () => { cancelled += 1; },
@@ -199,6 +237,7 @@ test("settled replay sessions expire from their last use instead of their creati
     return {
       mode: "read-only" as const,
       browser: Promise.resolve("done"),
+      physicalSettlement: Promise.resolve(),
       trace: new ChatGptTraceFeed(),
       text: new ChatGptTextFeed(),
       cancel: () => {},
