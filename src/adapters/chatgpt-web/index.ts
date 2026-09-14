@@ -503,7 +503,9 @@ export function createChatGptWebAdapter(
         const retainedCompactionSupported = configuredCapabilities.localToolsEnabled
           && configuredCapabilities.localToolTransport !== "responses"
           && broker instanceof TurnBroker
-          && (provider.chatgptWeb?.browserHost === "roxybrowser" || provider.chatgptWeb?.browserHost === "system-browser");
+          && (provider.chatgptWeb?.browserHost === "roxybrowser"
+            || provider.chatgptWeb?.browserHost === "system-browser"
+            || provider.chatgptWeb?.browserHost === "launcher");
         if (retainedCompactionSupported) {
           const compactionExecutionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
           const handoffTraceId = createHash("sha256")

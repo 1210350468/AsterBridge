@@ -270,6 +270,9 @@ export async function settleActiveCompactionSource(
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
       if (browserOutcome.type === "error") throw browserOutcome.error;
       const compactionInstructionDelivered = broker.compactionDeliveryCount(token) > 0;
+      // The dedicated handoff must not race the prior helper's /turn/end cleanup on the same
+      // retained Launcher surface. Logical completion alone is not ownership release.
+      await withCompactionAbort(source.physicalSettlement, signal);
       return { answer: browserOutcome.answer, compactionInstructionDelivered };
     } catch (error) {
       if (signal?.aborted) source.cancel();
@@ -310,6 +313,7 @@ export async function requestRetainedCompactionHandoff(
   const abortBrowser = () => browserAbort.abort(operationSignal.reason);
   let transaction: Awaited<ReturnType<TurnBroker["beginCompactionTransaction"]>> | undefined;
   let browser: Promise<string> | undefined;
+  let physicalSettlement: Promise<void> | undefined;
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
@@ -337,7 +341,8 @@ export async function requestRetainedCompactionHandoff(
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
-    retainOwnershipUntil?.(browser.then(() => undefined, () => undefined));
+    physicalSettlement = worker.physicalSettlementFor(browser);
+    retainOwnershipUntil?.(physicalSettlement);
     const browserFailure = browser.then<never>(
       () => new Promise<never>(() => {}),
       error => { throw error; },
@@ -350,13 +355,14 @@ export async function requestRetainedCompactionHandoff(
       operationSignal,
     );
     browserAbort.abort(new DOMException("Structured compaction handoff accepted", "AbortError"));
-    await withCompactionAbort(browser.then(() => undefined, () => undefined), operationSignal);
+    await withCompactionAbort(physicalSettlement, operationSignal);
     return summary;
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);
-    if (browser) {
+    if (browser && physicalSettlement) {
       await withCompactionAbort(browser.then(() => undefined, () => undefined), operationSignal).catch(() => {});
+      await withCompactionAbort(physicalSettlement, operationSignal).catch(() => {});
     }
     operationSignal.removeEventListener("abort", abortBrowser);
     clearTimeout(deadlineTimer);

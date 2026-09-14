@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CodexParsedRequest } from "../src/types";
-import type { ChatGptBrowserWorker, BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
+import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../src/types";
+import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import {
   boundedCompactionLatestUserPrompt,
   canonicalizeCompactionHandoff,
@@ -15,7 +16,15 @@ import {
   settleActiveCompactionSource,
 } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
-import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSession, ChatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
+import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
+import {
+  ChatGptTextFeed,
+  ChatGptTraceFeed,
+  ChatGptTurnSession,
+  ChatGptTurnSessions,
+  chatGptTurnSessions,
+} from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateTokens } from "../src/lib/token-estimate";
@@ -98,6 +107,9 @@ test("retained compaction uses the exact conversation and waits for structured h
   const source = sourceSession("conversation-exact");
   let observedTurn: BrowserTurn | undefined;
   let browserFinished = false;
+  let physicalFinished = false;
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
   const worker = {
     run(turn: BrowserTurn) {
       observedTurn = turn;
@@ -117,10 +129,13 @@ test("retained compaction uses the exact conversation and waits for structured h
         return "visible compaction completion";
       })();
     },
+    physicalSettlementFor() {
+      return physicalSettlement.then(() => { physicalFinished = true; });
+    },
   } as unknown as ChatGptBrowserWorker;
 
   try {
-    const summary = await requestRetainedCompactionHandoff(
+    const pendingSummary = requestRetainedCompactionHandoff(
       worker,
       parsed,
       source,
@@ -130,8 +145,18 @@ test("retained compaction uses the exact conversation and waits for structured h
       undefined,
       30_000,
     );
+    await new Promise(resolve => setTimeout(resolve, 40));
+    let summarySettled = false;
+    void pendingSummary.finally(() => { summarySettled = true; });
+    await Promise.resolve();
+    expect(summarySettled).toBe(false);
+    expect(browserFinished).toBe(true);
+    expect(physicalFinished).toBe(false);
+    releasePhysical();
+    const summary = await pendingSummary;
     expect(summary).toBe("structured retained checkpoint");
     expect(browserFinished).toBe(true);
+    expect(physicalFinished).toBe(true);
     expect(observedTurn).toMatchObject({
       conversationKey: "conversation-exact",
       retainConversation: true,
@@ -160,6 +185,9 @@ test("retained compaction fails closed when ChatGPT skips the structured MCP han
         if (!token || !handoffId) throw new Error("compaction prompt did not expose its one-shot binding");
         return "browser-only retained checkpoint";
       })();
+    },
+    physicalSettlementFor(run: Promise<string>) {
+      return run.then(() => undefined, () => undefined);
     },
   } as unknown as ChatGptBrowserWorker;
 
@@ -208,11 +236,13 @@ test("active tool-boundary compaction delivers the canonical result unchanged be
 
   let resolveBrowser!: (value: string) => void;
   const browser = new Promise<string>(resolve => { resolveBrowser = resolve; });
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
   const source = new ChatGptTurnSession({
     mode: "tools",
     token: Promise.resolve(token),
     browser,
-    physicalSettlement: browser.then(() => undefined, () => undefined),
+    physicalSettlement,
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
     conversationKey: "active-conversation",
@@ -236,7 +266,14 @@ test("active tool-boundary compaction delivers the canonical result unchanged be
   });
 
   try {
-    expect(await settleActiveCompactionSource(parsed, source, broker)).toEqual({
+    let settled = false;
+    const settlement = settleActiveCompactionSource(parsed, source, broker);
+    void settlement.finally(() => { settled = true; });
+    await observedResult;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releasePhysical();
+    expect(await settlement).toEqual({
       answer: "ordinary final after canonical result",
       compactionInstructionDelivered: false,
     });
@@ -383,6 +420,9 @@ test("lost retained Roxy page retires the stale epoch before one fresh recovery 
         { status: 409, errorType: "invalid_request_error", code: "compaction_source_unavailable", retryable: false },
       ));
     },
+    physicalSettlementFor(run: Promise<string>) {
+      return run.then(() => undefined, () => undefined);
+    },
   } as unknown as ChatGptBrowserWorker;
   try {
     const summary = await runRetainedCompaction({
@@ -404,6 +444,91 @@ test("lost retained Roxy page retires the stale epoch before one fresh recovery 
     expect(released).toBe(1);
     expect(sessions.findConversationHead("lost-conversation")).toBeUndefined();
   } finally {
+    await broker.close();
+  }
+}, 30_000);
+
+test("adapter structured compaction reuses a retained Launcher conversation and releases it after handoff", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-launcher-compaction-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://launcher-structured-compaction-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(tmpdir(), `launcher-${process.pid}-${Date.now()}.json`),
+      brokerSocketPath: socketPath,
+      appName: "Codex Native DEV",
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: false,
+    },
+  };
+  const executionNamespace = createHash("sha256").update(JSON.stringify({
+    baseUrl: provider.baseUrl,
+    chatgptWeb: provider.chatgptWeb ?? {},
+  })).digest("hex");
+  const compact = compactionRequest();
+  const conversationKey = chatGptConversationKey(compact, executionNamespace);
+  expect(conversationKey).toBeDefined();
+
+  const broker = TurnBroker.forSocket(socketPath);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let releases = 0;
+  chatGptTurnSessions.getOrCreate(`launcher-source-${Date.now()}`, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("ordinary source final"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    conversationKey: conversationKey!,
+    releaseRetainedConversation: async () => { releases += 1; },
+    cancel: () => {},
+  }));
+
+  let retainedHandoffs = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    retainedHandoffs += 1;
+    expect(turn.requireRetainedConversation).toBe(true);
+    expect(turn.conversationKey).toBe(conversationKey);
+    expect(turn.prepareResume).toBeFunction();
+    const prepared = await turn.prepareResume!();
+    try {
+      const token = /turn_token (control_[0-9a-f]+)/.exec(prepared.text)?.[1];
+      const handoffId = /handoff_id (handoff_[0-9a-f]+)/.exec(prepared.text)?.[1];
+      if (!token || !handoffId) throw new Error("structured Launcher handoff omitted its control binding");
+      await callTurnBroker(socketPath, {
+        method: "submit_compaction_handoff",
+        token,
+        handoffId,
+        summary: "Launcher retained checkpoint",
+      });
+      return "control handoff submitted";
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    const text = events
+      .filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    expect(retainedHandoffs).toBe(1);
+    expect(text).toContain("Launcher retained checkpoint");
+    expect(text).toContain(LATEST_USER_PROMPT_MARKER);
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    expect(releases).toBe(1);
+    expect(chatGptTurnSessions.findConversationHead(conversationKey!)).toBeUndefined();
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
     await broker.close();
   }
 }, 30_000);
