@@ -27,7 +27,7 @@ function descriptorFile(
   roots.push(root);
   const path = join(root, "launcher-browser.json");
   writeFileSync(path, `${JSON.stringify({
-    version: 2,
+    version: 3,
     kind: LAUNCHER_BROWSER_HOST_KIND,
     profile,
     pid: process.pid,
@@ -45,6 +45,9 @@ function descriptorFile(
       : "persist:codex-web-gpt-chatgpt",
     idleUrl: "about:blank#codex-web-gpt-browser-host",
     surfaceId: "launcher_surface_id_0123456789AB",
+    surfaceTargets: {
+      launcher_surface_id_0123456789AB: "target-owned",
+    },
     createdAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
   return path;
@@ -76,7 +79,7 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
     };
     response.writeHead(200, { "content-type": "application/json" });
     response.end(request.url === "/v1/turn/start"
-      ? '{"ok":true,"surfaceId":"launcher_surface_id_0123456789AB"}\n'
+      ? '{"ok":true,"surfaceId":"launcher_surface_id_0123456789AB","reused":false,"connectorBound":false}\n'
       : request.url === "/v1/turn/end"
         ? '{"ok":true,"cancelledByUser":false}\n'
         : '{"ok":true}\n');
@@ -93,7 +96,11 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
       phase: "start",
       traceId: "abc123def456",
       helperPid: process.pid,
-    })).resolves.toEqual({ surfaceId: "launcher_surface_id_0123456789AB" });
+    })).resolves.toEqual({
+      surfaceId: "launcher_surface_id_0123456789AB",
+      reused: false,
+      connectorBound: false,
+    });
     expect(received.authorization).toBe("Bearer launcher-control-token-0123456789abcdefghijklmnop");
     expect(received.body).toEqual({ phase: "start", traceId: "abc123def456", helperPid: process.pid });
     await notifyLauncherTurn(path, {
@@ -221,18 +228,24 @@ test("launcher profile checks reject cross-profile browser ownership", async () 
     .rejects.toThrow("belongs to development");
 });
 
-test("launcher page selection uses the owned surface marker instead of URL order", async () => {
+test("launcher page selection uses the native target map instead of renderer JavaScript", async () => {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
   const hiddenPage = {
     url: () => "https://chatgpt.com/?temporary-chat=true",
-    evaluate: async () => "another_surface_id_0123456789ABC",
   } as unknown as Page;
   const ownedPage = {
     url: () => "about:blank#codex-web-gpt-browser-host",
-    evaluate: async () => descriptor.surfaceId,
   } as unknown as Page;
+  const targetFor = new Map<Page, string>([
+    [hiddenPage, "target-other"],
+    [ownedPage, descriptor.surfaceTargets[descriptor.surfaceId]!],
+  ]);
   const context = {
     pages: () => [hiddenPage, ownedPage],
+    newCDPSession: async (page: Page) => ({
+      send: async () => ({ targetInfo: { targetId: targetFor.get(page)! } }),
+      detach: async () => {},
+    }),
   } as unknown as BrowserContext;
   const browser = {
     contexts: () => [context],
@@ -244,13 +257,15 @@ test("launcher page selection uses the owned surface marker instead of URL order
   });
 });
 
-test("launcher page selection rejects duplicated ownership markers", async () => {
+test("launcher page selection rejects duplicated native target ownership", async () => {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
-  const page = () => ({
-    evaluate: async () => descriptor.surfaceId,
-  }) as unknown as Page;
+  const page = () => ({} as Page);
   const context = {
     pages: () => [page(), page()],
+    newCDPSession: async () => ({
+      send: async () => ({ targetInfo: { targetId: descriptor.surfaceTargets[descriptor.surfaceId]! } }),
+      detach: async () => {},
+    }),
   } as unknown as BrowserContext;
   const browser = {
     contexts: () => [context],
