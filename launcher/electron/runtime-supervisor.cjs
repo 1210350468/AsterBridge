@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
@@ -22,8 +23,14 @@ const TUNNEL_HEALTH_POLL_INTERVAL_MS = 1_000;
 const TUNNEL_MONITOR_INTERVAL_MS = 10_000;
 const TUNNEL_MONITOR_FAILURE_THRESHOLD = 3;
 const TUNNEL_MCP_FAILURE_RECENCY_MS = 2 * 60_000;
+const BOOT_TIME_CLOCK_TOLERANCE_MS = 5_000;
+const CURRENT_BOOT_STARTED_AT_MS = Date.now() - (os.uptime() * 1_000);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function nextTunnelMonitorFailureCount(previous, immediate = false) {
+  return immediate ? TUNNEL_MONITOR_FAILURE_THRESHOLD : previous + 1;
+}
 
 function collectLines(stream, onLine, onError) {
   let buffered = "";
@@ -101,8 +108,15 @@ function tunnelRuntimeStopped(health) {
     || (health?.state === "stopped" && health?.processRunning === false);
 }
 
+function runtimeOwnershipPredatesCurrentBoot(state) {
+  return Boolean(
+    state
+    && Date.parse(state.updatedAt) < CURRENT_BOOT_STARTED_AT_MS - BOOT_TIME_CLOCK_TOLERANCE_MS
+  );
+}
+
 function runtimeOwnershipMayBeLive(state) {
-  if (!state) return false;
+  if (!state || runtimeOwnershipPredatesCurrentBoot(state)) return false;
   if (processRunning(state.daemonPid) || processRunning(state.tunnelPid)) return true;
   return ["starting", "ready", "degraded", "stopping"].includes(state.status);
 }
@@ -423,7 +437,7 @@ class RuntimeSupervisor {
       throw new Error("Launcher-owned runtime children exist while an external installation is configured");
     }
     const state = this.readState();
-    if (state && (
+    if (state && !runtimeOwnershipPredatesCurrentBoot(state) && (
       processRunning(state.ownerPid)
       || processRunning(state.daemonPid)
       || processRunning(state.tunnelPid)
@@ -435,7 +449,7 @@ class RuntimeSupervisor {
 
   writeExternalState(detail) {
     const existing = this.readState();
-    const preservesLiveOwnership = existing && (
+    const preservesLiveOwnership = existing && !runtimeOwnershipPredatesCurrentBoot(existing) && (
       processRunning(existing.ownerPid)
       || processRunning(existing.daemonPid)
       || processRunning(existing.tunnelPid)
@@ -926,14 +940,14 @@ class RuntimeSupervisor {
     );
   }
 
-  async startTunnel(config, operationName = "runtime-start") {
+  async startTunnel(config, operationName = "runtime-start", { forceRestart = false } = {}) {
     if (!usesMcpTunnel(config)) return;
     this.assertTunnelClientReady(config);
     // Adopting a new runtime alias must never inherit an old runtime's diagnostics endpoint.
     this.tunnelHealthBaseUrl = null;
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
-      if (existing.ready) {
+      if (existing.ready && !forceRestart) {
         this.tunnel = {
           pid: existing.pid,
           exitCode: null,
@@ -954,6 +968,9 @@ class RuntimeSupervisor {
         );
       }
       if (stopped.code === 0) await this.waitForTunnelStopped(config);
+      // The previous alias may have published a different local diagnostics endpoint. Discovery for
+      // the replacement must bind to the replacement runtime, not reuse that stale endpoint.
+      this.tunnelHealthBaseUrl = null;
       const connected = await this.runTunnelConnectCommand(config);
       if (connected.code !== 0) {
         throw new Error(
@@ -1002,9 +1019,9 @@ class RuntimeSupervisor {
     this.tunnelMonitorFailures = 0;
     this.tunnelMonitorObservationUnavailable = false;
     const generation = this.tunnelMonitorGeneration;
-    const recordFailure = (message) => {
+    const recordFailure = (message, immediate = false) => {
       if (this.stopping || generation !== this.tunnelMonitorGeneration) return;
-      this.tunnelMonitorFailures += 1;
+      this.tunnelMonitorFailures = nextTunnelMonitorFailureCount(this.tunnelMonitorFailures, immediate);
       this.logger.warn("runtime.tunnel_monitor_unhealthy", {
         consecutiveFailures: this.tunnelMonitorFailures,
         message,
@@ -1053,7 +1070,7 @@ class RuntimeSupervisor {
           }
           return;
         }
-        recordFailure(`Tunnel runtime lost readiness: ${health.detail}`);
+        recordFailure(`Tunnel runtime lost readiness: ${health.detail}`, health.fatal === true);
       }).catch((error) => {
         recordFailure(`Tunnel health probe failed: ${errorMessage(error)}`);
       }).finally(() => {
@@ -1129,7 +1146,7 @@ class RuntimeSupervisor {
     }
     if (!config) {
       const ownershipState = this.readState();
-      if (ownershipState && (
+      if (ownershipState && !runtimeOwnershipPredatesCurrentBoot(ownershipState) && (
         processRunning(ownershipState.daemonPid)
         || processRunning(ownershipState.tunnelPid)
       )) {
@@ -1274,7 +1291,7 @@ class RuntimeSupervisor {
     if (!config) return;
     this.publishOperation?.({ name: "runtime-recovery", status: "running", message: `Restarting ${name}` });
     const tunnelOnly = this.launcherProfile === "development";
-    if (name === "tunnel") await this.startTunnel(config, "runtime-recovery");
+    if (name === "tunnel") await this.startTunnel(config, "runtime-recovery", { forceRestart: true });
     else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);
     if (!tunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
@@ -1648,6 +1665,10 @@ class RuntimeSupervisor {
   async stopStaleOwnedRuntime(config) {
     const state = this.readState();
     if (!state) return false;
+    if (runtimeOwnershipPredatesCurrentBoot(state)) {
+      this.clearState();
+      return false;
+    }
     const tunnelOnly = this.launcherProfile === "development";
     if (tunnelOnly && processRunning(state.daemonPid)) {
       throw new Error("DEV launcher ownership unexpectedly contains a Responses daemon");
@@ -1871,7 +1892,7 @@ class RuntimeSupervisor {
       }
       if (!this.daemon && !this.tunnel) {
         if (!config) {
-          if (ownershipState && (
+          if (ownershipState && !runtimeOwnershipPredatesCurrentBoot(ownershipState) && (
             processRunning(ownershipState.daemonPid)
             || processRunning(ownershipState.tunnelPid)
           )) {
@@ -2013,5 +2034,6 @@ module.exports = {
   TUNNEL_START_TIMEOUT_MS,
   RuntimeSupervisor,
   managedTunnelConnectArgs,
+  nextTunnelMonitorFailureCount,
   validateConfig,
 };

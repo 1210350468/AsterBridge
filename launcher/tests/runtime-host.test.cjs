@@ -409,6 +409,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--full",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
     "--mcp-tool-bridge",
@@ -443,6 +444,7 @@ test("launcher update transaction preserves Responses Full without inventing MCP
     "--full",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
     "--responses-tool-bridge",
@@ -467,6 +469,7 @@ test("3.0.25 retires the legacy recommended Responses config back to Browser-onl
     "--browser-only",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
   ]);
@@ -491,6 +494,7 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--full",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
     "--mcp-tool-bridge",
@@ -1202,6 +1206,56 @@ test("failed launcher update restores every mutable setup file before restarting
     assert.equal(fs.readFileSync(profilePath, "utf8"), "old profile\n");
     assert.equal(fs.readFileSync(codexConfigPath, "utf8"), "old codex config\n");
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "old codex models cache\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("setup rollback preserves a symlinked Codex config instead of replacing the link", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-symlink-checkpoint-"));
+  const coreHome = path.join(root, "core");
+  const codexHome = path.join(root, "codex");
+  const shared = path.join(root, "shared");
+  const configPath = path.join(coreHome, "config.json");
+  const codexConfigPath = path.join(codexHome, "config.toml");
+  const sharedConfigPath = path.join(shared, "config.toml");
+  fs.mkdirSync(coreHome, { recursive: true });
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.mkdirSync(shared, { recursive: true });
+  fs.writeFileSync(configPath, '{"mode":"browser-only"}\n');
+  fs.writeFileSync(sharedConfigPath, "original shared codex config\n", { mode: 0o640 });
+  try {
+    fs.symlinkSync(sharedConfigPath, codexConfigPath, "file");
+  } catch (error) {
+    fs.rmSync(root, { recursive: true, force: true });
+    if (error?.code === "EPERM" || error?.code === "EACCES") {
+      t.skip("file symlinks are not permitted by this Windows test environment");
+      return;
+    }
+    throw error;
+  }
+  const linkTarget = fs.readlinkSync(codexConfigPath);
+  const host = new RuntimeHost({
+    app: { getPath: () => path.join(root, "launcher") },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(root, "launcher-browser.json"),
+    codexHome,
+    supervisor: {
+      coreHome,
+      configPath,
+      readConfig: () => ({ mode: "browser-only" }),
+      readSetupConfig: () => ({ mode: "browser-only" }),
+    },
+  });
+  try {
+    const checkpoint = host.captureSetupCheckpoint({ owner: "launcher", config: { mode: "browser-only" } });
+    fs.writeFileSync(sharedConfigPath, "mutated shared codex config\n");
+    assert.equal(host.setupCheckpointChanged(checkpoint), true);
+    host.restoreSetupCheckpoint(checkpoint);
+    assert.equal(fs.lstatSync(codexConfigPath).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(codexConfigPath), linkTarget);
+    assert.equal(fs.readFileSync(sharedConfigPath, "utf8"), "original shared codex config\n");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

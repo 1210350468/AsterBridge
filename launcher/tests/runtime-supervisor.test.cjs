@@ -12,6 +12,7 @@ const {
   MAX_RESTARTS_PER_WINDOW,
   RuntimeSupervisor,
   managedTunnelConnectArgs,
+  nextTunnelMonitorFailureCount,
   validateConfig,
 } = require("../electron/runtime-supervisor.cjs");
 
@@ -652,6 +653,13 @@ test("recent internal MCP 502 evidence overrides green health and readiness endp
   }
 });
 
+test("fatal MCP evidence consumes the tunnel monitor failure budget immediately", () => {
+  assert.equal(nextTunnelMonitorFailureCount(0, false), 1);
+  assert.equal(nextTunnelMonitorFailureCount(1, false), 2);
+  assert.equal(nextTunnelMonitorFailureCount(0, true), 3);
+  assert.equal(nextTunnelMonitorFailureCount(2, true), 3);
+});
+
 test("launcher refuses to start monitoring when MCP transport verification fails", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-mcp-start-gate-"));
   const binaryPath = path.join(root, "tunnel-client");
@@ -844,6 +852,107 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
     assert.equal(monitors, 1);
     assert.equal(supervisor.tunnel?.pid, 123_456_778);
     assert.equal(supervisor.tunnel?.managed, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("forced tunnel recovery replaces an inventory-ready runtime instead of re-adopting it", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-force-tunnel-recovery-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const events = [];
+  supervisor.assertTunnelClientReady = () => {};
+  supervisor.waitForKnownTunnelStatus = async () => ({
+    ready: true,
+    pid: 111,
+    state: "ready",
+    processRunning: true,
+    statusKnown: true,
+    detail: "stale runtime still reports ready",
+  });
+  supervisor.runTunnelStopCommand = async () => {
+    events.push("stop");
+    return { code: 0, output: "{}" };
+  };
+  supervisor.waitForTunnelStopped = async () => { events.push("stopped"); };
+  supervisor.runTunnelConnectCommand = async () => {
+    events.push("connect");
+    return { code: 0, output: "{}" };
+  };
+  supervisor.waitForTunnel = async () => {
+    events.push("ready");
+    supervisor.tunnel = { pid: 222, exitCode: null, signalCode: null, managed: true };
+  };
+  supervisor.waitForTunnelMcpTransport = async () => { events.push("mcp"); };
+  supervisor.startTunnelMonitor = () => { events.push("monitor"); };
+  try {
+    await supervisor.startTunnel({
+      mode: "full",
+      localToolTransport: "mcp",
+      tunnel: {},
+    }, "runtime-recovery", { forceRestart: true });
+    assert.deepEqual(events, ["stop", "stopped", "connect", "ready", "mcp", "monitor"]);
+    assert.equal(supervisor.tunnel?.pid, 222);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime recovery requests a forced tunnel replacement", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-recovery-force-contract-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+    launcherProfile: "development",
+  });
+  const config = { mode: "full", localToolTransport: "mcp", tunnel: {} };
+  let observedOptions;
+  supervisor.readConfig = () => config;
+  supervisor.startTunnel = async (_config, operationName, options) => {
+    assert.equal(operationName, "runtime-recovery");
+    observedOptions = options;
+    supervisor.tunnel = { pid: 333, exitCode: null, signalCode: null, managed: true };
+  };
+  supervisor.waitForTunnel = async () => ({ ready: true });
+  supervisor.tryWriteState = () => true;
+  try {
+    await supervisor.recover("tunnel");
+    assert.deepEqual(observedOptions, { forceRestart: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ownership evidence from before the current boot cannot block a clean start", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-preboot-ownership-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  fs.mkdirSync(path.dirname(supervisor.statePath), { recursive: true });
+  fs.writeFileSync(supervisor.statePath, `${JSON.stringify({
+    version: 1,
+    ownerPid: process.pid,
+    daemonPid: process.pid,
+    tunnelPid: null,
+    status: "ready",
+    updatedAt: new Date(Date.now() - (os.uptime() * 1_000) - 60_000).toISOString(),
+  })}\n`);
+  try {
+    assert.deepEqual(await supervisor.startConfigured(), { status: "not-configured" });
+    assert.equal(fs.existsSync(supervisor.statePath), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
