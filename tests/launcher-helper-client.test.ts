@@ -19,7 +19,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   writeFileSync(helper, `
     const readline = require("node:readline").createInterface({ input: process.stdin });
     const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
-    send({ type: "ready" });
+    send({ type: "ready", features: ["physical-settlement"] });
     readline.on("line", line => {
       const message = JSON.parse(line);
       if (message.type === "shutdown") process.exit(0);
@@ -42,6 +42,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
         },
       });
       send({ type: "result", id: message.id, text: "done" });
+      send({ type: "settled", id: message.id });
     });
   `, { mode: 0o700 });
   const descriptorHelper = join(root, "descriptor-helper.cjs");
@@ -134,7 +135,9 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     ensureChild(): Promise<void>;
     send(message: { type: string; id?: string }): Promise<void>;
     finishWithError(id: string, error: Error): void;
+    helperFeatures: Set<string>;
   };
+  internal.helperFeatures = new Set(["physical-settlement"]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
     messages.push(message.type);
@@ -183,11 +186,20 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
       turn: BrowserTurn;
       resolve: (value: string) => void;
       reject: (error: Error) => void;
+      resolveSettlement: () => void;
+      rejectSettlement: (error: Error) => void;
+      logicalSettled?: boolean;
     }>;
     handleLine(child: unknown, line: string): void;
   };
   const child = {};
   internal.child = child;
+  let settlePhysical!: () => void;
+  let rejectPhysical!: (error: Error) => void;
+  const physicalSettlement = new Promise<void>((resolve, reject) => {
+    settlePhysical = resolve;
+    rejectPhysical = reject;
+  });
   const result = new Promise<string>((resolveResult, rejectResult) => {
     internal.pending.set("rate-limit-123", {
       turn: {
@@ -199,6 +211,8 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
       },
       resolve: resolveResult,
       reject: rejectResult,
+      resolveSettlement: settlePhysical,
+      rejectSettlement: rejectPhysical,
     });
   });
 
@@ -221,4 +235,72 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
     code: "rate_limit_exceeded",
     retryable: true,
   });
+  internal.handleLine(child, JSON.stringify({ type: "settled", id: "rate-limit-123" }));
+  await expect(physicalSettlement).resolves.toBeUndefined();
+});
+
+test("launcher helper logical result can precede physical settlement without releasing ownership", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    systemBrowserChannel: "auto",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    child?: unknown;
+    pending: Map<string, {
+      turn: BrowserTurn;
+      resolve: (value: string) => void;
+      reject: (error: Error) => void;
+      resolveSettlement: () => void;
+      rejectSettlement: (error: Error) => void;
+      logicalSettled?: boolean;
+    }>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  let resolveResult!: (value: string) => void;
+  let rejectResult!: (error: Error) => void;
+  let resolveSettlement!: () => void;
+  let rejectSettlement!: (error: Error) => void;
+  const result = new Promise<string>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
+  const physicalSettlement = new Promise<void>((resolve, reject) => {
+    resolveSettlement = resolve;
+    rejectSettlement = reject;
+  });
+  internal.pending.set("physical-split-123", {
+    turn: {
+      traceId: "physical-split-123",
+      modelId: "gpt-5.6-sol",
+      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
+      prepare: async () => ({ text: "inspect", images: [], release() {} }),
+      onTextDelta() {},
+    },
+    resolve: resolveResult,
+    reject: rejectResult,
+    resolveSettlement,
+    rejectSettlement,
+  });
+
+  internal.handleLine(child, JSON.stringify({ type: "result", id: "physical-split-123", text: "done" }));
+  await expect(result).resolves.toBe("done");
+  let physicallySettled = false;
+  void physicalSettlement.then(() => { physicallySettled = true; });
+  await Promise.resolve();
+  expect(physicallySettled).toBeFalse();
+  expect(internal.pending.has("physical-split-123")).toBeTrue();
+
+  internal.handleLine(child, JSON.stringify({ type: "settled", id: "physical-split-123" }));
+  await expect(physicalSettlement).resolves.toBeUndefined();
+  expect(physicallySettled).toBeTrue();
+  expect(internal.pending.has("physical-split-123")).toBeFalse();
 });

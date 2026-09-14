@@ -108,6 +108,8 @@ Still pending in U5-W2:
 
 Gate: the exact Interrupt/config-preservation slices and the 3.0.40/3.0.41 Roxy/browser hardening slices have passed their focused gates. Keep U5-W2 **IN PROGRESS** until helper/Launcher physical-settlement ownership, exact live-page rebind, and the remaining Launcher lifecycle/update transaction deltas are separately audited and validated.
 
+3.0.42 WIP now carries the first two physical-settlement slices from the later `a3a5083` ownership work without importing its unrelated Zero Risk/helper rewrite. `ChatGptTurnRuntime` / `ChatGptTurnSession` distinguish logical browser completion from physical cleanup, and compaction duplicate ownership remains held until every registered physical settlement completes. The persistent Launcher helper now negotiates a `physical-settlement` feature and sends a separate `settled` frame after turn cleanup, so a fast logical result/error cannot release replacement ownership early. `ChatGptBrowserWorker.run()` remains the stable execution/test injection boundary; production promises are paired with their true settlement while injected fakes fall back to logical completion. Current focused gate: **169 pass / 0 fail / 8 existing Windows skips / 895 assertions**, TypeScript PASS. U5-W2 remains **IN PROGRESS**: helper-side retained conversation/progress forwarding, exact live-page rebind, and Launcher lifecycle/update transaction deltas are still separate work.
+
 ## U5-W3 — Capability delta
 
 Status: **PLANNED**.

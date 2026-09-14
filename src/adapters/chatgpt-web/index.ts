@@ -289,7 +289,7 @@ export function createChatGptWebAdapter(
           onLunaCheckpoint: captureCheckpoint,
         } : {}),
       });
-      const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+      const physicalSettlement = worker.physicalSettlementFor(browserRun);
       const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "read-only",
@@ -327,7 +327,7 @@ export function createChatGptWebAdapter(
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
       });
-      const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+      const physicalSettlement = worker.physicalSettlementFor(browserRun);
       const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "direct-tools",
@@ -421,7 +421,7 @@ export function createChatGptWebAdapter(
         onLunaCheckpoint: captureCheckpoint,
       } : {}),
     });
-    const physicalSettlement = browserRun.then(() => undefined, () => undefined);
+    const physicalSettlement = worker.physicalSettlementFor(browserRun);
     const browser = finalizeCheckpoint(browserRun);
     void browser.catch(error => {
       if (!tokenSettled) {

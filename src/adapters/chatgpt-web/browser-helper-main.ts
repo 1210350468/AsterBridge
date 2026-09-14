@@ -171,6 +171,7 @@ async function run(message: RunMessage): Promise<void> {
     });
   } finally {
     abortControllers.delete(message.id);
+    writeProtocol({ type: "settled", id: message.id });
   }
 }
 
@@ -269,4 +270,4 @@ process.once("SIGTERM", () => {
   void requestShutdown();
 });
 
-writeProtocol({ type: "ready" });
+writeProtocol({ type: "ready", features: ["physical-settlement"] });

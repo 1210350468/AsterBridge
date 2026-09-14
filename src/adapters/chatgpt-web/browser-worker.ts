@@ -655,6 +655,13 @@ export interface BrowserTurn {
   onLunaCheckpoint?: (captured: CapturedChatGptLunaCheckpoint) => void;
 }
 
+export interface ChatGptOwnedBrowserRun {
+  result: Promise<string>;
+  physicalSettlement: Promise<void>;
+}
+
+const ownedBrowserSettlements = new WeakMap<Promise<string>, Promise<void>>();
+
 interface ChatGptSubmissionBaseline {
   userTurns: Locator;
   responseTurns: Locator;
@@ -1337,8 +1344,20 @@ export class ChatGptBrowserWorker {
   }
 
   run(turn: BrowserTurn): Promise<string> {
+    const owned = this.runOwned(turn);
+    ownedBrowserSettlements.set(owned.result, owned.physicalSettlement);
+    return owned.result;
+  }
+
+  physicalSettlementFor(result: Promise<string>): Promise<void> {
+    return ownedBrowserSettlements.get(result)
+      ?? result.then(() => undefined, () => undefined);
+  }
+
+  runOwned(turn: BrowserTurn): ChatGptOwnedBrowserRun {
     if (this.activeRuns.has(turn.traceId)) {
-      return Promise.reject(new Error(`Duplicate ChatGPT web browser turn: ${turn.traceId}`));
+      const result = Promise.reject<string>(new Error(`Duplicate ChatGPT web browser turn: ${turn.traceId}`));
+      return { result, physicalSettlement: result.then(() => undefined, () => undefined) };
     }
     const retainedExternal = Boolean(
       turn.conversationKey
@@ -1350,20 +1369,29 @@ export class ChatGptBrowserWorker {
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const start = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
-    const execute = () => slotPreparation ? slotPreparation.then(start) : start();
+    const start = (): ChatGptOwnedBrowserRun => {
+      if (useHelper) return this.launcherHelper!.runOwned(turn);
+      const result = this.runExclusive(turn);
+      return { result, physicalSettlement: result.then(() => undefined, () => undefined) };
+    };
+    const beginOwned = (): Promise<ChatGptOwnedBrowserRun> => (
+      slotPreparation ? slotPreparation.then(start) : Promise.resolve().then(start)
+    );
+    let owned: Promise<ChatGptOwnedBrowserRun>;
     let run: Promise<string>;
     if (retainedExternal) {
       const key = turn.conversationKey!;
       const prior = this.conversationTails.get(key) ?? Promise.resolve();
-      run = prior.then(execute);
+      owned = prior.then(beginOwned);
+      run = owned.then(candidate => candidate.result);
       const tail = run.then(() => undefined, () => undefined);
       this.conversationTails.set(key, tail);
       void tail.finally(() => {
         if (this.conversationTails.get(key) === tail) this.conversationTails.delete(key);
       });
     } else {
-      run = Promise.resolve().then(execute);
+      owned = beginOwned();
+      run = owned.then(candidate => candidate.result);
     }
     this.activeRuns.set(turn.traceId, run);
     this.activeRunConversationKeys.set(turn.traceId, requestedConversationKey);
@@ -1371,7 +1399,11 @@ export class ChatGptBrowserWorker {
       if (this.activeRuns.get(turn.traceId) === run) this.activeRuns.delete(turn.traceId);
       this.activeRunConversationKeys.delete(turn.traceId);
     }).catch(() => {});
-    return run;
+    const physicalSettlement = owned.then(
+      candidate => candidate.physicalSettlement,
+      () => undefined,
+    ).then(() => undefined);
+    return { result: run, physicalSettlement };
   }
 
   private preparePhysicalTaskSurfaceSlot(requestedConversationKey?: string): Promise<void> | undefined {

@@ -155,6 +155,48 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
   await Promise.all([...active.slice(1), sixth]);
 });
 
+test("retained external turns do not start the next conversation round before the prior result settles", async () => {
+  const starts: string[] = [];
+  const releases = new Map<string, () => void>();
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { browserHost: "roxybrowser" },
+    activeRuns: new Map(),
+    activeRunConversationKeys: new Map(),
+    retainedExternalPages: new Map(),
+    conversationTails: new Map(),
+    runExclusive: (turn: { traceId: string }) => new Promise<string>(resolve => {
+      starts.push(turn.traceId);
+      releases.set(turn.traceId, () => resolve(turn.traceId));
+    }),
+  }) as ChatGptBrowserWorker;
+  const browserTurn = (traceId: string) => ({
+    traceId,
+    modelId: "gpt-5.6-sol",
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    prepare: async () => ({ text: traceId, images: [], release() {} }),
+    conversationKey: "same-retained-conversation",
+    onTextDelta() {},
+  });
+
+  const first = worker.run(browserTurn("retained_1"));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(starts).toEqual(["retained_1"]);
+
+  const second = worker.run(browserTurn("retained_2"));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(starts).toEqual(["retained_1"]);
+
+  releases.get("retained_1")?.();
+  await first;
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(starts).toEqual(["retained_1", "retained_2"]);
+  releases.get("retained_2")?.();
+  await second;
+});
+
 test("retained surface eviction selects the oldest idle conversation only", () => {
   expect(chatGptPhysicalTaskSurfacePlan(["a", "b", "c"], ["a"], "d")).toEqual({
     occupied: 3,

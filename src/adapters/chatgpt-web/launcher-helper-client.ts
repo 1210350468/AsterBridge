@@ -13,15 +13,19 @@ interface PendingTurn {
   turn: BrowserTurn;
   resolve: (value: string) => void;
   reject: (error: Error) => void;
+  resolveSettlement: () => void;
+  rejectSettlement: (error: Error) => void;
+  logicalSettled?: boolean;
   abortListener?: () => void;
   sent?: boolean;
 }
 
 type HelperMessage =
-  | { type: "ready" }
+  | { type: "ready"; features?: string[] }
   | { type: "event"; id: string; event: "heartbeat" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
   | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
+  | { type: "settled"; id: string }
   | {
       type: "error";
       id: string;
@@ -39,7 +43,14 @@ function parseHelperMessage(line: string): HelperMessage {
     throw new Error("Launcher browser helper message is not an object");
   }
   const message = value as Record<string, unknown>;
-  if (message.type === "ready") return { type: "ready" };
+  if (message.type === "ready") {
+    const features = message.features;
+    if (features !== undefined
+      && (!Array.isArray(features) || features.some(feature => typeof feature !== "string"))) {
+      throw new Error("Launcher browser helper advertised invalid features");
+    }
+    return { type: "ready", ...(features ? { features: features as string[] } : {}) };
+  }
   if (typeof message.id !== "string" || !message.id) {
     throw new Error("Launcher browser helper message has no turn identity");
   }
@@ -83,6 +94,7 @@ function parseHelperMessage(line: string): HelperMessage {
     }
     return { type: "result", id: message.id, text };
   }
+  if (message.type === "settled") return { type: "settled", id: message.id };
   if (message.type === "error") {
     const errorMessage = message.message;
     const errorName = message.name;
@@ -130,67 +142,118 @@ export class LauncherBrowserHelperClient {
   private readyResolve?: () => void;
   private readyReject?: (error: Error) => void;
   private readonly pending = new Map<string, PendingTurn>();
+  private helperFeatures = new Set<string>();
 
   constructor(private readonly config: ResolvedBrowserConfig) {}
 
   async run(turn: BrowserTurn): Promise<string> {
+    const owned = this.runOwned(turn);
+    void owned.physicalSettlement.catch(() => {});
+    return await owned.result;
+  }
+
+  runOwned(turn: BrowserTurn): { result: Promise<string>; physicalSettlement: Promise<void> } {
+    let resolveResult!: (value: string) => void;
+    let rejectResult!: (error: Error) => void;
+    let resolveSettlement!: () => void;
+    let rejectSettlement!: (error: Error) => void;
+    const result = new Promise<string>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    const physicalSettlement = new Promise<void>((resolve, reject) => {
+      resolveSettlement = resolve;
+      rejectSettlement = reject;
+    });
+    void this.startTurn(
+      turn,
+      resolveResult,
+      rejectResult,
+      resolveSettlement,
+      rejectSettlement,
+    ).catch(error => {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      rejectResult(normalized);
+      rejectSettlement(normalized);
+    });
+    return { result, physicalSettlement };
+  }
+
+  private async startTurn(
+    turn: BrowserTurn,
+    resolveResult: (value: string) => void,
+    rejectResult: (error: Error) => void,
+    resolveSettlement: () => void,
+    rejectSettlement: (error: Error) => void,
+  ): Promise<void> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     const prepared = await turn.prepare();
     try {
       await this.ensureChild();
+      if (!this.helperFeatures.has("physical-settlement")) {
+        throw new Error(
+          "Launcher browser helper does not support physical settlement ownership; update or restart the launcher",
+        );
+      }
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      return await new Promise<string>((resolveResult, rejectResult) => {
-        if (this.pending.has(turn.traceId)) {
-          rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
-          return;
-        }
-        const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult };
-        this.pending.set(turn.traceId, pending);
-        if (turn.abortSignal) {
-          const abortListener = () => {
-            if (!pending.sent) {
-              this.finishWithError(
-                turn.traceId,
-                new DOMException("ChatGPT web turn aborted", "AbortError"),
-              );
-              return;
-            }
-            void this.send({ type: "abort", id: turn.traceId }).catch(error => {
-              this.finishWithError(
-                turn.traceId,
-                error instanceof Error ? error : new Error(String(error)),
-              );
-            });
-          };
-          pending.abortListener = abortListener;
-          turn.abortSignal.addEventListener("abort", abortListener, { once: true });
-          if (turn.abortSignal.aborted) {
-            abortListener();
+      if (this.pending.has(turn.traceId)) throw new Error(`Duplicate launcher browser turn: ${turn.traceId}`);
+      const pending: PendingTurn = {
+        turn,
+        resolve: resolveResult,
+        reject: rejectResult,
+        resolveSettlement,
+        rejectSettlement,
+      };
+      this.pending.set(turn.traceId, pending);
+      if (turn.abortSignal) {
+        const abortListener = () => {
+          if (!pending.sent) {
+            this.finishWithError(
+              turn.traceId,
+              new DOMException("ChatGPT web turn aborted", "AbortError"),
+            );
             return;
           }
+          void this.send({ type: "abort", id: turn.traceId }).catch(error => {
+            this.finishWithError(
+              turn.traceId,
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          });
+        };
+        pending.abortListener = abortListener;
+        turn.abortSignal.addEventListener("abort", abortListener, { once: true });
+        if (turn.abortSignal.aborted) {
+          abortListener();
+          return;
         }
-        // Setting this before the synchronous write call makes an abort either prevent dispatch or
-        // queue an `abort` after the `run` frame; it can never overtake the run frame in the pipe.
-        pending.sent = true;
-        void this.send({
-          type: "run",
-          id: turn.traceId,
-          config: {
-            appName: this.config.appName,
-            browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
-            browserDiagnosticsPath: this.config.browserDiagnosticsPath,
-            turnTimeoutMs: this.config.turnTimeoutMs,
-            autoApproveToolCalls: this.config.autoApproveToolCalls,
-          },
-          turn: {
-            traceId: turn.traceId,
-            modelId: turn.modelId,
-            reasoning: turn.reasoning,
-            capabilities: turn.capabilities,
-            prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
-            ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
-          },
-        }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));
+      }
+      // Setting this before the synchronous write call makes an abort either prevent dispatch or
+      // queue an `abort` after the `run` frame; it can never overtake the run frame in the pipe.
+      pending.sent = true;
+      await this.send({
+        type: "run",
+        id: turn.traceId,
+        config: {
+          appName: this.config.appName,
+          browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
+          browserDiagnosticsPath: this.config.browserDiagnosticsPath,
+          turnTimeoutMs: this.config.turnTimeoutMs,
+          autoApproveToolCalls: this.config.autoApproveToolCalls,
+        },
+        turn: {
+          traceId: turn.traceId,
+          modelId: turn.modelId,
+          reasoning: turn.reasoning,
+          capabilities: turn.capabilities,
+          prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
+          ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
+        },
+      });
+    } catch (error) {
+      this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error)), {
+        rejectResult,
+        rejectSettlement,
       });
     } finally {
       prepared.release();
@@ -203,6 +266,7 @@ export class LauncherBrowserHelperClient {
     this.ready = undefined;
     this.readyResolve = undefined;
     this.readyReject = undefined;
+    this.helperFeatures.clear();
     for (const id of [...this.pending.keys()]) {
       this.finishWithError(id, new DOMException("Launcher browser helper is closing", "AbortError"));
     }
@@ -298,6 +362,7 @@ export class LauncherBrowserHelperClient {
       return;
     }
     if (message.type === "ready") {
+      this.helperFeatures = new Set(message.features ?? []);
       this.readyResolve?.();
       this.readyResolve = undefined;
       this.readyReject = undefined;
@@ -322,8 +387,15 @@ export class LauncherBrowserHelperClient {
       return;
     }
     if (message.type === "result") {
-      this.finish(message.id);
+      this.finishLogical(message.id);
       pending.resolve(message.text);
+    } else if (message.type === "settled") {
+      if (!pending.logicalSettled) {
+        this.finishWithError(message.id, new Error("Launcher browser helper settled before emitting a result"));
+        return;
+      }
+      this.finish(message.id);
+      pending.resolveSettlement();
     } else if (message.type === "error") {
       const error = message.status !== undefined
         ? new ChatGptWebAdapterError(message.message, {
@@ -335,8 +407,18 @@ export class LauncherBrowserHelperClient {
         : message.name === "AbortError"
           ? new DOMException(message.message, "AbortError")
           : new Error(message.message);
-      this.finish(message.id);
+      this.finishLogical(message.id);
       pending.reject(error);
+    }
+  }
+
+  private finishLogical(id: string): void {
+    const pending = this.pending.get(id);
+    if (!pending || pending.logicalSettled) return;
+    pending.logicalSettled = true;
+    if (pending.abortListener && pending.turn.abortSignal) {
+      pending.turn.abortSignal.removeEventListener("abort", pending.abortListener);
+      pending.abortListener = undefined;
     }
   }
 
@@ -349,11 +431,20 @@ export class LauncherBrowserHelperClient {
     this.pending.delete(id);
   }
 
-  private finishWithError(id: string, error: Error): void {
+  private finishWithError(
+    id: string,
+    error: Error,
+    fallback?: { rejectResult: (error: Error) => void; rejectSettlement: (error: Error) => void },
+  ): void {
     const pending = this.pending.get(id);
-    if (!pending) return;
+    if (!pending) {
+      fallback?.rejectResult(error);
+      fallback?.rejectSettlement(error);
+      return;
+    }
     this.finish(id);
-    pending.reject(error);
+    if (!pending.logicalSettled) pending.reject(error);
+    pending.rejectSettlement(error);
   }
 
   private handleExit(child: ChildProcessWithoutNullStreams, error: Error): void {
@@ -362,6 +453,7 @@ export class LauncherBrowserHelperClient {
     this.readyReject = undefined;
     this.readyResolve = undefined;
     this.ready = undefined;
+    this.helperFeatures.clear();
     this.child = undefined;
     for (const id of [...this.pending.keys()]) {
       void notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
