@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
 import { LAUNCHER_BROWSER_HOST_KIND } from "../src/launcher-browser-host";
 
 const roots: string[] = [];
@@ -204,6 +205,132 @@ test("a reused launcher surface compiles only the retained continuation prompt",
     type: "prepared_selected_ack",
     prepared: { text: "resume prompt", images: [] },
   });
+});
+
+test("launcher helper mirrors MCP progress and round-trips tool-boundary and completion-fence ownership", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    systemBrowserChannel: "auto",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const child = {};
+  const sent: Array<Record<string, unknown>> = [];
+  const internal = client as unknown as {
+    child?: unknown;
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  internal.child = child;
+  internal.helperFeatures = new Set([
+    "physical-settlement",
+    "prompt-selection",
+    "progress",
+    "tool-boundary-ack",
+    "completion-fence",
+  ]);
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    sent.push(message);
+    if (message.type === "run") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "event",
+        id: "progress-bridge-123",
+        event: "prepared_selected",
+        reused: false,
+      })));
+    }
+  };
+
+  const progress = new ChatGptExternalTurnProgress();
+  const fenceCalls: Array<[string, number?]> = [];
+  const owned = client.runOwned({
+    traceId: "progress-bridge-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: true, solAvailable: true, proAvailable: false },
+    prepare: async () => ({ text: "inspect", images: [], release() {} }),
+    externalProgress: progress,
+    completionFence: {
+      begin: async () => {
+        fenceCalls.push(["begin"]);
+        return 7;
+      },
+      commit: async revision => {
+        fenceCalls.push(["commit", revision]);
+        return revision === 7;
+      },
+    },
+    onTextDelta() {},
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sent.some(message => message.type === "run"
+    && (message.turn as Record<string, unknown>)?.externalProgress === true)).toBe(true);
+
+  const batchRevision = progress.recordToolBatch(1, 1_000);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({
+    type: "progress",
+    id: "progress-bridge-123",
+    snapshot: {
+      revision: batchRevision,
+      lastToolBatchRevision: batchRevision,
+      activeToolCalls: 1,
+      lastProgressAt: 1_000,
+    },
+  });
+
+  const observed = progress.waitForToolBatchObservation(batchRevision);
+  internal.handleLine(child, JSON.stringify({
+    type: "event",
+    id: "progress-bridge-123",
+    event: "tool_batch_observed",
+    revision: batchRevision,
+  }));
+  await observed;
+
+  internal.handleLine(child, JSON.stringify({
+    type: "event",
+    id: "progress-bridge-123",
+    event: "completion_fence_begin",
+    requestId: 11,
+  }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({
+    type: "completion_fence_begin_ack",
+    id: "progress-bridge-123",
+    requestId: 11,
+    revision: 7,
+  });
+
+  internal.handleLine(child, JSON.stringify({
+    type: "event",
+    id: "progress-bridge-123",
+    event: "completion_fence_commit",
+    requestId: 12,
+    revision: 7,
+  }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sent).toContainEqual({
+    type: "completion_fence_commit_ack",
+    id: "progress-bridge-123",
+    requestId: 12,
+    committed: true,
+  });
+  expect(fenceCalls).toEqual([["begin"], ["commit", 7]]);
+
+  internal.handleLine(child, JSON.stringify({ type: "result", id: "progress-bridge-123", text: "done" }));
+  internal.handleLine(child, JSON.stringify({ type: "settled", id: "progress-bridge-123" }));
+  await expect(owned.result).resolves.toBe("done");
+  await expect(owned.physicalSettlement).resolves.toBeUndefined();
 });
 
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {

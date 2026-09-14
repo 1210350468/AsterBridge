@@ -348,10 +348,14 @@ export function createChatGptWebAdapter(
       };
     }
     const token = deferred<string>();
-    const sameProcessToolProgress = provider.chatgptWeb?.browserHost === "roxybrowser"
+    // Launcher helpers now mirror this daemon-owned state over their private protocol. Keep the
+    // existing explicit-host boundary so test doubles/custom providers that do not select a real
+    // browser host are not silently forced into causal tool-boundary acknowledgement.
+    const progressAwareBrowserHost = provider.chatgptWeb?.browserHost === "roxybrowser"
       || provider.chatgptWeb?.browserHost === "system-browser"
-      || provider.chatgptWeb?.browserHost === "managed-chrome";
-    const externalProgress = sameProcessToolProgress
+      || provider.chatgptWeb?.browserHost === "managed-chrome"
+      || provider.chatgptWeb?.browserHost === "launcher";
+    const externalProgress = progressAwareBrowserHost
       ? new ChatGptExternalTurnProgress()
       : undefined;
     const completionFence = externalProgress

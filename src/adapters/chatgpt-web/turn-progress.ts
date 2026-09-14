@@ -142,6 +142,68 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
   }
 }
 
+/** Cross-process mirror of daemon-owned MCP progress for the Launcher browser helper. */
+export class ChatGptMirroredTurnProgress extends ChatGptTurnProgressBroadcaster {
+  private current: ChatGptExternalTurnProgressSnapshot = {
+    revision: 0,
+    lastToolBatchRevision: 0,
+    activeToolCalls: 0,
+  };
+  private observedToolBatchRevision = 0;
+
+  constructor(
+    private readonly onToolBatchObserved?: (revision: number) => Promise<void> | void,
+  ) {
+    super();
+  }
+
+  snapshot(): ChatGptExternalTurnProgressSnapshot {
+    return { ...this.current };
+  }
+
+  async acknowledgeToolBatch(revision: number): Promise<void> {
+    if (!Number.isSafeInteger(revision)
+      || revision <= 0
+      || revision > this.current.lastToolBatchRevision) {
+      throw new Error("ChatGPT mirrored tool-boundary acknowledgement has an invalid batch revision");
+    }
+    if (revision <= this.observedToolBatchRevision) return;
+    await this.onToolBatchObserved?.(revision);
+    this.observedToolBatchRevision = revision;
+  }
+
+  /** Ignore stale frames, but reject snapshots that advance while contradicting observed history. */
+  apply(next: ChatGptExternalTurnProgressSnapshot): boolean {
+    assertChatGptTurnProgressSnapshot(next);
+    if (next.revision <= this.current.revision) return false;
+    if (next.lastToolBatchRevision < this.current.lastToolBatchRevision
+      || (next.lastProgressAt === undefined && this.current.lastProgressAt !== undefined)
+      || (next.lastProgressAt !== undefined
+        && this.current.lastProgressAt !== undefined
+        && next.lastProgressAt < this.current.lastProgressAt)) {
+      throw new Error("ChatGPT external progress snapshot regressed against the observed state");
+    }
+    this.current = { ...next };
+    this.notify(this.snapshot());
+    return true;
+  }
+}
+
+export function assertChatGptTurnProgressSnapshot(
+  value: ChatGptExternalTurnProgressSnapshot,
+): void {
+  const finiteIndex = (candidate: number): boolean => Number.isSafeInteger(candidate) && candidate >= 0;
+  if (!value
+    || !finiteIndex(value.revision)
+    || !finiteIndex(value.lastToolBatchRevision)
+    || !finiteIndex(value.activeToolCalls)
+    || value.lastToolBatchRevision > value.revision
+    || (value.lastProgressAt !== undefined && !Number.isFinite(value.lastProgressAt))
+    || (value.revision > 0 && value.lastProgressAt === undefined)) {
+    throw new Error("ChatGPT external progress snapshot is invalid");
+  }
+}
+
 export function chatGptExternalProgressIsLive(
   snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
   now: number,
