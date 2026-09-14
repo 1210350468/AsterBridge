@@ -811,7 +811,12 @@ test("a replacement helper takes over only after the previous owner exited", () 
 
   const lease = BrowserHost.prototype.beginTurn.call(fixture, tab.traceId, false, process.pid);
 
-  assert.deepEqual(lease, { surfaceId: tab.surfaceId, tabId: tab.id });
+  assert.deepEqual(lease, {
+    surfaceId: tab.surfaceId,
+    tabId: tab.id,
+    reused: false,
+    connectorBound: false,
+  });
   assert.equal(tab.helperPid, process.pid);
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0][0], "browser.stale_turn_owner_replaced");
@@ -1212,7 +1217,12 @@ test("a later provider round reuses its task tab and restores active ownership",
 
   const lease = BrowserHost.prototype.beginTurn.call(fixture, "trace_reused", false, 222);
 
-  assert.deepEqual(lease, { surfaceId: "surface-reused", tabId: "tab-reused" });
+  assert.deepEqual(lease, {
+    surfaceId: "surface-reused",
+    tabId: "tab-reused",
+    reused: true,
+    connectorBound: false,
+  });
   assert.equal(tab.helperPid, 222);
   assert.equal(tab.status, "running");
   assert.equal(tab.loading, true);
@@ -1231,6 +1241,81 @@ test("five browser tabs are a hard account-safety limit", () => {
   assert.throws(
     () => BrowserHost.prototype.createTurnTab.call({ turnTabs }, "trace_six", 444),
     /already has 5 browser tabs.*avoid excessive parallel traffic/,
+  );
+});
+
+test("retained conversation lease rebinds a new trace to the exact ready tab", () => {
+  const conversationKey = "a".repeat(64);
+  const tab = {
+    id: "tab-retained",
+    surfaceId: "surface-retained",
+    traceId: "trace_old",
+    conversationKey,
+    connectorIdentity: undefined,
+    connectorBound: false,
+    helperPid: 111,
+    status: "ready",
+    loading: false,
+    message: "Task completed",
+    bootstrapReady: true,
+    lastHeartbeatAt: 1,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling() {},
+      },
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: "home",
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { info() {}, warn() {} },
+  });
+
+  const lease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_new",
+    false,
+    222,
+    conversationKey,
+    undefined,
+    true,
+  );
+
+  assert.deepEqual(lease, {
+    surfaceId: tab.surfaceId,
+    tabId: tab.id,
+    reused: true,
+    connectorBound: false,
+  });
+  assert.equal(tab.traceId, "trace_new");
+  assert.equal(tab.helperPid, 222);
+  assert.equal(tab.status, "running");
+});
+
+test("required retained conversation fails closed when its tab is gone", () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map(),
+    userCancelledTurnOwners: new Map(),
+  });
+  assert.throws(
+    () => BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_missing",
+      false,
+      222,
+      "b".repeat(64),
+      undefined,
+      true,
+    ),
+    (error) => error?.code === "retained_conversation_unavailable",
   );
 });
 

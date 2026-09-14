@@ -1,5 +1,6 @@
 const { createServer } = require("node:http");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
+const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
 
 const MAX_BODY_BYTES = 768 * 1024;
 const EMPTY_ROXY_PREVIEW = Object.freeze({
@@ -131,9 +132,10 @@ class BrowserControlServer {
     const isTurn = request.url === "/v1/turn/start"
       || request.url === "/v1/turn/heartbeat"
       || request.url === "/v1/turn/end";
+    const isTurnRelease = request.url === "/v1/turn/release";
     const isPreview = request.url === "/v1/turn/preview";
     const isSessionInspect = request.url === "/v1/session/inspect";
-    if (request.method !== "POST" || (!isTurn && !isPreview && !isSessionInspect)) {
+    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isPreview && !isSessionInspect)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -146,11 +148,45 @@ class BrowserControlServer {
         writeJson(response, 200, result);
         return;
       }
+      if (isTurnRelease) {
+        if (typeof body?.conversationKey !== "string" || !/^[a-f0-9]{64}$/.test(body.conversationKey)) {
+          throw new Error("conversationKey is invalid");
+        }
+        const released = releaseRetainedConversation(host, body.conversationKey);
+        this.logger.info("browser.retained_conversation_released", { released });
+        writeJson(response, 200, { ok: true, released });
+        return;
+      }
       if (!body || typeof body !== "object" || !/^[A-Za-z0-9_-]{6,128}$/.test(body.traceId || "")) {
         throw new Error("traceId is invalid");
       }
       if (!Number.isInteger(body.helperPid) || body.helperPid < 1) {
         throw new Error("browser helper pid is invalid");
+      }
+      if (body.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(body.conversationKey)) {
+        throw new Error("conversationKey is invalid");
+      }
+      if (body.connectorIdentity !== undefined
+        && (typeof body.connectorIdentity !== "string"
+          || !body.connectorIdentity.trim()
+          || body.connectorIdentity.length > 80)) {
+        throw new Error("connectorIdentity is invalid");
+      }
+      if (body.requireRetainedConversation !== undefined
+        && typeof body.requireRetainedConversation !== "boolean") {
+        throw new Error("requireRetainedConversation is invalid");
+      }
+      if (body.requireRetainedConversation === true && body.conversationKey === undefined) {
+        throw new Error("requireRetainedConversation requires conversationKey");
+      }
+      if (body.connectorIdentity !== undefined && body.conversationKey === undefined) {
+        throw new Error("connectorIdentity requires conversationKey");
+      }
+      if (body.retain !== undefined && typeof body.retain !== "boolean") {
+        throw new Error("retain is invalid");
+      }
+      if (body.connectorBound !== undefined && typeof body.connectorBound !== "boolean") {
+        throw new Error("connectorBound is invalid");
       }
       const preferences = this.getPreferences();
       const externalHost = body.externalHost === "roxybrowser" || body.externalHost === "system-browser"
@@ -214,7 +250,14 @@ class BrowserControlServer {
           });
           return;
         }
-        const lease = host.beginTurn(body.traceId, preferences.showBrowserDuringTurns === true, body.helperPid);
+        const lease = host.beginTurn(
+          body.traceId,
+          preferences.showBrowserDuringTurns === true,
+          body.helperPid,
+          body.conversationKey,
+          body.connectorIdentity,
+          body.requireRetainedConversation === true,
+        );
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease });
         return;
@@ -264,6 +307,8 @@ class BrowserControlServer {
           body.status,
           preferences.showBrowserDuringTurns === true,
           body.message,
+          body.retain === true,
+          body.connectorBound === true,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });
@@ -273,9 +318,11 @@ class BrowserControlServer {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn("browser.control_rejected", { message });
       const cancelled = error?.code === "turn_cancelled";
-      writeJson(response, cancelled ? 409 : 400, {
+      const retainedUnavailable = error?.code === "retained_conversation_unavailable";
+      writeJson(response, cancelled || retainedUnavailable ? 409 : 400, {
         error: message,
         ...(cancelled ? { code: "turn_cancelled" } : {}),
+        ...(retainedUnavailable ? { code: "retained_conversation_unavailable" } : {}),
       });
     }
   }
