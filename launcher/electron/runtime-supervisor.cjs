@@ -21,6 +21,7 @@ const TUNNEL_START_TIMEOUT_MS = 120_000;
 const TUNNEL_HEALTH_POLL_INTERVAL_MS = 1_000;
 const TUNNEL_MONITOR_INTERVAL_MS = 10_000;
 const TUNNEL_MONITOR_FAILURE_THRESHOLD = 3;
+const TUNNEL_MCP_FAILURE_RECENCY_MS = 2 * 60_000;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -684,10 +685,115 @@ class RuntimeSupervisor {
     }
   }
 
+  async probeTunnelMcpTransport(timeoutMs = 2_000) {
+    if (!this.tunnelHealthBaseUrl) {
+      return { observed: false, ok: false, fatal: false, detail: "local tunnel MCP diagnostics URL is not known" };
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${this.tunnelHealthBaseUrl}/api/logs?limit=100`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return {
+          observed: false,
+          ok: false,
+          fatal: false,
+          detail: `MCP transport diagnostics returned HTTP ${response.status}`,
+        };
+      }
+      const body = await response.json();
+      if (!body || typeof body !== "object" || !Array.isArray(body.events)) {
+        throw new Error("response has no events array");
+      }
+      const cutoff = Date.now() - TUNNEL_MCP_FAILURE_RECENCY_MS;
+      const failure = body.events.findLast(event => {
+        if (!event || typeof event !== "object") return false;
+        const attrs = event.attrs && typeof event.attrs === "object" ? event.attrs : {};
+        const occurredAt = Date.parse(event.time);
+        return Number.isFinite(occurredAt)
+          && occurredAt >= cutoff
+          && event.message === "dispatcher received MCP upstream error; posted error response to control plane"
+          && attrs.failure_source === "client_internal"
+          && attrs.status_code === 502
+          && attrs.upstream_response_received === false
+          && ["initialize", "tools/call"].includes(attrs.rpc_method);
+      });
+      if (!failure) {
+        return { observed: true, ok: true, fatal: false, detail: "MCP transport has no recent internal failures" };
+      }
+      return {
+        observed: true,
+        ok: false,
+        fatal: true,
+        detail: `MCP transport returned internal HTTP 502 for ${failure.attrs.rpc_method} at ${failure.time}`,
+      };
+    } catch (error) {
+      return {
+        observed: false,
+        ok: false,
+        fatal: false,
+        detail: `MCP transport diagnostics could not be observed: ${errorMessage(error)}`,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async discoverTunnelHealthBaseUrl(config) {
+    const tunnel = config.tunnel;
+    if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
+    const result = await this.runTunnelCommand(
+      config,
+      ["runtimes", "status", tunnel.alias, "--json"],
+      5_000,
+      "Local tunnel health discovery",
+    );
+    if (result.code !== 0) {
+      throw new Error(`Local tunnel health discovery failed: ${tunnelControlDiagnostic(result)}`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(result.output);
+    } catch (error) {
+      throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
+    }
+    const candidates = [
+      parsed?.local?.effective_health?.base_url,
+      parsed?.local?.health?.base_url,
+      parsed?.health_url,
+      parsed?.ui_url,
+    ];
+    const baseUrl = candidates.map(loopbackHealthBaseURL).find(Boolean);
+    if (!baseUrl) throw new Error("Local tunnel health discovery returned no verified loopback endpoint");
+    this.tunnelHealthBaseUrl = baseUrl;
+    return baseUrl;
+  }
+
+  async waitForTunnelMcpTransport(config, timeoutMs = 10_000) {
+    if (!this.tunnelHealthBaseUrl) await this.discoverTunnelHealthBaseUrl(config);
+    const deadline = Date.now() + timeoutMs;
+    let health;
+    do {
+      health = await this.probeTunnelMcpTransport();
+      if (health.observed && health.ok) return health;
+      if (health.fatal) throw new Error(`Tunnel MCP transport is unhealthy: ${health.detail}`);
+      if (Date.now() >= deadline) break;
+      await sleep(TUNNEL_HEALTH_POLL_INTERVAL_MS);
+    } while (Date.now() < deadline);
+    throw new Error(
+      `Tunnel MCP transport could not be verified within ${timeoutMs}ms:`
+      + ` ${health?.detail || "no diagnostics returned"}`,
+    );
+  }
+
   async readLocalTunnelHealth() {
-    const [healthz, readyz] = await Promise.all([
+    const [healthz, readyz, mcp] = await Promise.all([
       this.probeTunnelEndpoint("/healthz"),
       this.probeTunnelEndpoint("/readyz"),
+      this.probeTunnelMcpTransport(),
     ]);
     const pid = Number.isInteger(this.tunnel?.pid) ? this.tunnel.pid : null;
     if (pid && !processRunning(pid)) {
@@ -703,8 +809,9 @@ class RuntimeSupervisor {
       };
     }
     const explicitlyUnhealthy = (healthz.observed && !healthz.ok)
-      || (readyz.observed && !readyz.ok);
-    const completelyObserved = healthz.observed && readyz.observed;
+      || (readyz.observed && !readyz.ok)
+      || (mcp.observed && !mcp.ok);
+    const completelyObserved = healthz.observed && readyz.observed && mcp.observed;
     if (!explicitlyUnhealthy && !completelyObserved) {
       return {
         ready: false,
@@ -714,18 +821,21 @@ class RuntimeSupervisor {
         healthy: undefined,
         absent: false,
         statusKnown: false,
-        detail: `${healthz.detail}; ${readyz.detail}`,
+        fatal: mcp.fatal === true,
+        detail: `${healthz.detail}; ${readyz.detail}; ${mcp.detail}`,
       };
     }
+    const mcpReady = mcp.observed && mcp.ok;
     return {
-      ready: healthz.ok && readyz.ok,
+      ready: healthz.ok && readyz.ok && mcpReady,
       pid,
-      state: healthz.ok && readyz.ok ? "ready" : "degraded",
+      state: healthz.ok && readyz.ok && mcpReady ? "ready" : "degraded",
       processRunning: pid ? true : undefined,
-      healthy: healthz.ok,
+      healthy: healthz.ok && mcpReady,
       absent: false,
       statusKnown: true,
-      detail: `${healthz.detail}; ${readyz.detail}`,
+      fatal: mcp.fatal === true,
+      detail: `${healthz.detail}; ${readyz.detail}; ${mcp.detail}`,
     };
   }
 
@@ -733,7 +843,14 @@ class RuntimeSupervisor {
     const local = await this.readLocalTunnelHealth();
     if (local.statusKnown) return local;
     try {
-      return await this.readTunnelHealth(config);
+      const previousEndpoint = this.tunnelHealthBaseUrl;
+      const inventory = await this.readTunnelHealth(config);
+      if (tunnelRuntimeStopped(inventory)) return inventory;
+      if (this.tunnelHealthBaseUrl && this.tunnelHealthBaseUrl !== previousEndpoint) {
+        return await this.readLocalTunnelHealth();
+      }
+      // Inventory may prove the alias stopped, but a ready flag cannot prove MCP transport health.
+      return { ...local, detail: `${local.detail}; local inventory: ${inventory.detail}` };
     } catch (error) {
       return {
         ...local,
@@ -812,6 +929,8 @@ class RuntimeSupervisor {
   async startTunnel(config, operationName = "runtime-start") {
     if (!usesMcpTunnel(config)) return;
     this.assertTunnelClientReady(config);
+    // Adopting a new runtime alias must never inherit an old runtime's diagnostics endpoint.
+    this.tunnelHealthBaseUrl = null;
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
       if (existing.ready) {
@@ -821,6 +940,7 @@ class RuntimeSupervisor {
           signalCode: null,
           managed: true,
         };
+        await this.waitForTunnelMcpTransport(config);
         this.startTunnelMonitor(config);
         this.logger.info("runtime.tunnel_adopted", { pid: existing.pid });
         return;
@@ -842,6 +962,7 @@ class RuntimeSupervisor {
       }
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, operationName);
       if (!this.tunnel) throw new Error("Tunnel runtime became ready without a managed process identity");
+      await this.waitForTunnelMcpTransport(config);
       this.startTunnelMonitor(config);
     } catch (error) {
       let cleanupError;
