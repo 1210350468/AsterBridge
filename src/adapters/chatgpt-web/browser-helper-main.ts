@@ -3,6 +3,7 @@ import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-selection";
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
 import type { CompiledChatGptWebPrompt } from "./prompt";
@@ -22,9 +23,19 @@ interface RunMessage {
     modelId: string;
     reasoning?: string;
     capabilities: ChatGptWebCapabilities;
-    prepared: CompiledChatGptWebPrompt;
+    resumeAvailable?: boolean;
+    retainConversation?: boolean;
+    requireRetainedConversation?: boolean;
+    conversationKey?: string;
+    compaction?: boolean;
     captureLunaCheckpoint?: boolean;
   };
+}
+
+interface PreparedSelectedAckMessage {
+  type: "prepared_selected_ack";
+  id: string;
+  prepared: CompiledChatGptWebPrompt;
 }
 
 interface VerifyMessage {
@@ -50,7 +61,7 @@ interface SmokeMessage {
 }
 
 type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage;
-type InputMessage = RunMessage | MaintenanceMessage | { type: "abort"; id: string } | { type: "shutdown" };
+type InputMessage = RunMessage | PreparedSelectedAckMessage | MaintenanceMessage | { type: "abort"; id: string } | { type: "shutdown" };
 
 let outputFailure: Error | undefined;
 const handleOutputFailure = (error: Error): void => {
@@ -73,6 +84,7 @@ console.warn = diagnostic;
 console.error = diagnostic;
 
 const abortControllers = new Map<string, AbortController>();
+const preparedSelections = new Map<string, ReturnType<typeof createBrowserHelperPromptSelection>>();
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 
@@ -86,6 +98,8 @@ function requestShutdown(): Promise<void> {
   protocolOutput.close();
   diagnosticOutput.close();
   for (const controller of abortControllers.values()) controller.abort();
+  for (const selection of preparedSelections.values()) selection.cancel();
+  preparedSelections.clear();
   input.close();
   void closeChatGptBrowserWorkers().then(
     () => {
@@ -106,8 +120,24 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
-  if (!message.turn.prepared || typeof message.turn.prepared.text !== "string" || !Array.isArray(message.turn.prepared.images)) {
-    throw new Error("Browser helper prompt is invalid");
+  if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
+    throw new Error("Browser helper resume availability is invalid");
+  }
+  if (message.turn.retainConversation !== undefined && typeof message.turn.retainConversation !== "boolean") {
+    throw new Error("Browser helper conversation retention flag is invalid");
+  }
+  if (message.turn.requireRetainedConversation !== undefined
+    && typeof message.turn.requireRetainedConversation !== "boolean") {
+    throw new Error("Browser helper retained-conversation requirement is invalid");
+  }
+  if (message.turn.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(message.turn.conversationKey)) {
+    throw new Error("Browser helper conversation key is invalid");
+  }
+  if (message.turn.requireRetainedConversation && !message.turn.conversationKey) {
+    throw new Error("Browser helper retained-conversation requirement needs a conversation key");
+  }
+  if (message.turn.compaction !== undefined && typeof message.turn.compaction !== "boolean") {
+    throw new Error("Browser helper compaction flag is invalid");
   }
   if (message.turn.captureLunaCheckpoint !== undefined && typeof message.turn.captureLunaCheckpoint !== "boolean") {
     throw new Error("Browser helper Luna checkpoint flag is invalid");
@@ -126,13 +156,25 @@ async function run(message: RunMessage): Promise<void> {
   };
   const abortController = new AbortController();
   abortControllers.set(message.id, abortController);
+  const promptSelection = createBrowserHelperPromptSelection();
+  preparedSelections.set(message.id, promptSelection);
+  const prepareSelected = async () => ({ ...await promptSelection.wait(), release: () => {} });
   const turn: BrowserTurn = {
     traceId: message.turn.traceId,
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     capabilities: message.turn.capabilities,
-    prepare: async () => ({ ...message.turn.prepared, release: () => {} }),
+    prepare: prepareSelected,
+    ...(message.turn.resumeAvailable ? { prepareResume: prepareSelected } : {}),
+    ...(message.turn.retainConversation ? { retainConversation: true } : {}),
+    ...(message.turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
+    ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
     abortSignal: abortController.signal,
+    ...(message.turn.compaction ? { compaction: true } : {}),
+    onPreparedSelected: reused => {
+      writeProtocol({ type: "event", id: message.id, event: "prepared_selected", reused });
+      return promptSelection.wait().then(() => undefined);
+    },
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
     onReasoningSummary: (text, continuation) => writeProtocol({
       type: "event",
@@ -170,6 +212,8 @@ async function run(message: RunMessage): Promise<void> {
       } : {}),
     });
   } finally {
+    preparedSelections.get(message.id)?.cancel();
+    preparedSelections.delete(message.id);
     abortControllers.delete(message.id);
     writeProtocol({ type: "settled", id: message.id });
   }
@@ -237,7 +281,34 @@ input.on("line", line => {
     writeProtocol({ type: "error", id: "protocol", message: "Browser helper received invalid JSON" });
     return;
   }
-  if (message.type === "abort") abortControllers.get(message.id)?.abort();
+  if (message.type === "prepared_selected_ack") {
+    const prepared = message.prepared;
+    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper prompt selection is invalid" });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
+    if (prepared.multipart !== undefined) {
+      const multipart = prepared.multipart;
+      if (!multipart || !Array.isArray(multipart.parts)
+        || (multipart.parts.length !== 2 && multipart.parts.length !== 3)
+        || multipart.parts.some(part => typeof part !== "string")
+        || typeof multipart.commit !== "string") {
+        writeProtocol({ type: "error", id: message.id, message: "Browser helper multipart prompt is invalid" });
+        abortControllers.get(message.id)?.abort();
+        return;
+      }
+    }
+    const selection = preparedSelections.get(message.id);
+    if (!selection) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper has no pending prompt selection" });
+      return;
+    }
+    selection.select(prepared);
+  } else if (message.type === "abort") {
+    abortControllers.get(message.id)?.abort();
+    preparedSelections.get(message.id)?.cancel();
+  }
   else if (message.type === "shutdown") {
     void requestShutdown();
   } else if (message.type === "verify") {
@@ -270,4 +341,4 @@ process.once("SIGTERM", () => {
   void requestShutdown();
 });
 
-writeProtocol({ type: "ready", features: ["physical-settlement"] });
+writeProtocol({ type: "ready", features: ["physical-settlement", "prompt-selection"] });

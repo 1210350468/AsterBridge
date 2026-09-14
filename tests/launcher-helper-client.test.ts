@@ -19,15 +19,23 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   writeFileSync(helper, `
     const readline = require("node:readline").createInterface({ input: process.stdin });
     const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
-    send({ type: "ready", features: ["physical-settlement"] });
+    const runs = new Map();
+    send({ type: "ready", features: ["physical-settlement", "prompt-selection"] });
     readline.on("line", line => {
       const message = JSON.parse(line);
       if (message.type === "shutdown") process.exit(0);
-      if (message.type !== "run") return;
+      if (message.type === "run") {
+        runs.set(message.id, message);
+        send({ type: "event", id: message.id, event: "prepared_selected", reused: false });
+        return;
+      }
+      if (message.type !== "prepared_selected_ack") return;
+      const run = runs.get(message.id);
+      if (!run || message.prepared.text !== "inspect") process.exit(98);
       send({ type: "event", id: message.id, event: "reasoning", text: "Reading project" });
       send({ type: "event", id: message.id, event: "reasoning", text: " files", continuation: true });
       send({ type: "event", id: message.id, event: "text", text: "done" });
-      if (message.turn.captureLunaCheckpoint) send({
+      if (run.turn.captureLunaCheckpoint) send({
         type: "event",
         id: message.id,
         event: "luna_checkpoint",
@@ -116,6 +124,88 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   }
 });
 
+test("a reused launcher surface compiles only the retained continuation prompt", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    systemBrowserChannel: "auto",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const child = {};
+  const sent: Array<Record<string, unknown>> = [];
+  const internal = client as unknown as {
+    child?: unknown;
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  internal.child = child;
+  internal.helperFeatures = new Set(["physical-settlement", "prompt-selection"]);
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    sent.push(message);
+    if (message.type === "run") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "event",
+        id: "resume-select-123",
+        event: "prepared_selected",
+        reused: true,
+      })));
+      return;
+    }
+    if (message.type === "prepared_selected_ack") {
+      queueMicrotask(() => {
+        internal.handleLine(child, JSON.stringify({ type: "result", id: "resume-select-123", text: "continued" }));
+        internal.handleLine(child, JSON.stringify({ type: "settled", id: "resume-select-123" }));
+      });
+    }
+  };
+
+  let freshCalls = 0;
+  let resumeCalls = 0;
+  let releases = 0;
+  const result = await client.run({
+    traceId: "resume-select-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: true, solAvailable: true, proAvailable: false },
+    conversationKey: "a".repeat(64),
+    retainConversation: true,
+    prepare: async () => {
+      freshCalls += 1;
+      return { text: "fresh prompt", images: [], release: () => { releases += 1; } };
+    },
+    prepareResume: async () => {
+      resumeCalls += 1;
+      return { text: "resume prompt", images: [], release: () => { releases += 1; } };
+    },
+    onTextDelta() {},
+  });
+
+  expect(result).toBe("continued");
+  expect(freshCalls).toBe(0);
+  expect(resumeCalls).toBe(1);
+  expect(releases).toBe(1);
+  expect(sent[0]).toMatchObject({
+    type: "run",
+    turn: {
+      resumeAvailable: true,
+      retainConversation: true,
+      conversationKey: "a".repeat(64),
+    },
+  });
+  expect(sent[1]).toMatchObject({
+    type: "prepared_selected_ack",
+    prepared: { text: "resume prompt", images: [] },
+  });
+});
+
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {
   const controller = new AbortController();
   const messages: string[] = [];
@@ -137,7 +227,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     finishWithError(id: string, error: Error): void;
     helperFeatures: Set<string>;
   };
-  internal.helperFeatures = new Set(["physical-settlement"]);
+  internal.helperFeatures = new Set(["physical-settlement", "prompt-selection"]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
     messages.push(message.type);
@@ -165,7 +255,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
   })).rejects.toMatchObject({ name: "AbortError" });
 
   expect(messages).toEqual(["run", "abort"]);
-  expect(released).toBe(true);
+  expect(released).toBe(false);
 });
 
 test("structured helper errors preserve the ChatGPT adapter failure contract", async () => {

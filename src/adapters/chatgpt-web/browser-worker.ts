@@ -63,10 +63,12 @@ import { ensureRoxyBrowserEndpoint } from "../../roxy-browser-host";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
+  LauncherRetainedConversationUnavailableError,
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
   notifyLauncherRoxyPreview,
   notifyLauncherTurn,
+  releaseLauncherRetainedConversation,
   type LauncherExternalBrowserHost,
 } from "../../launcher-browser-host";
 import {
@@ -635,6 +637,8 @@ export interface BrowserTurn {
   conversationKey?: string;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
+  /** Launcher-only lease result: compile exactly the fresh or resumed prompt selected by the owned surface. */
+  onPreparedSelected?: (reused: boolean) => void | Promise<void>;
   /** Visible ChatGPT reasoning-summary step titles only; never hidden chain-of-thought. */
   onReasoningSummary?: (text: string, continuation?: boolean) => void;
   /** Stable visible ChatGPT prose between status/tool rows. */
@@ -1364,6 +1368,10 @@ export class ChatGptBrowserWorker {
       && (this.config.browserHost === "roxybrowser" || this.config.browserHost === "system-browser"),
     );
     const requestedConversationKey = retainedExternal ? turn.conversationKey! : undefined;
+    const serializedConversationKey = turn.conversationKey
+      && (retainedExternal || this.config.browserHost === "launcher")
+      ? turn.conversationKey
+      : undefined;
     const slotPreparation = this.preparePhysicalTaskSurfaceSlot(requestedConversationKey);
     const useHelper = this.config.browserHost === "launcher" && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
     if (useHelper) {
@@ -1379,8 +1387,8 @@ export class ChatGptBrowserWorker {
     );
     let owned: Promise<ChatGptOwnedBrowserRun>;
     let run: Promise<string>;
-    if (retainedExternal) {
-      const key = turn.conversationKey!;
+    if (serializedConversationKey) {
+      const key = serializedConversationKey;
       const prior = this.conversationTails.get(key) ?? Promise.resolve();
       owned = prior.then(beginOwned);
       run = owned.then(candidate => candidate.result);
@@ -1453,6 +1461,12 @@ export class ChatGptBrowserWorker {
       if (!tail) break;
       await tail;
       if (this.conversationTails.get(conversationKey) === tail) break;
+    }
+    if (this.config.browserHost === "launcher") {
+      return (await releaseLauncherRetainedConversation(
+        this.config.browserHostDescriptorPath!,
+        conversationKey,
+      )) > 0;
     }
     const page = this.retainedExternalPages.get(conversationKey);
     if (!page) return false;
@@ -3133,12 +3147,25 @@ export class ChatGptBrowserWorker {
       traceId: turn.traceId,
       helperPid: process.pid,
       ...(externalHost ? { externalHost } : {}),
+      ...(!externalHost && turn.conversationKey ? {
+        conversationKey: turn.conversationKey,
+        ...(turn.capabilities.localToolsEnabled ? { connectorIdentity: this.config.appName } : {}),
+        ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
+      } : {}),
     }).catch(error => {
       if (error instanceof LauncherBrowserTurnCancelledError) throw chatGptBrowserTabClosedError();
+      if (error instanceof LauncherRetainedConversationUnavailableError) {
+        throw chatGptRetainedConversationUnavailableError();
+      }
       throw error;
     });
     const surfaceId = lease.surfaceId;
     if (!externalHost && !surfaceId) throw new Error("Launcher did not lease a browser tab for the ChatGPT turn");
+    const launcherReused = !externalHost && lease.reused === true;
+    if (launcherReused && !turn.prepareResume) {
+      throw new Error("Launcher reused a ChatGPT conversation without a continuation prompt");
+    }
+    if (!externalHost) await turn.onPreparedSelected?.(launcherReused);
     let terminal: "completed" | "failed" | "aborted" = "completed";
     let terminalMessage: string | undefined;
     let originalError: unknown;
@@ -3176,6 +3203,7 @@ export class ChatGptBrowserWorker {
       return await this.runBrowserTurn(turn, surfaceId, undefined, {
         externalHost,
         previewEnabled: externalHost === "roxybrowser" && lease.previewEnabled === true,
+        reused: launcherReused,
       });
     } catch (error) {
       originalError = error;
@@ -3195,6 +3223,12 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(externalHost ? { externalHost } : {}),
+          ...(!externalHost && terminal === "completed" && turn.retainConversation
+            ? { retain: true }
+            : {}),
+          ...(!externalHost && terminal === "completed" && turn.capabilities.localToolsEnabled
+            ? { connectorBound: true }
+            : {}),
         });
         if (release.cancelledByUser) throw chatGptBrowserTabClosedError();
       } catch (controlError) {
@@ -3213,7 +3247,7 @@ export class ChatGptBrowserWorker {
     turn: BrowserTurn,
     launcherSurfaceId?: string,
     maintenancePage?: Page,
-    launcherExternal?: { externalHost?: LauncherExternalBrowserHost; previewEnabled?: boolean },
+    launcherExternal?: { externalHost?: LauncherExternalBrowserHost; previewEnabled?: boolean; reused?: boolean },
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.captureLunaCheckpoint === true) !== (turn.onLunaCheckpoint !== undefined)) {
@@ -3239,7 +3273,7 @@ export class ChatGptBrowserWorker {
       this.retainedExternalPages.delete(turn.conversationKey);
       this.retainedExternalPages.set(turn.conversationKey, retainedPage);
     }
-    const reuseConversation = Boolean(retainedPage);
+    const reuseConversation = Boolean(retainedPage) || launcherExternal?.reused === true;
     if (turn.requireRetainedConversation && !reuseConversation) {
       throw chatGptRetainedConversationUnavailableError();
     }

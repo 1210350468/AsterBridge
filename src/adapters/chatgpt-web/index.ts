@@ -234,7 +234,9 @@ export function createChatGptWebAdapter(
     const retainExternalConversation = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
       && mode.localTools
-      && (provider.chatgptWeb?.browserHost === "roxybrowser" || provider.chatgptWeb?.browserHost === "system-browser");
+      && (provider.chatgptWeb?.browserHost === "roxybrowser"
+        || provider.chatgptWeb?.browserHost === "system-browser"
+        || provider.chatgptWeb?.browserHost === "launcher");
     const conversationKey = retainExternalConversation
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;

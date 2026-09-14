@@ -18,11 +18,13 @@ interface PendingTurn {
   logicalSettled?: boolean;
   abortListener?: () => void;
   sent?: boolean;
+  prepared?: CompiledChatGptWebPrompt & { release: () => void };
 }
 
 type HelperMessage =
   | { type: "ready"; features?: string[] }
   | { type: "event"; id: string; event: "heartbeat" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
+  | { type: "event"; id: string; event: "prepared_selected"; reused: boolean }
   | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
   | { type: "settled"; id: string }
@@ -56,6 +58,12 @@ function parseHelperMessage(line: string): HelperMessage {
   }
   if (message.type === "event") {
     const event = message.event;
+    if (event === "prepared_selected") {
+      if (typeof message.reused !== "boolean") {
+        throw new Error("Launcher browser helper prompt selection is invalid");
+      }
+      return { type: "event", id: message.id, event, reused: message.reused };
+    }
     if (event === "luna_checkpoint") {
       if (typeof message.answerHash !== "string" || !/^[a-f0-9]{64}$/.test(message.answerHash)) {
         throw new Error("Launcher browser helper Luna checkpoint answer hash is invalid");
@@ -187,12 +195,16 @@ export class LauncherBrowserHelperClient {
     rejectSettlement: (error: Error) => void,
   ): Promise<void> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    const prepared = await turn.prepare();
     try {
       await this.ensureChild();
       if (!this.helperFeatures.has("physical-settlement")) {
         throw new Error(
           "Launcher browser helper does not support physical settlement ownership; update or restart the launcher",
+        );
+      }
+      if (!this.helperFeatures.has("prompt-selection")) {
+        throw new Error(
+          "Launcher browser helper does not support retained prompt selection; update or restart the launcher",
         );
       }
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
@@ -246,7 +258,11 @@ export class LauncherBrowserHelperClient {
           modelId: turn.modelId,
           reasoning: turn.reasoning,
           capabilities: turn.capabilities,
-          prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
+          ...(turn.prepareResume ? { resumeAvailable: true } : {}),
+          ...(turn.retainConversation ? { retainConversation: true } : {}),
+          ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
+          ...(turn.conversationKey ? { conversationKey: turn.conversationKey } : {}),
+          ...(turn.compaction ? { compaction: true } : {}),
           ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
         },
       });
@@ -255,8 +271,6 @@ export class LauncherBrowserHelperClient {
         rejectResult,
         rejectSettlement,
       });
-    } finally {
-      prepared.release();
     }
   }
 
@@ -372,6 +386,26 @@ export class LauncherBrowserHelperClient {
     if (!pending) return;
     if (message.type === "event") {
       if (message.event === "heartbeat") pending.turn.onHeartbeat?.();
+      else if (message.event === "prepared_selected") {
+        const prepare = message.reused ? pending.turn.prepareResume : pending.turn.prepare;
+        void Promise.resolve().then(() => prepare?.()).then(prepared => {
+          if (!prepared) throw new Error("Launcher browser helper selected an unavailable continuation prompt");
+          if (this.pending.get(message.id) !== pending) {
+            prepared.release();
+            return;
+          }
+          pending.prepared = prepared;
+          const { release: _release, ...serializable } = prepared;
+          return this.send({
+            type: "prepared_selected_ack",
+            id: message.id,
+            prepared: serializable satisfies CompiledChatGptWebPrompt,
+          });
+        }).catch(error => this.finishWithError(
+          message.id,
+          error instanceof Error ? error : new Error(String(error)),
+        ));
+      }
       else if (message.event === "luna_checkpoint") {
         if (!pending.turn.captureLunaCheckpoint || !pending.turn.onLunaCheckpoint) {
           this.finishWithError(message.id, new Error("Launcher browser helper emitted an unexpected Luna checkpoint"));
@@ -428,6 +462,8 @@ export class LauncherBrowserHelperClient {
     if (pending.abortListener && pending.turn.abortSignal) {
       pending.turn.abortSignal.removeEventListener("abort", pending.abortListener);
     }
+    pending.prepared?.release();
+    pending.prepared = undefined;
     this.pending.delete(id);
   }
 
