@@ -107,6 +107,8 @@ test("retained compaction uses the exact conversation and waits for structured h
   const source = sourceSession("conversation-exact");
   let observedTurn: BrowserTurn | undefined;
   let browserFinished = false;
+  let signalBrowserFinished!: () => void;
+  const browserFinishedSignal = new Promise<void>(resolve => { signalBrowserFinished = resolve; });
   let physicalFinished = false;
   let releasePhysical!: () => void;
   const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
@@ -126,6 +128,7 @@ test("retained compaction uses the exact conversation and waits for structured h
         });
         await new Promise(resolve => setTimeout(resolve, 30));
         browserFinished = true;
+        signalBrowserFinished();
         return "visible compaction completion";
       })();
     },
@@ -145,7 +148,7 @@ test("retained compaction uses the exact conversation and waits for structured h
       undefined,
       30_000,
     );
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await browserFinishedSignal;
     let summarySettled = false;
     void pendingSummary.finally(() => { summarySettled = true; });
     await Promise.resolve();

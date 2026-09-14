@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
@@ -18,13 +18,160 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
     workerSource.indexOf("  private async waitForMultipartAcknowledgement("),
   );
   expect(runBrowserTurn).toContain("return this.attachPromptWithCompactionRetry(");
-  expect(runBrowserTurn).toContain("this.sendAttachedPrompt(page, submissionBaseline");
+  expect(runBrowserTurn).toContain("this.sendAttachedPrompt(");
+  expect(runBrowserTurn).toContain("submissionBaseline,");
+  expect(runBrowserTurn).toContain("recoverLauncherObservation,");
   expect(sendAttachedPrompt).toContain('.locator("xpath=ancestor::form[1]")');
   expect(sendAttachedPrompt).toContain('.getByTestId("send-button")');
   expect(sendAttachedPrompt).toContain('await sendButton.press("Enter")');
   expect(sendAttachedPrompt).toContain("return await this.waitForSubmissionAccepted(");
   expect(runBrowserTurn).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
+});
+
+test("launcher DOM recovery is bounded and never opens a replacement before the stale connection closes", async () => {
+  expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(5_000);
+  expect(MAX_CHATGPT_BROWSER_PAGE_REBINDS).toBe(2);
+  await expect(withChatGptBrowserObservationTimeout(new Promise<never>(() => {}), 5))
+    .rejects.toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
+
+  let replacements = 0;
+  const disconnectFailure = new Error("stale CDP transport did not close");
+  await expect(connectAfterClosingBrowserConnection(
+    { close: async () => { throw disconnectFailure; } },
+    async () => {
+      replacements += 1;
+      return "replacement";
+    },
+  )).rejects.toBe(disconnectFailure);
+  expect(replacements).toBe(0);
+});
+
+test("an accepted send survives one stalled observation without pressing Send twice", async () => {
+  type Baseline = {
+    userTurns: unknown;
+    responseTurns: unknown;
+    initialUserTurnCount: number;
+    initialResponseTurnCount: number;
+  };
+  const worker = ChatGptBrowserWorker.forProvider({
+    adapter: "chatgpt-web",
+    baseUrl: `browser://launcher-rebind-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+  }) as unknown as {
+    activeComposer(page: Page): Promise<unknown>;
+    currentSubmissionEvidence(): Promise<"user_turn">;
+    sendAttachedPrompt(
+      page: Page,
+      baseline: Baseline,
+      capture?: (checkpoint: string) => Promise<void>,
+      signal?: AbortSignal,
+      recover?: (
+        attempt: number,
+        cause: Error,
+        baseline: Baseline,
+        signal?: AbortSignal,
+      ) => Promise<{ page: Page; baseline: Baseline }>,
+    ): Promise<string>;
+  };
+  const hidden = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const firstPage = { locator: () => hidden } as unknown as Page;
+  const reboundPage = { locator: () => hidden } as unknown as Page;
+  let sendPresses = 0;
+  const sendButton = {
+    waitFor: async () => {},
+    isEnabled: async () => true,
+    press: async () => { sendPresses += 1; },
+  };
+  worker.activeComposer = async () => ({
+    locator: () => ({ getByTestId: () => sendButton }),
+  });
+  let observations = 0;
+  worker.currentSubmissionEvidence = async () => {
+    observations += 1;
+    if (observations === 1) throw new ChatGptBrowserObservationTimeoutError(5_000);
+    return "user_turn";
+  };
+  const baseline: Baseline = {
+    userTurns: {},
+    responseTurns: {},
+    initialUserTurnCount: 0,
+    initialResponseTurnCount: 0,
+  };
+  let recoveries = 0;
+  await expect(worker.sendAttachedPrompt(
+    firstPage,
+    baseline,
+    undefined,
+    undefined,
+    async (attempt, cause, observedBaseline) => {
+      recoveries += 1;
+      expect(attempt).toBe(1);
+      expect(cause).toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
+      expect(observedBaseline).toBe(baseline);
+      return { page: reboundPage, baseline };
+    },
+  )).resolves.toBe("user_turn");
+  expect(sendPresses).toBe(1);
+  expect(observations).toBe(2);
+  expect(recoveries).toBe(1);
+});
+
+test("accepted-send observation recovery stops after two exact-page rebinds", async () => {
+  type Baseline = {
+    userTurns: unknown;
+    responseTurns: unknown;
+    initialUserTurnCount: number;
+    initialResponseTurnCount: number;
+  };
+  const worker = ChatGptBrowserWorker.forProvider({
+    adapter: "chatgpt-web",
+    baseUrl: `browser://launcher-rebind-budget-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+  }) as unknown as {
+    currentSubmissionEvidence(): Promise<never>;
+    waitForSubmissionAccepted(
+      page: Page,
+      baseline: Baseline,
+      signal?: AbortSignal,
+      recover?: (
+        attempt: number,
+        cause: Error,
+        baseline: Baseline,
+        signal?: AbortSignal,
+      ) => Promise<{ page: Page; baseline: Baseline }>,
+    ): Promise<unknown>;
+  };
+  worker.currentSubmissionEvidence = async () => {
+    throw new ChatGptBrowserObservationTimeoutError(5_000);
+  };
+  const hidden = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const page = { locator: () => hidden } as unknown as Page;
+  const baseline: Baseline = {
+    userTurns: {},
+    responseTurns: {},
+    initialUserTurnCount: 0,
+    initialResponseTurnCount: 0,
+  };
+  const attempts: number[] = [];
+  await expect(worker.waitForSubmissionAccepted(
+    page,
+    baseline,
+    undefined,
+    async attempt => {
+      attempts.push(attempt);
+      return { page, baseline };
+    },
+  )).rejects.toThrow("DOM remained unresponsive after 2 same-page rebinds");
+  expect(attempts).toEqual([1, 2]);
 });
 
 test("Bigger Context stages inert parts before the final task-bearing commit", () => {
@@ -1974,10 +2121,12 @@ test("submission acceptance stops when its stage is aborted", async () => {
   const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
     waitForSubmissionAccepted(
       page: Page,
-      userTurns: unknown,
-      responseTurns: unknown,
-      initialUserTurnCount: number,
-      initialResponseTurnCount: number,
+      baseline: {
+        userTurns: unknown;
+        responseTurns: unknown;
+        initialUserTurnCount: number;
+        initialResponseTurnCount: number;
+      },
       signal: AbortSignal,
     ): Promise<unknown>;
   }).waitForSubmissionAccepted;
@@ -1987,10 +2136,7 @@ test("submission acceptance stops when its stage is aborted", async () => {
   await expect(waitForSubmissionAccepted.call(
     {},
     {} as Page,
-    {},
-    {},
-    0,
-    0,
+    { userTurns: {}, responseTurns: {}, initialUserTurnCount: 0, initialResponseTurnCount: 0 },
     controller.signal,
   )).rejects.toMatchObject({ name: "AbortError" });
 });
