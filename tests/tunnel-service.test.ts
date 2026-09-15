@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config";
 import { createTunnelConfig, mcpCommand } from "../src/tunnel";
-import { tunnelServiceDefinition } from "../src/tunnel-service";
+import { tunnelServiceDefinition, tunnelServiceManagedByPlatform } from "../src/tunnel-service";
 import { existingFullSetupCredentials, tunnelWorkerRuntimeChanged } from "../src/setup";
 
 const roots: string[] = [];
@@ -51,6 +51,12 @@ afterEach(() => {
 });
 
 describe("tunnel launchd ownership", () => {
+  test("uses launchd only on macOS and leaves Windows/Linux on native runtime management", () => {
+    expect(tunnelServiceManagedByPlatform("darwin")).toBe(true);
+    expect(tunnelServiceManagedByPlatform("win32")).toBe(false);
+    expect(tunnelServiceManagedByPlatform("linux")).toBe(false);
+  });
+
   test("runs the pinned client directly and asks launchd to restore it", () => {
     const root = join(tmpdir(), `codex-chatgpt-web-tunnel-service-${process.pid}-${Date.now()}`);
     roots.push(root);

@@ -20,8 +20,8 @@ import { runCommand } from "./process";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
 import { existingFullSetupCredentials, setup, type SetupOptions } from "./setup";
-import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
-import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
+import { connectTunnel, installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
+import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, tunnelServiceManagedByPlatform, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
 
@@ -379,23 +379,40 @@ async function tunnelCommand(args: string[]): Promise<void> {
     return;
   }
   const config = loadConfig();
-  if (action === "start") startTunnelService();
+  const serviceManaged = tunnelServiceManagedByPlatform();
+  if (action === "start") {
+    if (serviceManaged) startTunnelService();
+    else connectTunnel(config);
+  }
   else if (action === "restart") {
     await assertServiceIdle(config);
-    await restartTunnelService();
+    if (serviceManaged) await restartTunnelService();
+    else {
+      stopTunnel(config);
+      connectTunnel(config);
+    }
   }
   else if (action === "stop") {
     await assertServiceIdle(config);
-    await stopTunnelService();
+    if (serviceManaged) await stopTunnelService();
     stopTunnel(config);
   }
   else if (action !== "status") throw new Error(`Unknown tunnel action: ${action}`);
-  const status = action === "start" || action === "restart"
-    ? await waitForTunnelReady(config)
-    : tunnelStatus(config);
+  const status = action === "stop"
+    ? {
+        ok: true,
+        processRunning: false,
+        healthy: false,
+        ready: false,
+        state: "stopped",
+        detail: "Tunnel runtime stopped",
+      }
+    : action === "start" || action === "restart"
+      ? await waitForTunnelReady(config)
+      : tunnelStatus(config);
   const service = getTunnelServiceStatus();
   stdout.write(`${JSON.stringify({ service, runtime: status }, null, 2)}\n`);
-  if (action !== "stop" && (!service.running || !status.ok)) process.exitCode = 1;
+  if (action !== "stop" && (!status.ok || (serviceManaged && !service.running))) process.exitCode = 1;
 }
 
 async function openCommand(args: string[]): Promise<void> {

@@ -16,6 +16,10 @@ export interface TunnelServiceStatus {
   definitionPath?: string;
 }
 
+export function tunnelServiceManagedByPlatform(platform = process.platform): boolean {
+  return platform === "darwin";
+}
+
 function xml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -43,7 +47,7 @@ function settings(config: AppConfig) {
 }
 
 function assertMacOs(): void {
-  if (process.platform !== "darwin") {
+  if (!tunnelServiceManagedByPlatform()) {
     throw new Error("Managed tunnel service installation is currently supported on macOS only");
   }
 }
