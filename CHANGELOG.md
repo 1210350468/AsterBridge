@@ -2,7 +2,7 @@
 
 All notable AsterBridge changes are documented here.
 
-## 3.0.42 - WIP
+## 3.0.42 - 2026-09-15
 
 ### Physical browser settlement ownership
 
