@@ -4,6 +4,7 @@ import {
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_HEADER_MODEL_CONTROL_SELECTOR,
+  chatGptEffortControlIsClosed,
   detectChatGptAccountCapabilities,
   preferChatGptEffortSlider,
 } from "../src/chatgpt-session";
@@ -39,6 +40,13 @@ test("a concurrently hydrated reasoning slider outranks legacy/model radio rows"
 test("radio rows remain the legacy effort fallback when no slider appears", async () => {
   const slider = { isVisible: async () => false };
   await expect(preferChatGptEffortSlider("items", slider as never, 0)).resolves.toBe("items");
+});
+
+test("a visible effort surface is stale when its owner control is already closed", () => {
+  expect(chatGptEffortControlIsClosed("false", null)).toBeTrue();
+  expect(chatGptEffortControlIsClosed(null, "closed")).toBeTrue();
+  expect(chatGptEffortControlIsClosed("true", "open")).toBeFalse();
+  expect(chatGptEffortControlIsClosed(null, null)).toBeFalse();
 });
 
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {

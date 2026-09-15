@@ -62,6 +62,13 @@ export function parseChatGptEffortSliderState(
   return { min, max, value };
 }
 
+export function chatGptEffortControlIsClosed(
+  ariaExpanded: string | null,
+  dataState: string | null,
+): boolean {
+  return ariaExpanded === "false" || dataState === "closed";
+}
+
 async function anyVisible(locator: Locator): Promise<boolean> {
   const count = await locator.count();
   for (let index = 0; index < count; index += 1) {
@@ -157,7 +164,14 @@ export async function detectChatGptAccountCapabilities(
   const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
   const menuVisible = await menu.isVisible().catch(() => false);
   const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-  if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
+  const menuState = await effortButton.getAttribute("data-state").catch(() => null);
+  // ChatGPT's exit animation can leave the old slider/menu rendered briefly after Escape. The
+  // owner control is authoritative: a closed owner means that visible range is stale and must not
+  // be selected while it is being removed from the DOM.
+  if (chatGptEffortControlIsClosed(menuExpanded, menuState)
+    || (!menuVisible && menuExpanded !== "true")) {
+    await effortButton.press("Enter");
+  }
   try {
     const efforts = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
     const slider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();

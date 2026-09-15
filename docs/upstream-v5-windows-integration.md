@@ -165,6 +165,46 @@ Status: **IMPLEMENTATION COMPLETE — LUNA-ONLY LIVE GATE PENDING**.
   required before U5-W3 can be marked DONE; the current Windows production account probes as
   `Sol=true`, so it cannot expose the Luna-only Think control for an honest live test.
 
+## U5-W4 — Temporary Chat personalization and v5.0.6 tail audit
+
+Status: **DONE**.
+
+- Selectively backported the Temporary Chat personalization preflight that predates upstream
+  `509cfc9` instead of copying only its English/Chinese label additions. A fresh tool-capable
+  conversation now proves connector visibility before the normal `@Codex Native3` selection. When
+  the connector is hidden, the worker may change only the exact owned personalization state, prove
+  the connector again, and restore the original state if that proof fails. Cleanup is bounded and a
+  failed rollback is surfaced as persistent-browser-state evidence rather than being hidden by the
+  original connector error.
+- English `Personalized / Unpersonalized` and Simplified Chinese `个性化 / 非个性化` remain fast
+  semantic paths, but labels are not the authority. A label-free structural fallback uses the owned
+  two-state menu plus the actual configured connector as the proof. This matters on the maintainer
+  Windows/Roxy session: the live Temporary Chat control was Japanese (`パーソナライズ`), so the
+  upstream English/Chinese-only patch would not have matched it. The new source preflight returned
+  `personalization-already-enabled` from real `Codex Native3` catalog evidence without mutating that
+  conversation, and the project-native source command `browser verify-connector` then completed exit
+  0 against the same authenticated Roxy profile.
+- Backported the remaining relevant v5.0.6 effort-picker race from `e85e369`: a menu/slider left
+  rendered by ChatGPT's exit animation is stale when its owner control is already
+  `aria-expanded=false` or `data-state=closed`. Capability detection now reopens the owner before
+  considering a visible range, so it cannot select a slider that is being removed from the DOM.
+- Launcher Chinese UI now localizes the MCP connector-verification progress text and known successful
+  Doctor checks while preserving warning/error/unknown backend messages byte-for-byte. Connector
+  identities are decoded from their JSON diagnostic representation and substituted literally, so
+  names containing replacement metacharacters, quotes, or backslashes remain exact.
+- The rest of `e85e369` was audited against current AsterBridge rather than re-imported. Descriptor-v3
+  native target ownership, structural terminal errors, final `Stopped thinking` semantics, browser
+  diagnostics, Windows lifecycle hardening, and interrupt-hook `allowAbsent` recovery are already in
+  the 3.0.41-3.0.43 line. Upstream's 30-second agent-wait transport interval is intentionally not
+  copied: AsterBridge keeps its already-proven bounded 10-second Web-subagent polling contract so one
+  child wait does not hold the MCP channel longer.
+- Focused validation passes personalization/Browser Worker/capability detection at **107 pass / 0
+  fail** and Launcher runtime-localization at **3 pass / 0 fail**. Final deterministic validation
+  passes Core at **45 / 45 batches** and Launcher at **230 pass / 0 fail / 2 expected platform
+  skips**, plus root and Launcher TypeScript and the Launcher production renderer build. The live
+  Windows/Roxy connector verification above closes the browser-specific U5-W4 gate without modifying
+  the installed 3.0.42 production configuration.
+
 ## Documentation rule
 
 For every completed upstream-v5 item:

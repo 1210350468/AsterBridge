@@ -123,6 +123,13 @@ const en = {
   connectorName: "Connector / App name",
   connectorNameHint: "This is the exact ChatGPT App identity. Use a new unique name after MCP tool or schema changes so ChatGPT scans a fresh contract.",
   verifyRuntime: "Verify runtime",
+  checkingChatGptConnector: "Checking ChatGPT connector",
+  doctorProxyHealthy: "Responses proxy is healthy on {endpoint}",
+  doctorTunnelBinaryInstalled: "Pinned openai/tunnel-client binary is installed",
+  doctorTunnelKeyStored: "Tunnel runtime key is stored privately",
+  doctorTunnelRuntimeOwned: "Launcher owns the tunnel runtime",
+  doctorTunnelRuntimeReady: "Tunnel runtime reports healthy and ready",
+  doctorConnectorAvailable: "ChatGPT connector \"{name}\" is available",
   activityTitle: "Runtime activity",
   activitySubtitle: "Structured local diagnostics without prompt or response content.",
   recentActivity: "Recent events",
@@ -329,6 +336,13 @@ const zh: Record<keyof typeof en, string> = {
   connectorName: "连接器 / App 名称",
   connectorNameHint: "这里是 ChatGPT App 的精确身份。MCP 工具或 schema 有变化时，请换一个新的唯一名称，让 ChatGPT 重新扫描全新的工具合约。",
   verifyRuntime: "验证运行时",
+  checkingChatGptConnector: "正在检查 ChatGPT 连接器",
+  doctorProxyHealthy: "Responses 代理在 {endpoint} 上运行正常",
+  doctorTunnelBinaryInstalled: "已安装固定版本的 openai/tunnel-client 二进制文件",
+  doctorTunnelKeyStored: "隧道运行时密钥已安全存储",
+  doctorTunnelRuntimeOwned: "启动器正在管理隧道运行时",
+  doctorTunnelRuntimeReady: "隧道运行正常，可以使用",
+  doctorConnectorAvailable: "ChatGPT 连接器“{name}”可用",
   activityTitle: "运行时活动",
   activitySubtitle: "不包含提示词或回答内容的结构化本地诊断。",
   recentActivity: "最近事件",
@@ -416,4 +430,46 @@ export type Copy = typeof en;
 
 export function copyFor(language: Language): Copy {
   return (language === "zh-CN" ? zh : en) as Copy;
+}
+
+export function localizeRuntimeMessage(
+  copy: Copy,
+  message: string,
+  checkId: string | undefined,
+  language: Language,
+): string {
+  if (language === "en") return message;
+  if (checkId === undefined && message === "Checking ChatGPT connector") {
+    return copy.checkingChatGptConnector;
+  }
+  if (checkId === "proxy") {
+    const match = /^Responses proxy is healthy on (127\.0\.0\.1:\d+)$/.exec(message);
+    if (match) return copy.doctorProxyHealthy.replace("{endpoint}", () => match[1]!);
+  }
+  if (checkId === "tunnel-binary" && message === "Pinned openai/tunnel-client binary is installed") {
+    return copy.doctorTunnelBinaryInstalled;
+  }
+  if (checkId === "tunnel-key" && message === "Tunnel runtime key is stored privately") {
+    return copy.doctorTunnelKeyStored;
+  }
+  if (checkId === "tunnel-service" && message === "Launcher owns the tunnel runtime") {
+    return copy.doctorTunnelRuntimeOwned;
+  }
+  if (checkId === "tunnel-runtime" && message === "Tunnel runtime reports healthy and ready") {
+    return copy.doctorTunnelRuntimeReady;
+  }
+  if (checkId === "connector") {
+    const match = /^ChatGPT connector (".*") is available$/s.exec(message);
+    if (match) {
+      try {
+        const connectorName = JSON.parse(match[1]!);
+        if (typeof connectorName === "string") {
+          return copy.doctorConnectorAvailable.replace("{name}", () => connectorName);
+        }
+      } catch {
+        return message;
+      }
+    }
+  }
+  return message;
 }

@@ -9,6 +9,18 @@ import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecut
 import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import type { CodexParsedRequest } from "../src/types";
 
+function personalizedTemporaryChatRole(
+  _role: string,
+  options: { name: string | RegExp },
+) {
+  const matches = typeof options.name === "string"
+    ? options.name === "Personalized"
+    : options.name.test("Personalized");
+  return {
+    filter: () => ({ count: async () => matches ? 1 : 0 }),
+  };
+}
+
 test("browser turn orchestration retains owned prompt insertion and semantic submission", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const runBrowserTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
@@ -1218,6 +1230,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     },
   };
   const page = {
+    getByRole: personalizedTemporaryChatRole,
     getByText: (text: string, options: { exact: boolean }) => {
       expect(text).toBe("Codex Native3");
       expect(options).toEqual({ exact: true });
@@ -1291,6 +1304,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   const initialComposer = { fill: async () => {}, focus: async () => {}, pressSequentially: async () => {} };
   const selectedComposer = { selected: true };
   const page = {
+    getByRole: personalizedTemporaryChatRole,
     getByText: () => ({ exactConnectorLabel: true }),
     locator: () => menuRows,
     keyboard: {
@@ -1349,6 +1363,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     },
   };
   const page = {
+    getByRole: personalizedTemporaryChatRole,
     getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => selector.includes("__menu-item")
       ? { filter: () => appResult, evaluateAll: async () => [] }
@@ -1492,6 +1507,7 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
   const run = async (visibleRows: string[]) => {
     let now = realDateNow();
     const page = {
+      getByRole: personalizedTemporaryChatRole,
       getByText: () => ({ exactConnectorLabel: true }),
       locator: () => ({
         filter: (options: { has?: unknown; visible?: boolean }) => options.visible
@@ -1559,6 +1575,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     pressSequentially: async (value: string) => { calls.push(["type", value]); },
   };
   const page = {
+    getByRole: personalizedTemporaryChatRole,
     getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => selector.includes("__menu-item")
       ? { filter: () => appResult, evaluateAll: async () => [] }
