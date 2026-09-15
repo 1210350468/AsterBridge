@@ -119,14 +119,51 @@ Launcher retained-surface ownership is connected end-to-end through the helper p
 
 ## U5-W3 — Capability delta
 
-Status: **PLANNED**.
+Status: **IMPLEMENTATION COMPLETE — LUNA-ONLY LIVE GATE PENDING**.
 
-- Luna Think mode (`09877fa`) is worth porting because AsterBridge already supports Luna but not the
-  Think toggle used by Free/Go accounts.
-- Audit the v5 Compatibility V1 / Native subagent hardening. AsterBridge already owns reversible
-  `multi_agent` / `multi_agent_v2` configuration and 10-second `wait_agent` polling, so only missing
-  protocol-boundary protections should be added.
-- Preserve `Codex Native3` ABI and AsterBridge's current image-generation provider abstraction.
+- Ported Luna Think mode (`09877fa`) as a second Luna-only native Codex route, `chatgpt-web/think`.
+  It keeps the `gpt-5.6-luna` backend, maps the adapter effort to `medium`, and toggles the one visible
+  semantic `Think` button by `aria-pressed`. Normal Luna explicitly clears Think. Missing or ambiguous
+  Think controls fail closed instead of silently changing the requested mode.
+- Preserved `Codex Native3` ABI and AsterBridge's image-generation provider abstraction. Free/Go
+  catalog publication now exposes both Luna and Think; DEV chat, provider reasoning efforts, and
+  `/v1/models` use the same route source of truth.
+- Removed the old Pro-only prompt clause that prohibited delegation, so Pro now keeps the same native
+  Codex subagent contract as Extra High. Existing Compatibility V1 / Native configuration and the
+  bounded 10-second `wait_agent` polling remain unchanged.
+- Backported the interrupted-turn boundary: a synthetic `<turn_aborted>` record stays historical
+  context and cannot become the next turn's user revision, while a real foreign-turn steering message
+  still fails closed.
+- Wired the already-existing bridge stall watchdog end-to-end as one optional config value:
+  `AppConfig.stallTimeoutSec` -> provider config -> server -> Responses bridge. `--stall-timeout-sec N`
+  is an explicit setup override; unset behavior remains the existing 300-second default.
+- Native mode preserves current Codex agent-version metadata for native Codex surfaces, but a real
+  Codex 0.153.4 V2 parent -> ChatGPT Web child probe confirmed that the delegated child task itself is
+  carried as opaque `encrypted_content`. A browser backend cannot decrypt that cross-backend payload.
+  AsterBridge therefore keeps this path fail-closed before browser execution instead of replacing the
+  task with `[encrypted content omitted]` or adding rollout JSONL/SQLite as a second authority source.
+  Compatibility V1 remains the supported Web-subagent path.
+- The connectorless Responses fallback also received one live-gate repair discovered by that work:
+  a valid private tool envelope can be preserved exactly in the completed raw DOM while ChatGPT's
+  Markdown serializer escapes protocol punctuation in the streaming view. The raw completed envelope
+  is now authoritative only after it validates against the exact current binding and advertised tool
+  registry; ordinary prose still requires exact completed/streamed equality. Deferred V1 tools remain
+  discovered with the current turn's `tool_search` and then invoked by their newly advertised wire name.
+- Real isolated Windows/Roxy 3.0.43 validation on `127.0.0.1:17842` passed the supported Web-subagent
+  chain end to end through the Responses fallback: parent `tool_search` exposed the deferred V1 tools,
+  outer Codex executed `spawn_agent`, a separate `chatgpt-web/light` child browser turn returned
+  `CHILD_AGENT_OK`, the parent used bounded `wait_agent`, then `close_agent`, and finished with
+  `SUBAGENT_E2E_OK`. One transient missing-response-DOM retry was recovered by the existing browser
+  recovery path; the E2E process exited 0 with real child-session evidence.
+- Current code gates cover Luna/Think route selection, semantic Think toggling, Pro delegation,
+  interrupted-turn revision isolation, configurable streaming stall timeout, V1 Web-subagent
+  delegation, the Responses direct-tool boundary, and Native V2 encrypted-payload fail-closed behavior.
+  Final local validation passes the focused U5-W3/direct-tool gate at **124 pass / 0 fail**, Core at
+  **44 / 44 deterministic batches**, Launcher at **227 pass / 0 fail / 2 expected platform skips**,
+  plus root TypeScript, version/docs contracts, `git diff --check`, Launcher TypeScript, and the
+  production renderer build. A real Luna-only browser gate is still
+  required before U5-W3 can be marked DONE; the current Windows production account probes as
+  `Sol=true`, so it cannot expose the Luna-only Think control for an honest live test.
 
 ## Documentation rule
 

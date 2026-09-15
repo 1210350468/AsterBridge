@@ -437,11 +437,6 @@ export function compileChatGptWebPrompt(
       "Do not claim a new local inspection, command, edit, or verification unless it actually appears in the task history. If the latest request requires fresh local-computer access or a local mutation, state only that exact limitation instead of inventing success.",
       "Otherwise perform the full requested research, analysis, or synthesis with every capability actually available to you; do not stop at a plan or progress report.",
     ];
-  const proDelegationContract = !parsed._compactionRequest && mode.effort === "max"
-    ? [
-      "Complete this task directly in the current parent response. Do not create, spawn, delegate to, or wait on sub-agents, parallel agents, background agents, or delegated workers, even if such tools are available. Use non-agent tools directly instead.",
-    ]
-    : [];
   const checkpointContract = captureLunaCheckpoint
     ? [
       "After the complete user-facing answer, append one private rolling task checkpoint for the next Luna turn.",
@@ -496,7 +491,6 @@ export function compileChatGptWebPrompt(
         commit: [
           ...sharedContract,
           ...transportContract,
-          ...proDelegationContract,
           ...checkpointContract,
           answerContract,
           ...transportResume,
@@ -508,7 +502,6 @@ export function compileChatGptWebPrompt(
     const text = [
       ...sharedContract,
       ...transportContract,
-      ...proDelegationContract,
       ...checkpointContract,
       answerContract,
       "<codex_context_json>",

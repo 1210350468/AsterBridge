@@ -93,6 +93,8 @@ export function directToolBridgePromptContract(parsed: CodexParsedRequest, bindi
     `A tool request must be the entire final answer, with no Markdown fence and no prose before or after it: ${DIRECT_TOOL_BRIDGE_PREFIX}{\"binding\":${JSON.stringify(binding)},\"calls\":[{\"wire_name\":\"TOOL\",\"arguments\":{}}]}${DIRECT_TOOL_BRIDGE_SUFFIX}`,
     "Emit that private envelope as raw transport text. Do not Markdown-escape underscores or any JSON character inside it.",
     "For input_kind=json_object, provide exactly one arguments object matching that tool schema. For input_kind=freeform_string, omit arguments and provide one input string instead.",
+    "If the task requires a deferred tool that is not yet present in this manifest and tool_search is present, request tool_search through this same private Responses envelope first. After its canonical result arrives, use only the newly advertised exact wire_name and schema.",
+    "Stay on this Responses envelope protocol for the whole turn. Do not fall back to a custom-App capability-token protocol, and do not infer that a missing deferred tool is stale or expired before using tool_search when it is available.",
     parsed.options.parallelToolCalls === false
       ? "Request exactly one tool per bridge response."
       : "Independent tool calls may be requested together in calls; dependent calls must wait for earlier tool results.",

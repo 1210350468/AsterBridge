@@ -444,4 +444,5 @@ describe("trusted Codex task environment continuity", () => {
     invalidUpdate.context.systemPrompt = [`<environment_context><cwd>${root}</cwd></environment_context>`];
     expect(() => store.resolve(invalidUpdate)).toThrow("requires one explicit trusted Codex sandbox mode");
   });
+
 });

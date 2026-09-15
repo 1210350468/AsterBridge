@@ -132,3 +132,38 @@ test("Responses Lite native exec survives a complete server request as one custo
     input: "text('ok')",
   })]);
 });
+
+test("configured adapter silence budget reaches the streaming Responses bridge", async () => {
+  const config = defaultConfig("browser-only");
+  config.solAvailable = false;
+  config.proAvailable = false;
+  config.stallTimeoutSec = 1;
+  const turnId = "turn_stall_timeout_regression";
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "chatgpt-web/luna",
+      stream: true,
+      metadata: { turn_id: turnId, thread_id: "thread_stall_timeout_regression" },
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Exercise the configured stall budget" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      }],
+    }),
+  }), config, () => ({
+    name: "stall-timeout-regression",
+    async runTurn(_parsed, incoming, _emit) {
+      await new Promise<void>(resolveAbort => {
+        if (incoming.abortSignal?.aborted) resolveAbort();
+        else incoming.abortSignal?.addEventListener("abort", () => resolveAbort(), { once: true });
+      });
+    },
+  }));
+
+  expect(response.status).toBe(200);
+  const stream = await response.text();
+  expect(stream).toContain("upstream_stall_timeout");
+});

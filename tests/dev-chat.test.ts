@@ -14,7 +14,7 @@ import {
 } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
 import { defaultDevChatModel, DevChatDriver } from "../src/dev-chat/driver";
-import { createDevContextFiller, DevChatStore } from "../src/dev-chat/session";
+import { createDevContextFiller, DEV_CHAT_MODELS, DevChatStore } from "../src/dev-chat/session";
 import { startDevChatTransport } from "../src/dev-chat/transport";
 import type { CodexProviderConfig } from "../src/types";
 
@@ -96,6 +96,7 @@ test("named DEV state and deterministic context filler persist independently", (
 test("new DEV chats default to the cheapest account-supported browser model", () => {
   expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true })).toBe("chatgpt-web/light");
   expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: false })).toBe("chatgpt-web/luna");
+  expect(DEV_CHAT_MODELS).toContain("chatgpt-web/think");
 });
 
 test("browser-only DEV driver runs real turns without advertising simulated tools", async () => {

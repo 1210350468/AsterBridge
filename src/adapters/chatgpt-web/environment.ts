@@ -92,6 +92,9 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
     || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
+    // Codex injects this synthetic report when the user interrupts a turn. It keeps the aborted
+    // turn's id, so it must remain context rather than becoming the next turn's user revision.
+    || /^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }

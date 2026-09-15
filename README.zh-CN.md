@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
 </p>
 
-Free 和 Go 账户会在 Codex 原生模型选择器中看到 **ChatGPT Web — Luna**。具有推理选择器的
+Free 和 Go 账户会在 Codex 原生模型选择器中看到 **ChatGPT Web — Luna** 和 **ChatGPT Web — Think**；Think 仍使用 Luna 后端，只切换 ChatGPT 自己的 Think 控件。具有推理选择器的
 账户仍会按订阅权限看到 **Instant**、**Medium**、**High**、**Extra High** 和 **Pro**。
 桥接程序会把当前编译后的 Codex 任务上下文发送到一个全新的 ChatGPT 临时聊天，附加图片，
 并将可见的推理过程、工具活动和 Markdown 流式传回同一个 Codex 任务。
@@ -54,13 +54,14 @@ Codex 会保留原生任务、上下文生命周期、界面和工具 harness。
   新建 ChatGPT 临时聊天；同一 Codex 任务的兼容后续轮次会复用该保留页面，不再重复绑定 Connector。
   原生压缩只有在检查点被证明完成后才关闭旧 epoch，并在需要时创建新 epoch。浏览器聊天不会跨
   不同任务复用，也不会加入普通 ChatGPT 历史记录。
-- **通过 MCP 使用完整 Codex harness。** 在完整模式下，登录账户可用的每一个 effort——Luna、
+- **通过 MCP 使用完整 Codex harness。** 在完整模式下，登录账户可用的每一个模式——Luna、Think、
   Instant、Medium、High、Extra High 和 Pro——都会通过同一个与当前回合绑定的 MCP 能力，使用
   Codex 任务的文件系统、shell、图片、审批以及已配置的工具和应用。调用及其真实结果会留在
   同一个浏览器响应中，不会被模拟成文本。
 - **Subagent 保持 Codex 原生语义。** 完整模式通过现有 `Codex Native3` 契约承载延迟发现的
-  Multi-agent 工具。Compatibility V1 仍是安全默认值，也可切换 Native 模式保留当前 Codex agent
-  版本元数据；父 Agent 的等待采用有界轮询，避免一个子 Agent 长时间独占 MCP 通道。
+  Multi-agent 工具。Compatibility V1 仍是安全默认值，Native 模式可保留当前 Codex agent 版本元数据；
+  ChatGPT Web 子 Agent 使用可读的 V1 任务面，跨后端 V2 的加密子任务会安全拒绝。父 Agent 的等待采用
+  有界轮询，避免一个子 Agent 长时间独占 MCP 通道。
 - **可选 Bigger Context。** 设置中可为大型非 Luna 任务启用可逆的 2/3 段事务式上下文传输。
   前置分段保持惰性并通过 SHA-256 确认，只有最后一次 commit 才真正开始执行任务；普通任务仍默认
   使用标准单消息传输。
@@ -120,7 +121,7 @@ irm https://github.com/1210350468/AsterBridge/releases/latest/download/install-l
 10. 最后向我报告：AsterBridge 版本、Codex 版本、Browser backend、代理来源、Browser-only WEB_OK 是否成功、MCP/Native3 FULL_OK 是否成功，以及仍需我手工完成的步骤。
 ```
 
-启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户只会显示 Luna；只有已登录账户
+启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户会显示 Luna 和 Think；只有已登录账户
 支持 Pro 时，Pro 才会显示。打包后的启动器不需要模型 API 密钥、系统级 Node/Bun，也不会由本项目
 另行下载浏览器。RoxyBrowser 是可选后端，直接复用它自己的登录 Profile，不复制浏览器 Cookie。
 
@@ -138,11 +139,13 @@ bun run app
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
-| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用 | 无 |
+| **仅浏览器** | Free/Go：Luna + Think；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用 | 无 |
 | **Full · MCP（主路径）** | 同一账户可用的 Web 模型 | 可用 | OpenAI Tunnel + 自定义 ChatGPT App |
 | **Full · Responses（实验兜底）** | 同一账户可用的 Web 模型 | 可用 | 仅显式 CLI opt-in；无需 Tunnel/自定义 App，但依赖工具链可能增加 Web generation 次数 |
 
 模型选择器中的每一项都对应固定的 ChatGPT 模式。无论使用哪一种 Full transport，ChatGPT 都只负责提出工具调用；真正的工具执行、审批与沙箱权始终属于外层 Codex。AsterBridge 不会在没有明确 opt-in 的情况下把 MCP 安装迁移成 Responses。
+
+高级源码/CLI 设置可以通过 `--stall-timeout-sec N` 覆盖“上游完全无事件”时的 watchdog。未设置时仍为默认 **300 秒**；正常浏览器回合会持续发送 heartbeat，所以这个预算只用于真正失去响应的上游。
 
 ## Full Harness：MCP / Codex Native3
 

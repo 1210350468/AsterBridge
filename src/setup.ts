@@ -62,6 +62,7 @@ export interface SetupOptions {
   experimentalBiggerContext?: boolean;
   imageGenerationProvider?: ImageGenerationProvider;
   subagentProtocol?: SubagentProtocol;
+  stallTimeoutSec?: number;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
   acknowledgedUnofficial?: boolean;
@@ -288,6 +289,7 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   }
   if (options.imageGenerationProvider !== undefined) config.imageGenerationProvider = options.imageGenerationProvider;
   if (options.subagentProtocol !== undefined) config.subagentProtocol = options.subagentProtocol;
+  if (options.stallTimeoutSec !== undefined) config.stallTimeoutSec = options.stallTimeoutSec;
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {
     throw new Error("Setup requires explicit acknowledgement that this is unofficial browser automation. Pass --acknowledge-unofficial.");

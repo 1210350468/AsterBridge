@@ -272,6 +272,11 @@ export interface CodexProviderConfig {
     lunaCheckpointStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
+    /**
+     * Seconds of adapter silence before the Responses bridge cancels a turn as hung. Healthy
+     * ChatGPT turns heartbeat continuously, so this guards only genuinely unresponsive adapters.
+     */
+    stallTimeoutSec?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
     /** Allow the Web model to request tools from the current outer Codex turn. */

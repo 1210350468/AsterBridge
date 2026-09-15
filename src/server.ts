@@ -454,7 +454,8 @@ export async function responseRequest(
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
 
-  const adapter = adapterFactory(providerConfig(config));
+  const provider = providerConfig(config);
+  const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();
@@ -488,6 +489,9 @@ export async function responseRequest(
       2_000,
       {
         hideThinkingSummary: parsed.options.hideThinkingSummary,
+        ...(provider.chatgptWeb?.stallTimeoutSec !== undefined
+          ? { stallTimeoutSec: provider.chatgptWeb.stallTimeoutSec }
+          : {}),
         ...(compaction ? { compaction: true } : {
           ...(options.rememberState === false ? {} : {
             onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, { force: true }),

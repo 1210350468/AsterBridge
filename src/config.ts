@@ -93,6 +93,8 @@ export interface AppConfig {
   /** Full-harness transport. MCP uses ChatGPT custom Apps; responses keeps execution in outer Codex without an App. */
   localToolTransport?: "mcp" | "responses";
   subagentProtocol: SubagentProtocol;
+  /** Optional Responses bridge silence budget; omitted uses the bridge default. */
+  stallTimeoutSec?: number;
   controlToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
@@ -408,6 +410,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && parsed.localToolTransport !== "responses") {
     throw new Error(`Invalid localToolTransport in ${path}`);
   }
+  if (parsed.stallTimeoutSec !== undefined
+    && (typeof parsed.stallTimeoutSec !== "number"
+      || !Number.isFinite(parsed.stallTimeoutSec)
+      || parsed.stallTimeoutSec <= 0)) {
+    throw new Error(`Invalid stallTimeoutSec in ${path}`);
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -510,7 +518,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
   const models = [model];
   const efforts = config.solAvailable
     ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
-    : ["low"];
+    : ["low", "medium"];
   return {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -544,6 +552,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       proAvailable: config.proAvailable,
       experimentalBiggerContext: config.experimentalBiggerContext,
       imageGenerationProvider: config.imageGenerationProvider,
+      ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: config.autoApproveToolCalls,
     },
   };

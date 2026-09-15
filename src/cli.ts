@@ -83,6 +83,7 @@ Setup options:
   --image-generation-provider MODE
                                auto (default), codex-tool, or web-direct
   --subagent-protocol MODE     compatibility-v1 (default) or native for untouched native Codex agent protocol
+  --stall-timeout-sec NUMBER   Adapter-silence budget before a hung Responses turn is cancelled (default: 300)
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
 Global:
@@ -194,6 +195,7 @@ async function setupCommand(args: string[]): Promise<void> {
   const roxyBrowserApiHost = takeOption(args, "--roxy-browser-api-host");
   const roxyBrowserApiKeyFile = takeOption(args, "--roxy-browser-api-key-file");
   const subagentProtocol = takeOption(args, "--subagent-protocol");
+  const stallTimeoutRaw = takeOption(args, "--stall-timeout-sec");
   const imageGenerationProvider = takeOption(args, "--image-generation-provider");
   if ([systemBrowser, embeddedBrowser, Boolean(roxyBrowserProfileId)].filter(Boolean).length > 1) {
     throw new Error("Choose only one of --system-browser, --embedded-browser, or --roxy-browser-profile");
@@ -252,6 +254,13 @@ async function setupCommand(args: string[]): Promise<void> {
       throw new Error("--subagent-protocol must be compatibility-v1 or native");
     }
     options.subagentProtocol = subagentProtocol;
+  }
+  if (stallTimeoutRaw !== undefined) {
+    const stallTimeoutSec = Number(stallTimeoutRaw);
+    if (!Number.isFinite(stallTimeoutSec) || stallTimeoutSec <= 0) {
+      throw new Error("--stall-timeout-sec must be a positive number");
+    }
+    options.stallTimeoutSec = stallTimeoutSec;
   }
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
   options.restartService = takeFlag(args, "--restart-service");

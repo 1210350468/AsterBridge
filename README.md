@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
 </p>
 
-Free and Go accounts get **ChatGPT Web — Luna** in Codex's native model picker. Accounts that
+Free and Go accounts get **ChatGPT Web — Luna** and **ChatGPT Web — Think** in Codex's native model picker. Think keeps the Luna backend and toggles ChatGPT's explicit Think control. Accounts that
 expose the reasoning selector keep **Instant**, **Medium**, **High**, **Extra High**, and **Pro** as
 their subscription allows. The bridge sends the current compiled Codex task context to a fresh
 ChatGPT Temporary Chat, attaches images, and streams visible reasoning, tool activity, and Markdown
@@ -60,14 +60,15 @@ task.
   in the same Codex task reuse that retained surface without re-mentioning the connector. Native
   compaction closes the old epoch only after a checkpoint is proven and starts a fresh epoch when
   needed. Browser chats are never reused across different tasks or added to normal ChatGPT history.
-- **The full Codex harness over MCP.** In Full mode, every effort available to the signed-in account—
-  Luna, Instant, Medium, High, Extra High, and Pro—can use the active Codex task's filesystem,
+- **The full Codex harness over MCP.** In Full mode, every mode available to the signed-in account—
+  Luna, Think, Instant, Medium, High, Extra High, and Pro—can use the active Codex task's filesystem,
   shell, images, approvals, and configured tools/apps through the same turn-bound MCP capability.
   Calls and real results stay inside the same browser response; nothing is simulated as text.
 - **Subagents stay native to Codex.** Full mode carries deferred Multi-agent tools through the
   existing `Codex Native3` contract. Compatibility V1 remains the safe default, while Native mode
-  can preserve current Codex agent-version metadata; parent waits use bounded polling so one child
-  cannot monopolize the MCP channel.
+  can preserve current Codex agent-version metadata. ChatGPT Web child delegation uses the readable
+  V1 surface; opaque encrypted V2 cross-backend child tasks fail closed. Parent waits use bounded
+  polling so one child cannot monopolize the MCP channel.
 - **Optional Bigger Context.** Settings can enable a reversible transactional 2/3-part context
   transport for large non-Luna tasks. Earlier parts are inert and SHA-256 acknowledged; only the
   final commit starts execution. Standard single-message transport remains the default.
@@ -134,7 +135,7 @@ Requirements:
 ```
 
 The launcher detects the current account's ChatGPT controls during setup: Free/Go accounts expose
-only Luna, while Pro appears only when the signed-in account exposes it. The packaged launcher needs
+Luna plus Think, while Pro appears only when the signed-in account exposes it. The packaged launcher needs
 no model API key, system Node/Bun, or project-managed browser download. RoxyBrowser is optional and
 uses its own signed-in profile rather than copying browser cookies.
 
@@ -152,11 +153,13 @@ This source path requires Bun 1.4.0. The command installs locked dependencies an
 
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
-| **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No | None |
+| **Browser-only** | Free/Go: Luna + Think; Plus: Instant–High; Pro: adds Extra High and Pro | No | None |
 | **Full · MCP (primary)** | Same account-available Web models | Yes | OpenAI Tunnel + custom ChatGPT App |
 | **Full · Responses (experimental fallback)** | Same account-available Web models | Yes | Explicit CLI opt-in; no Tunnel/custom App, but tool-dependent work may require additional Web generations |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed rows, but changing them cannot silently change the selected browser model. In either Full transport, ChatGPT only proposes tool calls; outer Codex remains the execution, approval, and sandbox authority. AsterBridge never migrates an MCP installation to Responses without explicit opt-in.
+
+Advanced source/CLI setup can override the upstream-silence watchdog with `--stall-timeout-sec N`. Leave it unset for the default **300 seconds**; healthy browser turns emit heartbeats, so this budget is only for a genuinely silent upstream.
 
 ## Full Harness: MCP / Codex Native3
 

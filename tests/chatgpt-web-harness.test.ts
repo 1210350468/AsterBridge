@@ -9,7 +9,7 @@ import { buildResponseJSON } from "../src/bridge";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
+import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter, validateBatchTools } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -159,6 +159,33 @@ function rawWireRequest(environmentText: string): CodexParsedRequest {
   };
   return request;
 }
+
+test("an interrupted turn abort notice stays context instead of becoming the next instruction", () => {
+  const request = rawWireRequest(environmentXml);
+  const raw = request._rawBody as { input: unknown[] };
+  raw.input.push({
+    type: "message",
+    role: "user",
+    content: [{
+      type: "input_text",
+      text: "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+    }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_test_interrupted" },
+  });
+
+  expect(extractChatGptTurnUserRevision(request)).toEqual([
+    { type: "input_text", text: "Inspect the project" },
+  ]);
+
+  raw.input.push({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Actually, stop and summarise instead" }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_test_other" },
+  });
+  expect(() => extractChatGptTurnUserRevision(request))
+    .toThrow("current user message conflicts with native Codex turn_id metadata");
+});
 
 function canonicalCurrentWireRequest(environmentText: string): CodexParsedRequest {
   const request = rawWireRequest(environmentText);
@@ -377,6 +404,55 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(events.some(event => event.type === "text_delta" && event.text.includes(DIRECT_TOOL_BRIDGE_PREFIX))).toBe(false);
       expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_start", name: "exec_command" }));
       expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_delta", arguments: JSON.stringify({ cmd: "Write-Output DIRECT_OK" }) }));
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("connectorless Responses transport trusts a valid completed raw tool envelope when Markdown serialization differs", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-direct-tools-raw-dom-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-direct-tools-raw-dom-test",
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        localToolTransport: "responses",
+        solAvailable: true,
+        proAvailable: true,
+        browserHost: "system-browser",
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      const binding = prepared.text.match(/private Responses tool-bridge binding for this response is (dtb_[a-f0-9]{24})/)?.[1];
+      expect(binding).toBeTruthy();
+      const completed = `${DIRECT_TOOL_BRIDGE_PREFIX}${JSON.stringify({
+        binding,
+        calls: [{ wire_name: "exec_command", arguments: { cmd: "Write-Output RAW_DOM_OK" } }],
+      })}${DIRECT_TOOL_BRIDGE_SUFFIX}`;
+      const markdownSerialized = completed
+        .replace(DIRECT_TOOL_BRIDGE_PREFIX, DIRECT_TOOL_BRIDGE_PREFIX.replaceAll("_", "\\_"))
+        .replace(DIRECT_TOOL_BRIDGE_SUFFIX, DIRECT_TOOL_BRIDGE_SUFFIX.replaceAll("_", "\\_"))
+        .replace('"wire_name"', '"wire\\_name"')
+        .replace('"exec_command"', '"exec\\_command"');
+      turn.onTextDelta(markdownSerialized);
+      return completed;
+    };
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        canonicalCurrentWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(events.some(event => event.type === "text_delta" && event.text.includes(DIRECT_TOOL_BRIDGE_PREFIX))).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_start", name: "exec_command" }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_delta", arguments: JSON.stringify({ cmd: "Write-Output RAW_DOM_OK" }) }));
       expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;

@@ -2,6 +2,20 @@
 
 All notable AsterBridge changes are documented here.
 
+## 3.0.43 - 2026-09-16
+
+### Luna Think and native subagent capability hardening
+
+- Added the Luna-only `chatgpt-web/think` route. It keeps the `gpt-5.6-luna` backend and selects ChatGPT's explicit Think control semantically through `aria-pressed`; ordinary Luna clears Think, and missing/ambiguous controls fail closed. Free/Go model catalogs now publish Luna + Think consistently across Codex models, server discovery, provider config, and DEV chat.
+- Removed the Pro prompt exception that blocked delegation. Pro now preserves the same native Codex delegation contract as Extra High while keeping the existing `Codex Native3` ABI, Compatibility V1 default, optional Native protocol, and bounded `wait_agent` polling.
+- Synthetic `<turn_aborted>` messages are historical context rather than a new user revision, preventing an interrupted turn's old `turn_id` from poisoning later turns while preserving rejection of genuine foreign-turn steering.
+- Made the Responses upstream-silence watchdog actually configurable end to end. `--stall-timeout-sec N` writes one optional runtime config value which flows through provider config and the server into the existing bridge watchdog; leaving it unset preserves the 300-second default.
+- Kept cross-backend Native V2 Web children fail-closed after real Codex 0.153.4 validation proved the delegated child task arrives as opaque `encrypted_content`. Native mode still preserves native Codex agent-version metadata, but AsterBridge does not pretend an encrypted V2 task is readable by the browser backend and does not add rollout JSONL/SQLite as a second authority source. Compatibility V1 remains the supported Web-subagent path.
+- Fixed a connectorless Responses live-gate failure where ChatGPT's completed raw DOM contained a valid private tool envelope while the Markdown stream serialized that protocol text differently. The raw completed envelope is now accepted only after strict validation against the exact current binding and advertised tool registry; ordinary prose still requires exact streamed/completed equality. The direct-tool contract also keeps deferred-tool discovery on the same Responses transport through `tool_search` instead of falling back to the legacy custom-App token protocol.
+- Real isolated Windows/Roxy 3.0.43 validation passed the supported Compatibility V1 Web-subagent chain end to end on `127.0.0.1:17842`: `tool_search` -> real outer-Codex `spawn_agent` -> separate `chatgpt-web/light` child returning `CHILD_AGENT_OK` -> bounded `wait_agent` -> `close_agent` -> `SUBAGENT_E2E_OK`. A transient missing-response-DOM retry recovered through the existing browser recovery path and the E2E exited 0 with real child-session evidence.
+- Final local source validation after the live-gate repair passes the focused U5-W3/direct-tool suite at **124 pass / 0 fail**, Core at **44 / 44 deterministic batches**, Launcher at **227 pass / 0 fail / 2 expected platform skips**, root TypeScript, version/docs contracts, `git diff --check`, Launcher TypeScript, and the production renderer build.
+- U5-W3 remains **Luna-only live gate pending**. The current Windows production account is Sol-capable, so it cannot truthfully exercise the Luna-only Think control; the supported V1 Web-subagent live path is proven separately, while Native V2 cross-backend encrypted payloads intentionally remain fail-closed.
+
 ## 3.0.42 - 2026-09-15
 
 ### Physical browser settlement ownership

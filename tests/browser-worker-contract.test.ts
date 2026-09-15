@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
@@ -1732,6 +1732,7 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
   const visibleControls = { count: async () => 0 };
   const composerForm = {
     locator: () => ({ filter: () => visibleControls }),
+    getByRole: () => ({ filter: () => ({ count: async () => 0 }) }),
   };
   const composer = { locator: () => composerForm };
   const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
@@ -1756,6 +1757,40 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
 
   expect(mode).toMatchObject({ displayLabel: "Luna", uiEffortIndex: null });
   expect(checkpoints).toEqual(["luna-default-confirmed"]);
+});
+
+test("Think mode follows semantic pressed state and normal Luna clears it", async () => {
+  let pressed = false;
+  let clicks = 0;
+  const control = {
+    getAttribute: async () => pressed ? "true" : "false",
+    click: async () => { clicks += 1; pressed = !pressed; },
+  };
+  const controls = { count: async () => 1, first: () => control };
+  const composerForm = {
+    getByRole: (role: string, options: { name: string; exact: boolean }) => {
+      expect([role, options]).toEqual(["button", { name: "Think", exact: true }]);
+      return { filter: () => controls };
+    },
+  };
+  const checkpoints: string[] = [];
+  await setChatGptThinkMode(composerForm as never, true, async checkpoint => { checkpoints.push(checkpoint); });
+  expect(pressed).toBeTrue();
+  expect(clicks).toBe(1);
+  await setChatGptThinkMode(composerForm as never, true);
+  expect(clicks).toBe(1);
+  await setChatGptThinkMode(composerForm as never, false, async checkpoint => { checkpoints.push(checkpoint); });
+  expect(pressed).toBeFalse();
+  expect(clicks).toBe(2);
+  expect(checkpoints).toEqual(["think-enabled", "think-disabled"]);
+});
+
+test("Think mode fails closed when Luna exposes no Think control", async () => {
+  const composerForm = {
+    getByRole: () => ({ filter: () => ({ count: async () => 0 }) }),
+  };
+  await expect(setChatGptThinkMode(composerForm as never, true))
+    .rejects.toThrow("Think control is not available");
 });
 
 test("effort selection handles the known ChatGPT rate-limit dialog before keyboard activation", () => {

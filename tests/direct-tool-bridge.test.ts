@@ -3,6 +3,7 @@ import {
   DIRECT_TOOL_BRIDGE_PREFIX,
   DIRECT_TOOL_BRIDGE_SUFFIX,
   directToolBridgeManifest,
+  directToolBridgePromptContract,
   parseDirectToolBridgeResponse,
   selectDirectToolBridgeTransportText,
 } from "../src/adapters/chatgpt-web/direct-tool-bridge";
@@ -34,6 +35,21 @@ test("direct Responses tool bridge exposes only current-turn tool metadata", () 
     expect.objectContaining({ wire_name: "apply_patch", input_kind: "freeform_string" }),
     expect.objectContaining({ wire_name: "mcp__search__web_search", input_kind: "json_object" }),
   ]);
+});
+
+test("direct Responses tool bridge keeps deferred-tool discovery on the same transport", () => {
+  const parsed = request();
+  parsed.context.tools!.push({
+    name: "tool_search",
+    description: "Discover deferred tools",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    toolSearch: true,
+  });
+  const contract = directToolBridgePromptContract(parsed, "bind_search").join("\n");
+  expect(contract).toContain("request tool_search through this same private Responses envelope first");
+  expect(contract).toContain("use only the newly advertised exact wire_name and schema");
+  expect(contract).toContain("Do not fall back to a custom-App capability-token protocol");
+  expect(contract).not.toContain("turn_token");
 });
 
 test("direct Responses tool bridge prefers the raw DOM envelope over Markdown serialization", () => {

@@ -616,8 +616,14 @@ export function createChatGptWebAdapter(
               chatGptWebTurnRetryPolicy.clear(retryKey);
               return;
             }
-            const answer = session.runtime.text.value();
-            if (answer !== settledDirect.answer) {
+            const streamedAnswer = session.runtime.text.value();
+            const completedRequests = parseDirectToolBridgeResponse(
+              settledDirect.answer,
+              parsed,
+              session.runtime.binding,
+              executionKey,
+            );
+            if (!completedRequests && streamedAnswer !== settledDirect.answer) {
               throw new Error("ChatGPT browser Markdown stream did not reproduce the completed direct-tool answer");
             }
             const trace = session.runtime.trace.drain();
@@ -628,12 +634,7 @@ export function createChatGptWebAdapter(
               emit(event);
             };
             emitTraceEvents(trace, emitCaptured);
-            const requests = parseDirectToolBridgeResponse(
-              answer,
-              parsed,
-              session.runtime.binding,
-              executionKey,
-            );
+            const requests = completedRequests;
             if (requests) {
               validateBatchTools(parsed, requests);
               session.setOutstanding(requests, reasoning, events);
@@ -644,6 +645,7 @@ export function createChatGptWebAdapter(
               );
               return;
             }
+            const answer = streamedAnswer;
             emitTextDeltas(session.runtime.text.drain(), emitCaptured);
             session.setFinalReasoning(reasoning);
             session.setFinalEvents(events);
