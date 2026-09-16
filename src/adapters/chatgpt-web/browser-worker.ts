@@ -15,6 +15,7 @@ import {
 } from "../../config";
 import type { CodexProviderConfig } from "../../types";
 import { estimateTokens } from "../../lib/token-estimate";
+import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownBuffer, type ChatGptMarkdownSegment } from "./markdown";
 import {
@@ -2045,6 +2046,7 @@ export class ChatGptBrowserWorker {
     temporary: true;
     url: string;
     solAvailable?: boolean;
+    extraHighAvailable?: boolean;
     proAvailable?: boolean;
   }> {
     return this.enqueueMaintenance("session inspection", () => this.inspectSessionExclusive(detectCapabilities));
@@ -3411,6 +3413,7 @@ export class ChatGptBrowserWorker {
     temporary: true;
     url: string;
     solAvailable?: boolean;
+    extraHighAvailable?: boolean;
     proAvailable?: boolean;
   }> {
     const page = await this.ensurePage();
@@ -3518,7 +3521,7 @@ export class ChatGptBrowserWorker {
     }
     if (responseTurnCount === 0) return absentResponseDomSnapshot();
 
-    const snapshot = await responseTurn.evaluate((element, completionActionSelector) => {
+    const snapshot = await responseTurn.evaluate((element, options) => {
       const root = element as HTMLElement;
       // Browser turn WebContents are intentionally allowed to run while their Electron view is
       // hidden or has no measured width. Layout geometry is therefore not response visibility:
@@ -3601,7 +3604,7 @@ export class ChatGptBrowserWorker {
       });
       const rendered = renderedRoots.at(-1);
       const completionAction = rendered
-        ? [...root.querySelectorAll<HTMLElement>(completionActionSelector)]
+        ? [...root.querySelectorAll<HTMLElement>(options.completionActionSelector)]
           .filter(renderedInDom)
           .find(candidate => !rendered.contains(candidate)
             && Boolean(rendered.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_FOLLOWING))
@@ -3690,6 +3693,11 @@ export class ChatGptBrowserWorker {
       const stoppedThinkingVisible = (() => {
         // Only ChatGPT UI in the bound response may terminate the turn. A model quoting this
         // phrase in its answer/reasoning is ordinary content, not a stopped-thinking status.
+        // Match the site's observed labels regardless of the account/document language.
+        const labels = new Set<string>(options.stoppedThinkingLabels);
+        const isStoppedLabel = (value: string | null): boolean => (
+          labels.has(value?.replace(/\s+/g, " ").trim() ?? "")
+        );
         const isStatus = (candidate: HTMLElement): boolean => {
           if (overlapsRenderedAnswer(candidate) || overlapsCommentary(candidate)
             || candidate.closest("pre, code, blockquote")) return false;
@@ -3698,12 +3706,12 @@ export class ChatGptBrowserWorker {
           }
           return true;
         };
-        const ariaMatch = [...root.querySelectorAll<HTMLElement>('[aria-label="Stopped thinking"]')]
-          .some(isStatus);
+        const ariaMatch = [...root.querySelectorAll<HTMLElement>("[aria-label]")]
+          .some(candidate => isStoppedLabel(candidate.getAttribute("aria-label")) && isStatus(candidate));
         if (ariaMatch) return true;
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          if (node.textContent?.replace(/\s+/g, " ").trim() !== "Stopped thinking") continue;
+          if (!isStoppedLabel(node.textContent)) continue;
           const parent = node.parentElement;
           if (parent && isStatus(parent)) return true;
         }
@@ -3718,7 +3726,10 @@ export class ChatGptBrowserWorker {
         stoppedThinkingVisible,
         traceBlocks,
       };
-    }, CHATGPT_COMPLETION_ACTION_SELECTOR, { timeout: 10_000 }).catch(error => {
+    }, {
+      completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
+      stoppedThinkingLabels: [...CHATGPT_STOPPED_THINKING_LABELS],
+    }, { timeout: 10_000 }).catch(error => {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
       throw new ChatGptWebAdapterError(
         `ChatGPT response DOM exists but could not be inspected: ${error instanceof Error ? error.message : String(error)}`,

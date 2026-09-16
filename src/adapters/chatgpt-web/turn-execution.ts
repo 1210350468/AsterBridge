@@ -119,6 +119,8 @@ interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
   /** Physical browser/helper cleanup, which may outlive the logical browser result. */
   physicalSettlement: Promise<void>;
+  /** Browser/Launcher trace owning this physical turn. Production runtimes always set it. */
+  traceId?: string;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
   /** Native Codex thread owning this browser runtime, when one is available. */
@@ -129,7 +131,7 @@ interface ChatGptTurnRuntimeBase {
   conversationKey?: string;
   /** Idempotently release a retained external-browser conversation when its epoch ends. */
   releaseRetainedConversation?: () => Promise<void>;
-  cancel: () => void;
+  cancel: (reason?: unknown) => void;
 }
 
 export type ChatGptTurnRuntime =
@@ -286,6 +288,10 @@ export class ChatGptTurnSession {
     return this.runtime.turnId;
   }
 
+  traceId(): string | undefined {
+    return this.runtime.traceId;
+  }
+
   conversationKey(): string | undefined {
     return this.attachedConversationKey;
   }
@@ -349,8 +355,8 @@ export class ChatGptTurnSession {
     return [...this.finalPrelude];
   }
 
-  cancel(): void {
-    this.runtime.cancel();
+  cancel(reason?: unknown): void {
+    this.runtime.cancel(reason);
   }
 }
 
@@ -459,6 +465,33 @@ export class ChatGptTurnSessions {
         await Promise.all([...releases].map(release => release()));
       });
     return { cancelled: matches.length, settlement };
+  }
+
+  async cancelTrace(traceId: string, reason?: unknown): Promise<number> {
+    this.prune();
+    const matches = [...this.entries].filter(([, session]) => (
+      session.isActive() && session.traceId() === traceId
+    ));
+    if (matches.length === 0) return 0;
+
+    const cancelledAt = Date.now();
+    const releases = new Set<() => Promise<void>>();
+    for (const [key, session] of matches) {
+      this.explicitCancellationTombstones.set(key, cancelledAt);
+      if (this.entries.get(key) === session) this.entries.delete(key);
+      const release = this.forgetConversationHead(session);
+      if (release) releases.add(release);
+      session.cancel(reason);
+    }
+    const maxTombstones = Math.max(this.maxEntries * 4, 256);
+    while (this.explicitCancellationTombstones.size > maxTombstones) {
+      const oldest = this.explicitCancellationTombstones.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.explicitCancellationTombstones.delete(oldest);
+    }
+    await Promise.all(matches.map(([, session]) => session.physicalSettlement));
+    await Promise.all([...releases].map(release => release()));
+    return matches.length;
   }
 
   cancelAllExplicitly(): number {

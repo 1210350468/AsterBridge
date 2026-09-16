@@ -75,7 +75,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
   await expect(detectChatGptAccountCapabilities(page as never, {
     selectorTimeoutMs: 100,
     stableAbsenceMs: 0,
-  })).resolves.toEqual({ solAvailable: false, proAvailable: false });
+  })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
 });
 
 test("a transient effort control does not turn a Luna-only account into Sol", async () => {
@@ -113,6 +113,6 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   await expect(detectChatGptAccountCapabilities(page as never, {
     selectorTimeoutMs: 100,
     stableAbsenceMs: 0,
-  })).resolves.toEqual({ solAvailable: false, proAvailable: false });
+  })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
   expect(visibilityReads).toBe(2);
 });

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 
 test("the browser adapter maps fixed routed efforts to the visible ChatGPT modes", () => {
-  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "low", capabilities)).toMatchObject({
     displayLabel: "Instant",
     uiEffortIndex: 0,
@@ -31,6 +31,7 @@ test("responses tool transport keeps outer tools enabled without requiring a Cha
     localToolsEnabled: true,
     localToolTransport: "responses",
     solAvailable: true,
+    extraHighAvailable: true,
     proAvailable: true,
   })).toMatchObject({ localTools: true, connectorTools: false });
 });
@@ -39,6 +40,7 @@ test("capabilities gate tools and Pro-only efforts explicitly without changing t
   expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "high", {
     localToolsEnabled: false,
     solAvailable: true,
+    extraHighAvailable: true,
     proAvailable: true,
   })).toMatchObject({ localTools: false });
   expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "max", {
@@ -49,8 +51,15 @@ test("capabilities gate tools and Pro-only efforts explicitly without changing t
   expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "xhigh", {
     localToolsEnabled: true,
     solAvailable: true,
+    extraHighAvailable: false,
     proAvailable: false,
   })).toThrow("Extra High effort is not available");
+  expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "xhigh", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    extraHighAvailable: true,
+    proAvailable: false,
+  })).toMatchObject({ displayLabel: "Extra High", uiEffortIndex: 3 });
   expect(() => resolveChatGptWebModelMode("unknown", "high", {
     localToolsEnabled: false,
     solAvailable: true,

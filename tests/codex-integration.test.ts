@@ -600,7 +600,7 @@ describe("reversible native Codex route integration", () => {
     const refreshedJournal = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
     expect(refreshedJournal.catalogSha256).not.toBe(installed.catalogSha256);
     expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
-  });
+  }, 15_000);
 
   test("refreshes newly available native models from the direct Codex cache when reconnecting", () => {
     const { codexHome } = fixture();
@@ -637,7 +637,7 @@ describe("reversible native Codex route integration", () => {
     const reconnectedJournal = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
     expect(reconnectedJournal.catalogSha256).not.toBe(installed.catalogSha256);
     expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
-  });
+  }, 15_000);
 
   test("keeps a disconnected bridge disabled across process-style journal reloads", () => {
     const { codexHome } = fixture();

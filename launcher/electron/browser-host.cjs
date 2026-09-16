@@ -167,6 +167,7 @@ class BrowserHost {
     descriptorPath,
     cdpPort,
     control,
+    cancelTurn,
     getConnectorName,
     helper,
     logger,
@@ -181,6 +182,7 @@ class BrowserHost {
     this.descriptorPath = descriptorPath;
     this.cdpPort = cdpPort;
     this.control = control;
+    this.cancelTurn = cancelTurn;
     this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
@@ -214,7 +216,7 @@ class BrowserHost {
     this.authView = null;
     this.authNavigationError = null;
     this.homeNavigationTimeout = null;
-    this.turnLeaseSweep = setInterval(() => this.reapExpiredTurnTabs(), TURN_HEARTBEAT_SWEEP_MS);
+    this.turnLeaseSweep = setInterval(() => { void this.reapExpiredTurnTabs(); }, TURN_HEARTBEAT_SWEEP_MS);
     this.turnLeaseSweep.unref?.();
     this.boundsReady = false;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
@@ -776,6 +778,7 @@ class BrowserHost {
   }
 
   reapExpiredTurnTabs(now = Date.now()) {
+    const cancellations = [];
     for (const tab of [...this.turnTabs.values()]) {
       if (tab.status === "ready") {
         if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
@@ -789,15 +792,46 @@ class BrowserHost {
       const heartbeatExpired = tab.bootstrapReady === true
         && now - (tab.lastHeartbeatAt ?? 0) >= TURN_HEARTBEAT_TIMEOUT_MS;
       if (!bootstrapExpired && !heartbeatExpired) continue;
+      if (tab.expiryCancellation) {
+        cancellations.push(tab.expiryCancellation);
+        continue;
+      }
       const evidence = bootstrapExpired ? "browser_surface_bootstrap_timeout" : "helper_heartbeat_expired";
-      this.logger.warn("browser.orphan_turn_reaped", {
+      const expiredOwner = {
         tabId: tab.id,
         traceId: tab.traceId,
         helperPid: tab.helperPid,
         evidence,
+      };
+      this.logger.warn("browser.orphan_turn_expired", expiredOwner);
+      if (!this.cancelTurn) {
+        this.removeTurnTab(tab, true);
+        this.logger.warn("browser.orphan_turn_reaped", expiredOwner);
+        continue;
+      }
+      const { traceId, helperPid } = tab;
+      tab.expiryCancellation = Promise.resolve().then(async () => {
+        try {
+          await this.cancelTurn(traceId, evidence);
+          if (this.turnTabs.get(tab.id) === tab && tab.traceId === traceId
+            && tab.helperPid === helperPid && tab.status === "running") {
+            this.removeTurnTab(tab, true);
+          }
+          this.logger.warn("browser.orphan_turn_reaped", expiredOwner);
+        } catch (error) {
+          this.logger.warn("browser.orphan_turn_cancel_failed", {
+            tabId: tab.id,
+            traceId,
+            evidence,
+            errorType: error?.name || "Error",
+          });
+        } finally {
+          delete tab.expiryCancellation;
+        }
       });
-      this.removeTurnTab(tab, true);
+      cancellations.push(tab.expiryCancellation);
     }
+    return Promise.all(cancellations);
   }
 
   setBounds(bounds, rendererZoomFactor = 1) {
@@ -1379,9 +1413,11 @@ class BrowserHost {
       };
       const initialSurface = readSurface();
       let sessionAuthenticated = false;
+      let sessionCheckError = null;
       if (new URL(initialSurface.url).origin === expectedUrl.origin) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), ${CHATGPT_AUTH_SESSION_TIMEOUT_MS});
+        let responseReceived = false;
         try {
           const response = await fetch("/api/auth/session", {
             credentials: "include",
@@ -1389,13 +1425,23 @@ class BrowserHost {
             headers: { accept: "application/json" },
             signal: controller.signal,
           });
+          responseReceived = true;
           const responseUrl = new URL(response.url);
-          const payload = response.ok
-            && responseUrl.origin === expectedUrl.origin
-            && responseUrl.pathname === "/api/auth/session"
-            && response.headers.get("content-type")?.includes("application/json")
-            ? await response.json()
-            : null;
+          let payload = null;
+          if (responseUrl.origin !== expectedUrl.origin || responseUrl.pathname !== "/api/auth/session") {
+            sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
+          } else if (response.status !== 401) {
+            if (!response.ok) {
+              sessionCheckError = "ChatGPT session verification failed (HTTP " + response.status + "). Check your connection and retry.";
+            } else if (!response.headers.get("content-type")?.includes("application/json")) {
+              sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
+            } else {
+              payload = await response.json();
+              if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+                sessionCheckError = "ChatGPT session verification received an invalid response. Retry after the page finishes loading.";
+              }
+            }
+          }
           const user = payload?.user && typeof payload.user === "object" && !Array.isArray(payload.user)
             ? payload.user
             : null;
@@ -1409,15 +1455,22 @@ class BrowserHost {
           sessionAuthenticated = sessionHasUser
             && sessionHasNoError
             && sessionExpiryIsValid;
-        } catch {}
+        } catch {
+          sessionCheckError = controller.signal.aborted
+            ? "ChatGPT session verification timed out. Check your network or proxy and retry."
+            : responseReceived
+              ? "ChatGPT session verification received an invalid response. Retry after the page finishes loading."
+              : "ChatGPT session verification failed. Check your network or proxy and retry.";
+        }
         finally { clearTimeout(timeout); }
       }
-      return { ...readSurface(), sessionAuthenticated };
+      return { ...readSurface(), sessionAuthenticated, sessionCheckError };
     })()`, true).catch(() => ({
       url: "",
       composer: false,
       temporary: false,
       sessionAuthenticated: false,
+      sessionCheckError: "ChatGPT session verification could not inspect the browser. Retry after the page finishes loading.",
       readyState: "unknown",
     }));
     let result = await probe(this.view.webContents);
@@ -1445,6 +1498,13 @@ class BrowserHost {
           : { status: "ready", message: "ChatGPT is ready" };
       this.setState({ ...availability, authenticated: true, url: result.url });
       if (!wasAuthenticated) this.logger.info("browser.authenticated", { url: result.url });
+    } else if (result.sessionCheckError) {
+      this.setState({
+        status: "error",
+        message: result.sessionCheckError,
+        authenticated: false,
+        url: result.url || url,
+      });
     } else {
       const loaded = result.readyState === "complete";
       this.setState({
@@ -1549,10 +1609,12 @@ class BrowserHost {
       throw new Error("Browser helper returned invalid ChatGPT session evidence");
     }
     if (detectCapabilities
-      && (typeof inspected.solAvailable !== "boolean" || typeof inspected.proAvailable !== "boolean")) {
+      && (typeof inspected.solAvailable !== "boolean"
+        || typeof inspected.extraHighAvailable !== "boolean"
+        || typeof inspected.proAvailable !== "boolean")) {
       throw new Error("Browser helper returned incomplete ChatGPT capability evidence");
     }
-    if (detectCapabilities && inspected.proAvailable && !inspected.solAvailable) {
+    if (detectCapabilities && (inspected.proAvailable || inspected.extraHighAvailable) && !inspected.solAvailable) {
       throw new Error("Browser helper returned contradictory ChatGPT capability evidence");
     }
     if (startedIdle) await this.returnToIdle();

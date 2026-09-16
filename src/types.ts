@@ -286,6 +286,8 @@ export interface CodexProviderConfig {
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */
+    extraHighAvailable?: boolean;
+    /** Account capability proven by the authenticated browser probe. */
     proAvailable?: boolean;
     /** Experimental multipart context transport for Sol-backed Web routes. */
     experimentalBiggerContext?: boolean;

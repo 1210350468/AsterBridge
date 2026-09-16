@@ -11,6 +11,7 @@ export interface ChatGptWebCapabilities {
   /** MCP uses the ChatGPT custom App; responses uses a private structured envelope and outer Codex Responses calls. */
   localToolTransport?: "mcp" | "responses";
   solAvailable: boolean;
+  extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
 }
@@ -65,7 +66,7 @@ export function resolveChatGptWebModelMode(
     case "high":
       return { modelId, effort, displayLabel: "High", uiEffortIndex: 2, thinkEnabled: false, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "xhigh":
-      if (!capabilities.proAvailable) throw new Error("ChatGPT Extra High effort is not available for this account");
+      if (capabilities.extraHighAvailable !== true) throw new Error("ChatGPT Extra High effort is not available for this account");
       return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, thinkEnabled: false, localTools: capabilities.localToolsEnabled, connectorTools: capabilities.localToolsEnabled && capabilities.localToolTransport !== "responses" };
     case "max":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Pro effort is not available for this account");

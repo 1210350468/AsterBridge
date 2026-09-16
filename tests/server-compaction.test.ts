@@ -82,6 +82,7 @@ test("Instant v1 compaction applies the small-window retained-history budget", a
 
 test("compacts a Pro task with Extra High while preserving the Pro route", async () => {
   const config = defaultConfig("full");
+  config.extraHighAvailable = true;
   config.proAvailable = true;
   const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
     method: "POST",

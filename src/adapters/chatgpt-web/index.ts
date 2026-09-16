@@ -180,6 +180,7 @@ export function createChatGptWebAdapter(
       ? { localToolTransport: provider.chatgptWeb?.localToolTransport ?? "mcp" }
       : {}),
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
+    extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
   const executionNamespace = createHash("sha256").update(JSON.stringify({
@@ -295,13 +296,14 @@ export function createChatGptWebAdapter(
       const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "read-only",
+        traceId,
         browser,
         physicalSettlement,
         trace,
         text,
         ...(identity.threadId ? { threadId: identity.threadId } : {}),
         ...(identity.turnId ? { turnId: identity.turnId } : {}),
-        cancel: () => browserAbort.abort(),
+        cancel: reason => browserAbort.abort(reason),
       };
     }
     if (!environment) throw new Error("Tool-capable ChatGPT web mode requires a trusted Codex environment");
@@ -333,6 +335,7 @@ export function createChatGptWebAdapter(
       const browser = finalizeCheckpoint(browserRun);
       return {
         mode: "direct-tools",
+        traceId,
         binding: directToolBinding,
         browser,
         physicalSettlement,
@@ -344,7 +347,7 @@ export function createChatGptWebAdapter(
           conversationKey,
           releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
         } : {}),
-        cancel: () => browserAbort.abort(),
+        cancel: reason => browserAbort.abort(reason),
       };
     }
     const token = deferred<string>();
@@ -437,6 +440,7 @@ export function createChatGptWebAdapter(
     });
     return {
       mode: "tools",
+      traceId,
       token: token.promise,
       ...(externalProgress ? { externalProgress } : {}),
       browser,
@@ -449,8 +453,8 @@ export function createChatGptWebAdapter(
         conversationKey,
         releaseRetainedConversation: async () => { await worker.releaseRetainedConversation(conversationKey); },
       } : {}),
-      cancel: () => {
-        browserAbort.abort();
+      cancel: reason => {
+        browserAbort.abort(reason);
         if (activeToken) {
           void Promise.resolve(broker.revoke(activeToken)).catch(error => {
             console.error(`[chatgpt-web] failed to revoke cancelled turn token: ${error instanceof Error ? error.message : String(error)}`);
@@ -512,7 +516,7 @@ export function createChatGptWebAdapter(
             .update(`${compactionExecutionKey}:handoff`)
             .digest("hex")
             .slice(0, 12);
-          const summary = await runStructuredCompactionOnce(compactionExecutionKey, retainOwnershipUntil => (
+          const summary = await runStructuredCompactionOnce(compactionExecutionKey, (retainOwnershipUntil, compactionSignal) => (
             runRetainedCompaction({
               worker,
               parsed,
@@ -521,7 +525,9 @@ export function createChatGptWebAdapter(
               capabilities: configuredCapabilities,
               conversationKey: chatGptConversationKey(parsed, executionNamespace),
               traceId: handoffTraceId,
-              signal: incoming.abortSignal,
+              signal: incoming.abortSignal
+                ? AbortSignal.any([incoming.abortSignal, compactionSignal])
+                : compactionSignal,
               timeoutMs,
               retainOwnershipUntil,
               compactedSourceExecutionKey: `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`,
@@ -541,7 +547,7 @@ export function createChatGptWebAdapter(
                 }
               },
             })
-          ));
+          ), handoffTraceId);
           emit({ type: "text_delta", text: summary, phase: "final_answer" });
           emitBrowserCompletion(
             { type: "final", answer: summary },

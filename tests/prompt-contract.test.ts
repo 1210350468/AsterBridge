@@ -7,9 +7,11 @@ import {
   compileChatGptWebPrompt,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  withoutRetiredTurnHandles,
 } from "../src/adapters/chatgpt-web/prompt";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import type { CodexParsedRequest } from "../src/types";
 
 function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexParsedRequest {
@@ -106,7 +108,7 @@ test("Full-mode prompts route image requests through outer Codex image_gen even 
 
 test("Pro preserves the same native Codex delegation contract as Extra High", () => {
   const token = "turn_12345678901234567890123456789012";
-  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   const pro = compileChatGptWebPrompt(request("max"), capabilities, token);
   const extraHigh = compileChatGptWebPrompt(request("xhigh"), capabilities, token);
 
@@ -332,6 +334,31 @@ test("Web compaction rebuilds attachments after trimming an oversized oldest ima
   expect(compiled.text).toContain("preserve-latest-checkpoint");
 });
 
+test("Web compaction preserves the newest cumulative checkpoint before trimming other history", () => {
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  const cumulative = `${SUMMARY_PREFIX}\n${"checkpoint-state-".repeat(3_500)}`;
+  compact.context.messages = [
+    { role: "user", content: cumulative, timestamp: 1 },
+    { role: "developer", content: `discard-this-${"x".repeat(80_000)}`, timestamp: 2 },
+    { role: "user", content: "checkpoint-now", timestamp: 3 },
+  ];
+
+  const compiled = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+  );
+
+  expect(compiled.trimmedCompactionMessages).toBe(1);
+  expect(compiled.text).toContain("checkpoint-state-");
+  expect(compiled.text).not.toContain("discard-this-");
+  expect(compiled.text).toContain("1 earlier history items were omitted to fit this compaction request");
+  expect(compiled.text).toContain("the supplied history is incomplete");
+  expect(compiled.text).toContain("Produce the requested checkpoint summary now without calling tools.");
+  expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
+});
+
 test("Luna rejects a separate compaction prompt because continuity is already rolling", () => {
   const compact = request("low");
   compact.modelId = CHATGPT_WEB_LUNA_MODEL_ID;
@@ -520,6 +547,28 @@ test("the replayed context never carries a finished turn's broker handles", () =
   expect(compiled.text).toContain("keep working");
   const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!.trim();
   expect(() => JSON.parse(envelope) as unknown).not.toThrow();
+});
+
+test("retired handle scrubbing changes only exact handles inside JSON string values", () => {
+  const turn = `turn_${"A".repeat(32)}`;
+  const requestId = `request_${"B".repeat(32)}`;
+  const binding = `binding_${"C".repeat(32)}`;
+  const overlong = `turn_${"D".repeat(33)}`;
+  const nativeCallId = "call_native_tool_identity";
+  const source = JSON.stringify({
+    [turn]: "structural key must survive",
+    nativeCallId,
+    nested: {
+      text: `${turn} ${requestId} ${binding} ${overlong}`,
+    },
+  });
+
+  const scrubbed = JSON.parse(withoutRetiredTurnHandles(source)) as Record<string, unknown>;
+  expect(scrubbed[turn]).toBe("structural key must survive");
+  expect(scrubbed.nativeCallId).toBe(nativeCallId);
+  expect(scrubbed.nested).toEqual({
+    text: `[retired turn handle] [retired request handle] [retired binding handle] ${overlong}`,
+  });
 });
 
 test("requires ChatGPT-native rich results to include a safe Markdown answer for Codex", () => {

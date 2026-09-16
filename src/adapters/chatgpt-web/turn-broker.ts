@@ -414,6 +414,14 @@ export class TurnBroker implements TurnBrokerOwner {
     return tokens.length;
   }
 
+  revokeTrace(traceId: string): number {
+    const tokens = [...this.channels]
+      .filter(([, channel]) => channel.traceId === traceId)
+      .map(([token]) => token);
+    for (const token of tokens) this.revoke(token);
+    return tokens.length;
+  }
+
   setExternalOwnersAccepted(accepted: boolean): void {
     this.acceptingExternalOwners = accepted;
   }

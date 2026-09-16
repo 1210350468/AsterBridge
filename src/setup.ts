@@ -100,6 +100,7 @@ export function launcherCapabilityProbeRequired(
   return refreshAccountCapabilities
     || existing?.browserHost !== "launcher"
     || typeof existing.solAvailable !== "boolean"
+    || typeof existing.extraHighAvailable !== "boolean"
     || typeof existing.proAvailable !== "boolean";
 }
 
@@ -110,6 +111,7 @@ export function externalBrowserCapabilityProbeRequired(
 ): boolean {
   if (refreshAccountCapabilities
     || typeof existing?.solAvailable !== "boolean"
+    || typeof existing?.extraHighAvailable !== "boolean"
     || typeof existing?.proAvailable !== "boolean") return true;
 
   const previousHost = existing.turnBrowserHost ?? existing.browserHost;
@@ -161,6 +163,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     brokerSocketPath: before.brokerSocketPath,
     headed: before.headed,
     solAvailable: before.solAvailable,
+    extraHighAvailable: before.extraHighAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
     imageGenerationProvider: before.imageGenerationProvider,
@@ -191,6 +194,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     brokerSocketPath: after.brokerSocketPath,
     headed: after.headed,
     solAvailable: after.solAvailable,
+    extraHighAvailable: after.extraHighAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
     imageGenerationProvider: after.imageGenerationProvider,
@@ -302,7 +306,7 @@ async function inspectLauncherCapabilities(
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
-): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
+): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
   const detectCapabilities = launcherCapabilityProbeRequired(existing, refreshAccountCapabilities);
   const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
     detectCapabilities,
@@ -310,16 +314,18 @@ async function inspectLauncherCapabilities(
   });
   return {
     solAvailable: detectCapabilities ? inspected.solAvailable === true : existing!.solAvailable,
+    extraHighAvailable: detectCapabilities ? inspected.extraHighAvailable === true : existing!.extraHighAvailable === true,
     proAvailable: detectCapabilities ? inspected.proAvailable === true : existing!.proAvailable,
   };
 }
 
-async function inspectSystemBrowserCapabilities(config: AppConfig): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
+async function inspectSystemBrowserCapabilities(config: AppConfig): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
   const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
   try {
     const inspected = await worker.inspectSession(true);
     return {
       solAvailable: inspected.solAvailable === true,
+      extraHighAvailable: inspected.extraHighAvailable === true,
       proAvailable: inspected.proAvailable === true,
     };
   } finally {
@@ -428,6 +434,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   let loginCreated = false;
   let solAvailable: boolean | undefined;
+  let extraHighAvailable: boolean | undefined;
   let proAvailable: boolean | undefined;
   if (turnBrowserHost === "system-browser" || turnBrowserHost === "roxybrowser") {
     if (options.forceLogin) {
@@ -441,9 +448,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (detectCapabilities) {
       const capabilities = await inspectSystemBrowserCapabilities(config);
       solAvailable = capabilities.solAvailable;
+      extraHighAvailable = capabilities.extraHighAvailable;
       proAvailable = capabilities.proAvailable;
     } else {
       solAvailable = existing!.solAvailable;
+      extraHighAvailable = existing!.extraHighAvailable;
       proAvailable = existing!.proAvailable;
     }
   } else if (config.browserHost === "launcher") {
@@ -455,15 +464,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       "production",
     );
     solAvailable = capabilities.solAvailable;
+    extraHighAvailable = capabilities.extraHighAvailable;
     proAvailable = capabilities.proAvailable;
   } else {
     const stored = storedBrowserLoginCapabilities(config);
     solAvailable = stored.solAvailable;
+    extraHighAvailable = stored.extraHighAvailable;
     proAvailable = stored.proAvailable;
     const loginRequired = options.forceLogin || !browserLoginStateExists(config);
     const capabilityProbeRequired = !loginRequired
       && (options.refreshAccountCapabilities === true
         || solAvailable === undefined
+        || extraHighAvailable === undefined
         || proAvailable === undefined);
     if (beforeService.loaded && (loginRequired || capabilityProbeRequired) && !options.restartService) {
       throw new Error(
@@ -475,15 +487,18 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (loginRequired) {
       const login = await loginToChatGpt(config);
       solAvailable = login.solAvailable;
+      extraHighAvailable = login.extraHighAvailable;
       proAvailable = login.proAvailable;
       loginCreated = true;
     } else if (capabilityProbeRequired) {
       const inspected = await inspectBrowserLoginCapabilities(config);
       solAvailable = inspected.solAvailable;
+      extraHighAvailable = inspected.extraHighAvailable;
       proAvailable = inspected.proAvailable;
     }
   }
   config.solAvailable = solAvailable === true;
+  config.extraHighAvailable = config.solAvailable && extraHighAvailable === true;
   config.proAvailable = config.solAvailable && proAvailable === true;
   const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
   const preliminaryChange = Boolean(existing && (meaningfulRuntimeChange(existing, config) || explicitTunnelChange || options.forceLogin));
@@ -602,6 +617,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     DEV_LAUNCHER_PROFILE,
   );
   config.solAvailable = capabilities.solAvailable;
+  config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
   config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
 
   const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);

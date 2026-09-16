@@ -3,6 +3,8 @@ import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worke
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
+import { cancelStructuredCompactionTrace } from "./adapters/chatgpt-web/compaction-handoff";
+import { ChatGptWebAdapterError } from "./adapters/chatgpt-web/adapter-error";
 import { extractChatGptTurnIdentity } from "./adapters/chatgpt-web/environment";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
@@ -938,6 +940,50 @@ export function startServer(
           status: "ok",
           cancelled_http_turns: cancelledHttpTurns,
           cancelled_browser_turns: cancelledBrowserTurns,
+          ...activity(),
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/admin/cancel-turn") {
+        if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        let traceId: string;
+        let leaseFailure: "browser_surface_bootstrap_timeout" | "helper_heartbeat_expired" | undefined;
+        try {
+          const body = await req.json() as { traceId?: unknown; reason?: unknown };
+          traceId = typeof body?.traceId === "string" ? body.traceId : "";
+          if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId)) throw new Error("traceId is invalid");
+          if (body.reason !== undefined) {
+            if (body.reason !== "browser_surface_bootstrap_timeout" && body.reason !== "helper_heartbeat_expired") {
+              throw new Error("Browser turn cancellation reason is invalid");
+            }
+            leaseFailure = body.reason;
+          }
+        } catch (error) {
+          return Response.json(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            { status: 400 },
+          );
+        }
+        const reason = new ChatGptWebAdapterError(
+          leaseFailure === "browser_surface_bootstrap_timeout"
+            ? "The ChatGPT browser turn did not finish browser setup before its lease expired. The turn was stopped."
+            : leaseFailure === "helper_heartbeat_expired"
+              ? "The ChatGPT browser helper stopped reporting progress and its lease expired. The turn was stopped."
+              : "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
+          leaseFailure
+            ? { status: 504, errorType: "server_error", code: leaseFailure, retryable: false }
+            : { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
+        );
+        const [cancelledBrowserTurns, cancelledCompactionRuns] = await Promise.all([
+          chatGptTurnSessions.cancelTrace(traceId, reason),
+          cancelStructuredCompactionTrace(traceId, reason),
+        ]);
+        const cancelledBrokerTurns = turnBroker?.revokeTrace(traceId) ?? 0;
+        return Response.json({
+          status: "ok",
+          trace_id: traceId,
+          cancelled_browser_turns: cancelledBrowserTurns,
+          cancelled_broker_turns: cancelledBrokerTurns,
+          cancelled_compaction_runs: cancelledCompactionRuns,
           ...activity(),
         });
       }

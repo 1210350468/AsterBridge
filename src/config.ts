@@ -86,6 +86,7 @@ export interface AppConfig {
   brokerSocketPath: string;
   headed: boolean;
   solAvailable: boolean;
+  extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
   imageGenerationProvider: ImageGenerationProvider;
@@ -192,6 +193,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     brokerSocketPath: defaultBrokerEndpoint(home),
     headed: true,
     solAvailable: true,
+    extraHighAvailable: false,
     proAvailable: false,
     experimentalBiggerContext: false,
     imageGenerationProvider: "auto",
@@ -470,6 +472,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Invalid runtimeCommand in ${path}`);
   }
   assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
+  if (parsed.extraHighAvailable !== undefined && typeof parsed.extraHighAvailable !== "boolean") {
+    throw new Error(`Invalid extraHighAvailable in ${path}`);
+  }
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
@@ -487,9 +492,13 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Invalid imageGenerationProvider in ${path}`);
   }
   const solAvailable = parsed.solAvailable !== false;
+  const extraHighAvailable = parsed.extraHighAvailable === true;
   const proAvailable = parsed.proAvailable === true;
   const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
   const imageGenerationProvider: ImageGenerationProvider = parsed.imageGenerationProvider ?? "auto";
+  if (extraHighAvailable && !solAvailable) {
+    throw new Error(`Invalid ChatGPT account capabilities in ${path}: Extra High requires Sol`);
+  }
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
@@ -497,6 +506,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     ...parsed,
     subagentProtocol,
     solAvailable,
+    extraHighAvailable,
     proAvailable,
     experimentalBiggerContext,
     imageGenerationProvider,
@@ -517,7 +527,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
   const model = config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna";
   const models = [model];
   const efforts = config.solAvailable
-    ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
+    ? ["low", "medium", "high", ...(config.extraHighAvailable === true ? ["xhigh"] : []), ...(config.proAvailable ? ["max"] : [])]
     : ["low", "medium"];
   return {
     adapter: "chatgpt-web",
@@ -549,6 +559,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       localToolsEnabled: config.mode === "full",
       ...(config.mode === "full" ? { localToolTransport: config.localToolTransport ?? "mcp" } : {}),
       solAvailable: config.solAvailable,
+      extraHighAvailable: config.extraHighAvailable === true,
       proAvailable: config.proAvailable,
       experimentalBiggerContext: config.experimentalBiggerContext,
       imageGenerationProvider: config.imageGenerationProvider,

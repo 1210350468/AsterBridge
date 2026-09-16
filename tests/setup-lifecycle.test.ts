@@ -29,6 +29,7 @@ test("launcher setup refreshes account capabilities only when missing or explici
   const verifiedLauncher = {
     browserHost: "launcher",
     solAvailable: true,
+    extraHighAvailable: false,
     proAvailable: false,
   } as never;
 
@@ -36,6 +37,7 @@ test("launcher setup refreshes account capabilities only when missing or explici
   expect(launcherCapabilityProbeRequired(verifiedLauncher)).toBe(false);
   expect(launcherCapabilityProbeRequired({
     browserHost: "launcher",
+    solAvailable: true,
     proAvailable: false,
   } as never)).toBe(true);
   expect(launcherCapabilityProbeRequired(verifiedLauncher, true)).toBe(true);
@@ -48,6 +50,7 @@ test("external-browser upgrades reuse verified capabilities until the browser id
     roxyBrowserProfileId: "profile-a",
     roxyBrowserDataDir: "C:/Roxy/profiles",
     solAvailable: true,
+    extraHighAvailable: false,
     proAvailable: false,
   };
   const unchanged = { ...verifiedRoxy, releaseVersion: "0.2.0" };
@@ -65,5 +68,9 @@ test("external-browser upgrades reuse verified capabilities until the browser id
   expect(externalBrowserCapabilityProbeRequired({
     ...verifiedRoxy,
     solAvailable: undefined,
+  } as never, unchanged as never)).toBe(true);
+  expect(externalBrowserCapabilityProbeRequired({
+    ...verifiedRoxy,
+    extraHighAvailable: undefined,
   } as never, unchanged as never)).toBe(true);
 });

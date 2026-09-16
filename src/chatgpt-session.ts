@@ -150,7 +150,7 @@ export async function detectChatGptAccountCapabilities(
     if (composerReady && formReady && documentReady) {
       absenceSince ??= Date.now();
       if (Date.now() - absenceSince >= stableAbsenceMs) {
-        return { solAvailable: false, proAvailable: false };
+        return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
       }
     } else {
       absenceSince = undefined;
@@ -185,7 +185,12 @@ export async function detectChatGptAccountCapabilities(
       ]);
       ready = await preferChatGptEffortSlider(ready, slider);
       if (ready === "items") {
-        return { solAvailable: true, proAvailable: await efforts.count() >= 5 };
+        const count = await efforts.count();
+        return {
+          solAvailable: true,
+          extraHighAvailable: count >= 4,
+          proAvailable: count >= 5,
+        };
       }
       const state = parseChatGptEffortSliderState(
         await slider.getAttribute("aria-valuemin"),
@@ -193,7 +198,12 @@ export async function detectChatGptAccountCapabilities(
         await slider.getAttribute("aria-valuenow"),
       );
       if (!state) throw new Error("ChatGPT effort slider exposed an invalid ARIA range");
-      return { solAvailable: true, proAvailable: state.max - state.min + 1 >= 5 };
+      const optionCount = state.max - state.min + 1;
+      return {
+        solAvailable: true,
+        extraHighAvailable: optionCount >= 4,
+        proAvailable: optionCount >= 5,
+      };
     } finally {
       waitAbort.abort();
     }

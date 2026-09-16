@@ -154,6 +154,7 @@ test("session inspection delegates navigation and capability detection to the sh
           temporary: true,
           url: "https://chatgpt.com/?temporary-chat=true",
           solAvailable: true,
+          extraHighAvailable: true,
           proAvailable: true,
         },
       };
@@ -167,6 +168,7 @@ test("session inspection delegates navigation and capability detection to the sh
     temporary: true,
     url: "https://chatgpt.com/?temporary-chat=true",
     solAvailable: true,
+    extraHighAvailable: true,
     proAvailable: true,
   });
   assert.equal(calls.length, 2);
@@ -365,6 +367,82 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
   assert.equal(result.authenticated, true);
   assert.equal(result.status, "ready");
+});
+
+test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
+  const vm = require("node:vm");
+  const url = "https://chatgpt.com/?temporary-chat=true";
+  const sessionUrl = "https://chatgpt.com/api/auth/session";
+  const response = (payload, overrides = {}) => ({
+    ok: true,
+    status: 200,
+    url: sessionUrl,
+    headers: { get: () => "application/json" },
+    json: async () => payload,
+    ...overrides,
+  });
+  const validSession = { user: { id: "fixture" }, expires: "2099-01-01T00:00:00Z" };
+  const cases = [
+    { name: "valid", fetch: async () => response(validSession), status: "ready", authenticated: true },
+    { name: "guest", fetch: async () => response({}), status: "signed-out" },
+    { name: "expired", fetch: async () => response({ ...validSession, expires: "2000-01-01T00:00:00Z" }), status: "signed-out" },
+    { name: "unauthorized", fetch: async () => response(null, { ok: false, status: 401 }), status: "signed-out" },
+    { name: "network", fetch: async () => { throw new Error("private-proxy-secret"); }, status: "error", message: /connection|network/i },
+    { name: "deadline", timeout: true, fetch: async (_url, { signal }) => {
+      await new Promise(resolve => setImmediate(resolve));
+      signal.throwIfAborted();
+      throw new Error("Expected the session deadline to abort");
+    }, status: "error", message: /timed out/i },
+    { name: "server", fetch: async () => response(null, { ok: false, status: 503 }), status: "error", message: /503/ },
+    { name: "html", fetch: async () => response(null, { headers: { get: () => "text/html" } }), status: "error" },
+    { name: "redirect", fetch: async () => response(validSession, { url: "https://example.com/api/auth/session" }), status: "error" },
+    { name: "invalid JSON", fetch: async () => response(null, { json: async () => { throw new SyntaxError("private-response"); } }), status: "error" },
+    { name: "renderer", rendererError: true, status: "error", message: /browser/i },
+  ];
+
+  for (const item of cases) {
+    const fixture = {
+      state: { authenticated: true },
+      activeTraceId: null,
+      manualOperation: null,
+      authView: null,
+      view: {
+        webContents: {
+          isDestroyed: () => false,
+          getURL: () => url,
+          executeJavaScript: async script => {
+            if (item.rendererError) throw new Error("private-renderer-error");
+            return await vm.runInNewContext(script, {
+              location: { href: url },
+              document: {
+                readyState: "complete",
+                querySelectorAll: () => [{
+                  isConnected: true,
+                  getBoundingClientRect: () => ({ width: 100, height: 30 }),
+                }],
+              },
+              getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+              URL,
+              Date,
+              AbortController,
+              fetch: item.fetch,
+              setTimeout: callback => item.timeout ? setImmediate(callback) : null,
+              clearTimeout: handle => handle && clearImmediate(handle),
+            });
+          },
+        },
+      },
+      setState(patch) { this.state = { ...this.state, ...patch }; },
+      snapshot() { return { ...this.state }; },
+      logger: { info() {} },
+    };
+
+    const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+    assert.equal(result.status, item.status, item.name);
+    assert.equal(result.authenticated, item.authenticated === true, item.name);
+    if (item.message) assert.match(result.message, item.message, item.name);
+    assert.doesNotMatch(JSON.stringify(result), /private-/);
+  }
 });
 
 test("authentication windows stay inside the launcher-owned browser partition", () => {
@@ -885,12 +963,104 @@ test("an uninitialized browser surface is reaped instead of remaining as a gray 
   assert.equal(fixture.selectedTabId, "home");
   assert.equal(fixture.closedTurnOwners.get(tab.traceId), tab.helperPid);
   assert.deepEqual(closed, ["view", "contents"]);
-  assert.deepEqual(warnings, [["browser.orphan_turn_reaped", {
-    tabId: tab.id,
+  assert.deepEqual(warnings.map(([event]) => event), [
+    "browser.orphan_turn_expired",
+    "browser.orphan_turn_reaped",
+  ]);
+});
+
+test("an expired browser surface cancels its runtime before releasing the tab", async () => {
+  const closed = [];
+  const warnings = [];
+  const cancellations = [];
+  let acknowledge;
+  const cancelled = new Promise(resolve => { acknowledge = resolve; });
+  const tab = {
+    id: "tab-orphan-runtime",
+    traceId: "trace_orphan_runtime",
+    helperPid: 556,
+    status: "running",
+    loading: true,
+    bootstrapReady: false,
+    bootstrapDeadlineAt: 100,
+    lastHeartbeatAt: 100,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        close: () => closed.push("contents"),
+      },
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    cancelTurn: (traceId, reason) => { cancellations.push({ traceId, reason }); return cancelled; },
+    closedTurnOwners: new Map(),
+    selectedTabId: tab.id,
+    window: { contentView: { removeChildView: () => closed.push("view") } },
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { warn: (event, detail) => warnings.push([event, detail]) },
+  });
+
+  const cleanup = BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 101);
+  const overlapping = BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 102);
+  await Promise.resolve();
+  assert.deepEqual(cancellations, [{
     traceId: tab.traceId,
-    helperPid: tab.helperPid,
-    evidence: "browser_surface_bootstrap_timeout",
-  }]]);
+    reason: "browser_surface_bootstrap_timeout",
+  }]);
+  assert.equal(fixture.turnTabs.has(tab.id), true);
+  assert.deepEqual(closed, []);
+
+  acknowledge();
+  await Promise.all([cleanup, overlapping]);
+  assert.equal(fixture.turnTabs.size, 0);
+  assert.deepEqual(closed, ["view", "contents"]);
+  assert.deepEqual(warnings.map(([event]) => event), [
+    "browser.orphan_turn_expired",
+    "browser.orphan_turn_reaped",
+  ]);
+});
+
+test("expiry cancellation preserves a changed owner and a failed cancellation stays retryable", async () => {
+  for (const outcome of ["reused", "failed"]) {
+    const removed = [];
+    const warnings = [];
+    const tab = {
+      id: `expiry-race-${outcome}`,
+      traceId: `trace_expiry_${outcome}`,
+      helperPid: 123,
+      status: "running",
+      bootstrapReady: true,
+      lastHeartbeatAt: 0,
+    };
+    let attempts = 0;
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      turnTabs: new Map([[tab.id, tab]]),
+      cancelTurn: async () => {
+        attempts += 1;
+        if (outcome === "failed") throw new Error("control unavailable");
+        tab.traceId = "trace_replacement";
+      },
+      removeTurnTab: () => removed.push(tab.id),
+      logger: { warn: event => warnings.push(event) },
+    });
+
+    await BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 120_000);
+    assert.deepEqual(removed, []);
+    assert.equal(fixture.turnTabs.get(tab.id), tab);
+    assert.equal(tab.expiryCancellation, undefined);
+    assert.equal(warnings.includes("browser.orphan_turn_cancel_failed"), outcome === "failed");
+    assert.equal(warnings.includes("browser.orphan_turn_reaped"), outcome !== "failed");
+
+    if (outcome === "failed") {
+      await BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 120_001);
+      assert.equal(attempts, 2);
+      assert.equal(fixture.turnTabs.get(tab.id), tab);
+    }
+  }
 });
 
 test("removing the final turn tab hides an uninitialized idle host instead of exposing gray content", () => {

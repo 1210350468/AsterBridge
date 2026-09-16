@@ -26,8 +26,9 @@ function parsed(modelId: string, reasoning = "medium"): CodexParsedRequest {
 }
 
 describe("fixed ChatGPT Web model routes", () => {
-  const plus = { solAvailable: true, proAvailable: false };
-  const pro = { solAvailable: true, proAvailable: true };
+  const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const extraHigh = { solAvailable: true, extraHighAvailable: true, proAvailable: false };
+  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
   test("uses unique stable slugs and one explicit adapter effort per model", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
@@ -47,8 +48,17 @@ describe("fixed ChatGPT Web model routes", () => {
       "chatgpt-web/medium",
       "chatgpt-web/high",
     ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, proAvailable: true }))
+    expect(availableChatGptWebModelRoutes(pro))
       .toEqual(CHATGPT_WEB_MODEL_ROUTES);
+    expect(availableChatGptWebModelRoutes(extraHigh).map(route => route.slug)).toEqual([
+      "chatgpt-web/light",
+      "chatgpt-web/medium",
+      "chatgpt-web/high",
+      "chatgpt-web/extra-high",
+    ]);
+    expect(requireChatGptWebModelRoute("chatgpt-web/extra-high", extraHigh).adapterEffort).toBe("xhigh");
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", extraHigh))
+      .toThrow("Pro is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", plus))
@@ -56,7 +66,7 @@ describe("fixed ChatGPT Web model routes", () => {
   });
 
   test("exposes Luna and Think when the authenticated account has no Sol selector", () => {
-    const free = { solAvailable: false, proAvailable: false };
+    const free = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
     expect(availableChatGptWebModelRoutes(free)).toEqual(CHATGPT_WEB_LUNA_MODEL_ROUTES);
     expect(requireChatGptWebModelRoute("chatgpt-web/luna", free).backendModel)
       .toBe(CHATGPT_WEB_LUNA_BACKEND_MODEL);
@@ -66,6 +76,7 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("Luna-only account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/luna", {
       solAvailable: true,
+      extraHighAvailable: false,
       proAvailable: false,
     })).toThrow("only available for Luna-only accounts");
   });
@@ -133,6 +144,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("publishes Luna's real model window without early native compaction", () => {
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
+      extraHighAvailable: false,
       proAvailable: false,
     })).toEqual({
       contextWindow: 1_050_000,
@@ -152,6 +164,7 @@ describe("fixed ChatGPT Web model routes", () => {
     });
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
+      extraHighAvailable: false,
       proAvailable: false,
       experimentalBiggerContext: true,
     })).toEqual({
@@ -174,6 +187,7 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("binds the Pro model to the browser Pro effort and fails closed for unknown routes", () => {
     const config = defaultConfig("full");
+    config.extraHighAvailable = true;
     config.proAvailable = true;
     const request = parsed("chatgpt-web/pro", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("max");
@@ -184,6 +198,7 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("keeps normal Pro turns on Pro and routes only Pro compaction through Extra High", () => {
     const config = defaultConfig("full");
+    config.extraHighAvailable = true;
     config.proAvailable = true;
     const normal = parsed("chatgpt-web/pro", "low");
     const compact = parsed("chatgpt-web/pro", "low");

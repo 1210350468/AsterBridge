@@ -21,6 +21,8 @@ const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
 interface CachedCompactionRun {
   createdAt: number;
   active: boolean;
+  abort: AbortController;
+  traceIds: Set<string>;
   promise: Promise<string>;
   settlement: Promise<void>;
 }
@@ -41,15 +43,24 @@ export function existingStructuredCompactionRun(key: string): Promise<string> | 
 
 export function runStructuredCompactionOnce(
   key: string,
-  start: (retainOwnershipUntil: (settlement: Promise<void>) => void) => Promise<string>,
+  start: (
+    retainOwnershipUntil: (settlement: Promise<void>) => void,
+    cancellationSignal: AbortSignal,
+  ) => Promise<string>,
+  traceId?: string,
 ): Promise<string> {
   pruneStructuredCompactionRuns();
   const existing = structuredCompactionRuns.get(key);
-  if (existing) return existing.promise;
+  if (existing) {
+    if (traceId) existing.traceIds.add(traceId);
+    return existing.promise;
+  }
   const physicalSettlements: Promise<void>[] = [];
+  const abort = new AbortController();
+  const traceIds = new Set<string>(traceId ? [traceId] : []);
   const promise = Promise.resolve().then(() => start(settlement => {
     physicalSettlements.push(settlement);
-  }));
+  }, abort.signal));
   let run!: CachedCompactionRun;
   const settlement = promise.then(() => false, () => true).then(async failed => {
     await Promise.allSettled(physicalSettlements);
@@ -58,9 +69,23 @@ export function runStructuredCompactionOnce(
       structuredCompactionRuns.delete(key);
     }
   });
-  run = { createdAt: Date.now(), active: true, promise, settlement };
+  run = { createdAt: Date.now(), active: true, abort, traceIds, promise, settlement };
   structuredCompactionRuns.set(key, run);
   return promise;
+}
+
+function compactionRunOwnsTrace(run: CachedCompactionRun, traceId: string): boolean {
+  if (run.traceIds.has(traceId)) return true;
+  if (!traceId.endsWith("_fallback")) return false;
+  return run.traceIds.has(traceId.slice(0, -"_fallback".length));
+}
+
+export async function cancelStructuredCompactionTrace(traceId: string, reason: Error): Promise<number> {
+  const runs = [...structuredCompactionRuns.values()]
+    .filter(run => run.active && compactionRunOwnsTrace(run, traceId));
+  for (const run of runs) if (!run.abort.signal.aborted) run.abort.abort(reason);
+  await Promise.allSettled(runs.map(run => run.settlement));
+  return runs.length;
 }
 
 function brokerContent(content: string | CodexContentPart[]): unknown[] {

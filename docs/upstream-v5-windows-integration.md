@@ -205,6 +205,48 @@ Status: **DONE**.
   Windows/Roxy connector verification above closes the browser-specific U5-W4 gate without modifying
   the installed 3.0.42 production configuration.
 
+## U5-W5 - v5.0.7 selective stabilization
+
+Status: **DONE**.
+
+- Audited upstream v5.0.7 as independent Windows/browser correctness deltas rather than importing the
+  broader upstream lifecycle/tunnel architecture. Zero Risk remains excluded and production 3.0.42
+  is not modified by this source-development tranche.
+- Account capability detection now separates `extraHighAvailable` from `proAvailable`. The effort
+  slider remains the authority: four selectable Sol efforts prove Extra High, while the Pro row is
+  measured separately. Setup treats an older capability journal without the new field as stale and
+  refreshes it instead of inferring Extra High from Sol or Pro. A real authenticated Japanese Roxy
+  probe returned **Sol=true / Extra High=true / Pro=false**, proving this is an observable correction
+  for the maintainer account rather than a theoretical catalog cleanup.
+- Web compaction preserves the newest cumulative checkpoint before ordinary history trimming. Replay
+  sanitization also replaces retired private handles only when they are exact JSON string values;
+  JSON object keys and native tool-call ids are outside that rewrite boundary.
+- Known current-turn `Stopped thinking` status labels now cover the observed Japanese UI plus English,
+  Simplified Chinese, Traditional Chinese, and Korean. Structural response ownership and exclusion of
+  answer/code/quotation text remain unchanged, so localization broadens detection without broadening
+  the authority boundary.
+- Launcher orphan cleanup is now trace-aware. `/admin/cancel-turn` cancels only the requested browser
+  trace and revokes the corresponding broker/structured-compaction owner; the Launcher waits for that
+  runtime cancellation before removing the expired tab. Concurrent traces are isolated, overlapping
+  sweeps share one cancellation, and a failed control request leaves the same lease available for a
+  later retry rather than destroying the evidence first. Structured compaction cancellation also
+  waits for every registered physical settlement before returning.
+- Interrupt-hook ownership now tolerates unrelated TOML tables inserted between the managed hook and
+  its trust-state definition. The two owned definitions are located independently, then the complete
+  TOML document is parsed to prove that neither owned value changed. Hook order, trust hash, timeout,
+  extra owned-state descendants, additional hook entries, and marker integrity remain fail-closed.
+- Launcher session verification no longer collapses every `/api/auth/session` failure into a false
+  signed-out state. `401`, guest, and expired sessions still mean signed out; network/proxy failure,
+  timeout, HTTP 5xx, invalid content type/redirect/JSON, or renderer inspection failure now produce a
+  bounded diagnostic error. Underlying exception/response text is intentionally not reflected into
+  the Launcher state.
+- Focused U5-W5 validation remains green, and the final Windows `bun run verify` release gate passes:
+  **45 / 45 deterministic Core batches**, Launcher **233 pass / 2 environment skips / 0 fail**, root
+  and Launcher TypeScript, Vite production build, relocatable runtime bundle construction, third-party
+  notice generation for **110 runtime packages**, and `RELOCATABLE_RUNTIME_SMOKE_OK`. Two process-style
+  Codex catalog refresh tests now use a 15-second test-only budget because repeated Windows runs finish
+  near the old 5-second ceiling (roughly 4.4-4.8 seconds); no production timeout was widened.
+
 ## Documentation rule
 
 For every completed upstream-v5 item:

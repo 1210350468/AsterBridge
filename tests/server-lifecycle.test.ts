@@ -269,6 +269,64 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   }
 });
 
+test("targeted lifecycle cancellation stops only the exact browser trace", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config);
+  const cancellations: string[] = [];
+  chatGptTurnSessions.clear();
+  const makeRuntime = (traceId: string) => ({
+    mode: "read-only" as const,
+    traceId,
+    browser: new Promise<string>(() => {}),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { cancellations.push(traceId); },
+  });
+  chatGptTurnSessions.getOrCreate("targeted-a", () => makeRuntime("trace_target_a"));
+  chatGptTurnSessions.getOrCreate("targeted-b", () => makeRuntime("trace_target_b"));
+
+  try {
+    const endpoint = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${endpoint}/admin/cancel-turn`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.controlToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        traceId: "trace_target_a",
+        reason: "helper_heartbeat_expired",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      trace_id: "trace_target_a",
+      cancelled_browser_turns: 1,
+      cancelled_broker_turns: 0,
+      cancelled_compaction_runs: 0,
+      active_browser_turns: 1,
+    });
+    expect(cancellations).toEqual(["trace_target_a"]);
+    expect(chatGptTurnSessions.activeCount()).toBe(1);
+
+    const invalid = await fetch(`${endpoint}/admin/cancel-turn`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.controlToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ traceId: "trace_target_b", reason: "unknown" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(chatGptTurnSessions.activeCount()).toBe(1);
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
 test("authenticated lifecycle control aborts active HTTP work before acknowledging cancellation", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   let upstreamAbortObserved = false;

@@ -192,6 +192,24 @@ test("launcher browser ownership is explicit in provider configuration", () => {
     browserHost: "launcher",
     browserHostDescriptorPath: config.browserHostDescriptorPath,
     solAvailable: true,
+    extraHighAvailable: false,
+  });
+});
+
+test("provider publishes Extra High independently from Pro", () => {
+  const config = defaultConfig("browser-only");
+  expect(providerConfig(config).modelReasoningEfforts).toEqual({
+    "gpt-5.6-sol": ["low", "medium", "high"],
+  });
+
+  config.extraHighAvailable = true;
+  expect(providerConfig(config).modelReasoningEfforts).toEqual({
+    "gpt-5.6-sol": ["low", "medium", "high", "xhigh"],
+  });
+
+  config.proAvailable = true;
+  expect(providerConfig(config).modelReasoningEfforts).toEqual({
+    "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
   });
 });
 
@@ -205,6 +223,7 @@ test("Luna-only provider configuration exposes only the Luna backend", () => {
   expect(provider.modelReasoningEfforts).toEqual({ "gpt-5.6-luna": ["low", "medium"] });
   expect(provider.chatgptWeb).toMatchObject({
     solAvailable: false,
+    extraHighAvailable: false,
     proAvailable: false,
     stallTimeoutSec: 17,
   });

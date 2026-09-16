@@ -34,6 +34,28 @@ test("explicit browser-turn cancellation aborts and removes every registered ses
   expect(sessions.activeCount()).toBe(0);
 });
 
+test("trace cancellation isolates simultaneous browser runtimes", async () => {
+  const sessions = new ChatGptTurnSessions();
+  const cancelled: string[] = [];
+  const runtime = (traceId: string) => ({
+    mode: "read-only" as const,
+    traceId,
+    browser: new Promise<string>(() => {}),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { cancelled.push(traceId); },
+  });
+  sessions.getOrCreate("trace-a-key", () => runtime("trace-a"));
+  sessions.getOrCreate("trace-b-key", () => runtime("trace-b"));
+
+  expect(await sessions.cancelTrace("trace-a", new Error("lease expired"))).toBe(1);
+  expect(cancelled).toEqual(["trace-a"]);
+  expect(sessions.activeCount()).toBe(1);
+  expect(sessions.wasExplicitlyCancelled("trace-a-key")).toBe(true);
+  expect(sessions.wasExplicitlyCancelled("trace-b-key")).toBe(false);
+});
+
 test("explicit cancellation tombstones the cancelled execution key without blocking a new turn", () => {
   const sessions = new ChatGptTurnSessions();
   let starts = 0;

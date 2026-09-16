@@ -93,7 +93,8 @@ export function resolveChatGptWebContextLimits(
       CHATGPT_WEB_INSTANT_CONTEXT_WINDOW,
       CHATGPT_WEB_INSTANT_AUTO_COMPACT_TOKEN_LIMIT,
     );
-  } else if (effort === "medium" || effort === "high") {
+  } else if (effort === "medium" || effort === "high"
+    || (effort === "xhigh" && capabilities.extraHighAvailable === true)) {
     limits = contextLimits(
       CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW,
       CHATGPT_WEB_MEDIUM_HIGH_AUTO_COMPACT_TOKEN_LIMIT,
@@ -119,7 +120,8 @@ export function resolveChatGptWebTransportLimits(
     if (effort === "low") {
       return { browserComposerCharLimit: CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT };
     }
-    if (effort === "medium" || effort === "high") {
+    if (effort === "medium" || effort === "high"
+      || (effort === "xhigh" && capabilities.extraHighAvailable === true)) {
       return { browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT };
     }
     throw new Error(`ChatGPT Plus transport limit is not defined for unavailable effort: ${effort}`);
@@ -150,10 +152,13 @@ export interface ChatGptWebModelRoute {
   codexEffort: ChatGptWebCodexEffort;
   adapterEffort: ChatGptWebAdapterEffort;
   requiresPro: boolean;
+  requiresExtraHigh?: boolean;
 }
 
 export interface ChatGptWebAccountCapabilities {
   solAvailable: boolean;
+  /** Missing in older saved observations; setup must probe before exposing Extra High. */
+  extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
 }
@@ -224,7 +229,8 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "xhigh",
     adapterEffort: "xhigh",
-    requiresPro: true,
+    requiresPro: false,
+    requiresExtraHigh: true,
   },
   {
     slug: "chatgpt-web/pro",
@@ -249,9 +255,9 @@ export function availableChatGptWebModelRoutes(
   capabilities: ChatGptWebAccountCapabilities,
 ): readonly ChatGptWebModelRoute[] {
   if (!capabilities.solAvailable) return CHATGPT_WEB_LUNA_MODEL_ROUTES;
-  return capabilities.proAvailable
-    ? CHATGPT_WEB_MODEL_ROUTES
-    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+  return CHATGPT_WEB_MODEL_ROUTES.filter(route =>
+    (!route.requiresPro || capabilities.proAvailable)
+    && (!route.requiresExtraHigh || capabilities.extraHighAvailable === true));
 }
 
 export function requireChatGptWebModelRoute(
@@ -269,7 +275,8 @@ export function requireChatGptWebModelRoute(
   if (!capabilities.solAvailable) {
     throw new Error(`${route.displayName} is not available for this Luna-only account`);
   }
-  if (route.requiresPro && !capabilities.proAvailable) {
+  if ((route.requiresPro && !capabilities.proAvailable)
+    || (route.requiresExtraHigh && capabilities.extraHighAvailable !== true)) {
     throw new Error(`${route.displayName} is not available for this account`);
   }
   return route;

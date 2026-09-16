@@ -515,7 +515,7 @@ async function main(): Promise<void> {
       try {
         const inspected = await ChatGptBrowserWorker.forProvider(providerConfig(config)).inspectSession(true);
         stdout.write(
-          `Playwright can reach the authenticated external browser session (sol=${inspected.solAvailable === true}, pro=${inspected.proAvailable === true}).\n`,
+          `Playwright can reach the authenticated external browser session (sol=${inspected.solAvailable === true}, extra-high=${inspected.extraHighAvailable === true}, pro=${inspected.proAvailable === true}).\n`,
         );
       } finally {
         await closeChatGptBrowserWorkers();

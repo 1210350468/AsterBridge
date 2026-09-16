@@ -6,6 +6,7 @@ import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../s
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import {
   boundedCompactionLatestUserPrompt,
+  cancelStructuredCompactionTrace,
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
   LATEST_USER_PROMPT_MARKER,
@@ -369,6 +370,42 @@ test("a failed structured compaction keeps ownership until physical cleanup sett
     return "retry after cleanup";
   })).resolves.toBe("retry after cleanup");
   expect(retryStarts).toBe(1);
+});
+
+test("targeted structured compaction cancellation waits for physical cleanup", async () => {
+  const key = `structured-cancel-${Date.now()}-${Math.random()}`;
+  const traceId = "trace_compaction_cancel";
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
+  let observedAbort = false;
+
+  const run = runStructuredCompactionOnce(key, async (retainOwnershipUntil, signal) => {
+    retainOwnershipUntil(physicalSettlement);
+    return await new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        observedAbort = true;
+        reject(signal.reason);
+      }, { once: true });
+    });
+  }, traceId);
+  await Bun.sleep(0);
+
+  let cancellationSettled = false;
+  const cancellation = cancelStructuredCompactionTrace(traceId, new Error("lease expired"))
+    .then(count => {
+      cancellationSettled = true;
+      return count;
+    });
+  await Bun.sleep(0);
+  expect(observedAbort).toBe(true);
+  expect(cancellationSettled).toBe(false);
+  await expect(run).rejects.toThrow("lease expired");
+  expect(existingStructuredCompactionRun(key)).toBe(run);
+
+  releasePhysical();
+  expect(await cancellation).toBe(1);
+  await Bun.sleep(0);
+  expect(existingStructuredCompactionRun(key)).toBeUndefined();
 });
 
 test("missing retained source rebuilds one canonical checkpoint from fresh Codex history", async () => {

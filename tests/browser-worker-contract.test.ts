@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptSuspensionClock, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, browserStageTimeouts, chatGptFileAttachmentTimeoutMs, chatGptPhysicalTaskSurfacePlan, chatGptRetainedPageIsObservable, chatGptRetainedSurfaceEvictionCandidate, chatGptSendStageTimeoutMs, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, remainingStageBudgetMs, resolveBrowserConfig, resolveChatGptToolConfirmation, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptLoggedOutSurface, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
+import { CHATGPT_STOPPED_THINKING_LABELS, isChatGptStoppedThinkingLabel } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -1980,7 +1981,21 @@ test("Stopped thinking is an explicit current-turn upstream error", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect((workerSource.match(/if \(snapshot\.stoppedThinkingVisible\) throw chatGptStoppedThinkingError\(\);/g) ?? []).length).toBe(2);
   expect(workerSource).toContain('candidate.closest("pre, code, blockquote")');
-  expect(workerSource).toContain('aria-label="Stopped thinking"');
+  expect(workerSource).toContain("options.stoppedThinkingLabels");
+});
+
+test("stopped-thinking terminal labels include the current Japanese and Chinese ChatGPT UI", () => {
+  for (const label of ["Stopped thinking", "思考を停止しました", "已停止思考", "已中斷思考", "생각 중지됨"]) {
+    expect(CHATGPT_STOPPED_THINKING_LABELS).toContain(label as never);
+    expect(isChatGptStoppedThinkingLabel(`  ${label}  `)).toBeTrue();
+  }
+  expect(isChatGptStoppedThinkingLabel("Stopped\n thinking")).toBeTrue();
+  expect(isChatGptStoppedThinkingLabel("Stop thinking")).toBeFalse();
+  expect(isChatGptStoppedThinkingLabel("Thinking")).toBeFalse();
+
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  expect(workerSource).toContain("options.stoppedThinkingLabels");
+  expect(workerSource).toContain('querySelectorAll<HTMLElement>("[aria-label]")');
 });
 
 test("a failed subscription fetch is retryable and does not falsely invalidate ChatGPT login", async () => {
